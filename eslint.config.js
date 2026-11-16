@@ -1,5 +1,18 @@
 export default [
   {
+    files: ['development/hd-manager/application/src/features/legacy/EmployeeView.jsx'],
+    languageOptions: {ecmaVersion:'latest',sourceType:'module',parserOptions:{ecmaFeatures:{jsx:true}}},
+    rules: {'no-unreachable':'error','no-dupe-keys':'error'}
+  },
+  {
+    files: ['development/hd-manager/application/src/features/employees/CommissionTierEditor.jsx',
+      'development/hd-manager/application/src/utils/salesCommissionTiers.js',
+      'development/hd-manager/application/tests/sales-commission-tiers.test.mjs',
+      'tests/sales-commission-tiers-rules.test.mjs'],
+    languageOptions: {ecmaVersion:'latest',sourceType:'module',parserOptions:{ecmaFeatures:{jsx:true}}},
+    rules: {'no-unused-vars':'error','no-unreachable':'error','no-dupe-keys':'error'}
+  },
+  {
     files: ['development/hd-manager/application/src/features/customers/productCRMShared.jsx'],
     languageOptions: {ecmaVersion:'latest',sourceType:'module',parserOptions:{ecmaFeatures:{jsx:true}}},
     rules: {'no-unreachable':'error','no-dupe-keys':'error'}

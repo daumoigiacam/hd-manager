@@ -1,5 +1,6 @@
 import {restoreHomeSessionReport,saveHomeSessionReport} from './services/homeSessionReport.js';
 import {isEmployeeReviewEnabled,employeeReviewFeaturePatch} from './utils/companyEmployeeReviews.js';
+import {salesCommissionBreakdown} from './utils/salesCommissionTiers.js';
 import RestoredLocalWorkspace from './layout/RestoredLocalWorkspace.jsx';
 import RetainedFullWorkspace from './layout/RetainedFullWorkspace.jsx';
 import {getProductWorkspaceReadCollections} from './services/productWorkspaceReadPlan.js';
@@ -8495,6 +8496,9 @@ const shouldUseTotalRevenueCommission = (employee = {}) => (
 );
 const calculateDirectSalesCommission = (employee = {}, revenue = 0) => {
   const commissionRate = parseFloat(employee?.commissionRate) || 0;
+  if (Array.isArray(employee?.commissionTiers) && employee.commissionTiers.length) {
+    return roundMoneyValue(salesCommissionBreakdown(revenue||0,employee?.targetRevenue||0,commissionRate,employee.commissionTiers).amount);
+  }
   if (!commissionRate) return 0;
   return roundMoneyValue(calculateCommission(revenue || 0, employee?.targetRevenue || 0, commissionRate));
 };
@@ -22961,7 +22965,10 @@ const hasEmployeePayrollCompensationConfig = (employee = {}) => {
     employee.roleSalaryComponents || employee.departmentSalaryComponents || employee.salaryByDepartment
   ).some(row => parseEmployeeRoleSalaryAmount(row.amount) > 0);
   const commissionRate = parseFloat(employee.commissionRate || 0);
-  const hasSalesCommission = isEmployeeSalesPosition(employee) && Number.isFinite(commissionRate) && commissionRate > 0;
+  const hasSalesCommission = isEmployeeSalesPosition(employee) && (
+    (Number.isFinite(commissionRate) && commissionRate > 0)
+    || (Array.isArray(employee.commissionTiers) && employee.commissionTiers.some(tier => tier?.rate > 0))
+  );
   return hasDirectSalary || hasRoleSalary || hasSalesCommission;
 };
 
@@ -46324,6 +46331,7 @@ const createEmployeeFormState = (position = 'Kế toán & nhân sự', overrides
     experienceSalary: '',
     experienceSalaryPeriod: 'months',
     commissionRate: '',
+    commissionTiers: [],
     commissionBaseMode: isSalesCollaboratorPosition(position) ? 'total_revenue' : 'above_target',
     targetRevenue: '',
     salesLeaderId: '',

@@ -100,6 +100,9 @@ jobs:
       - name: Verify per-company employee review switch permissions
         run: npm run test:firestore-company-employee-reviews
 
+      - name: Verify sales commission tiers and salary permissions
+        run: npm run test:firestore-sales-commission-tiers
+
       - name: Verify customer product atomic sync and permissions
         run: npx firebase-tools emulators:exec --only firestore --project demo-customer-product-sync "node tests/customer-product-auto-sync.emulator.mjs"
 

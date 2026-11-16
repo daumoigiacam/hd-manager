@@ -5,6 +5,8 @@ import { normalizeCompanyDepartments, removeCompanyDepartment, upsertCompanyDepa
 import { buildEmployeePayrollPolicyUpdate } from "../../utils/payrollPolicyHistory.js";
 import { Plus, X, ChevronRight, ChevronLeft, ChevronDown, Edit3, Trash2, CalendarDays, Building, Percent, Save, Eye, EyeOff } from "lucide-react";
 import EmployeeBankQr from "../employees/EmployeeBankQr.jsx";
+import CommissionTierEditor from '../employees/CommissionTierEditor.jsx';
+import {commissionTiersToDraft,commissionTiersFromDraft,preserveCommissionPolicyFields} from '../../utils/salesCommissionTiers.js';
 import { createPortal } from "react-dom";
 // Transitional bundle boundary. Only stable local module bindings are injected;
 // all actor/company/business data continues to arrive through current props.
@@ -538,7 +540,7 @@ export function createEmployeeView(runtime) {
       basicSalary: emp.basicSalary,
       salaryMonthDays: emp.salaryMonthDays ?? '',
       salaryPolicyEffectiveFrom: getTodayString(),
-      supportSalary: emp.supportSalary || 0, responsibilitySalary: emp.responsibilitySalary || 0, experienceSalary: emp.experienceSalary || 0, experienceSalaryPeriod: emp.experienceSalaryPeriod || 'months', commissionRate: formatCommissionPercentInput(emp.commissionRate), commissionBaseMode: emp.commissionBaseMode || (isSalesCollaboratorPosition(emp.position) ? 'total_revenue' : 'above_target'), targetRevenue: emp.targetRevenue || 0, salesLeaderId: getSalesLeaderId(emp), salesLeaderCommissionPercent: emp.salesLeaderCommissionPercent ?? emp.leaderCommissionPercent ?? emp.managerCommissionPercent ?? '', overtimeRate: emp.overtimeRate || 0, latePenaltyRate: emp.latePenaltyRate || 0, latePenaltyTiers: getEmployeeLatePenaltyTiers(emp), autoEarlyOvertimeEnabled: emp.autoEarlyOvertimeEnabled !== false, autoLateCheckoutOvertimeEnabled: emp.autoLateCheckoutOvertimeEnabled !== false,
+      supportSalary: emp.supportSalary || 0, responsibilitySalary: emp.responsibilitySalary || 0, experienceSalary: emp.experienceSalary || 0, experienceSalaryPeriod: emp.experienceSalaryPeriod || 'months', commissionRate: formatCommissionPercentInput(emp.commissionRate), commissionTiers: commissionTiersToDraft(emp.commissionTiers), commissionBaseMode: emp.commissionBaseMode || (isSalesCollaboratorPosition(emp.position) ? 'total_revenue' : 'above_target'), targetRevenue: emp.targetRevenue || 0, salesLeaderId: getSalesLeaderId(emp), salesLeaderCommissionPercent: emp.salesLeaderCommissionPercent ?? emp.leaderCommissionPercent ?? emp.managerCommissionPercent ?? '', overtimeRate: emp.overtimeRate || 0, latePenaltyRate: emp.latePenaltyRate || 0, latePenaltyTiers: getEmployeeLatePenaltyTiers(emp), autoEarlyOvertimeEnabled: emp.autoEarlyOvertimeEnabled !== false, autoLateCheckoutOvertimeEnabled: emp.autoLateCheckoutOvertimeEnabled !== false,
       shiftName: shiftPolicy.shiftName,
       shiftStart: shiftPolicy.shiftStart,
       shiftEnd: shiftPolicy.shiftEnd,
@@ -568,6 +570,11 @@ export function createEmployeeView(runtime) {
     const positionSet = normalizeEmployeePositionList([normalizedPosition, ...secondaryPositions]);
     const isSalesPayload = positionSet.some(isSalesPosition);
     const isCollaboratorPayload = isSalesCollaboratorPosition(normalizedPosition);
+    let commissionTiers=[];
+    if (canEditEmployeeSalaryPolicy && isSalesPayload && !isCollaboratorPayload) {
+      try {commissionTiers=commissionTiersFromDraft(empData.commissionTiers||[],parseCommissionPercentInput(empData.commissionRate));}
+      catch(error){setEmployeeStatus(error.message);return;}
+    }
     const roleSalaryComponents = isCollaboratorPayload ? [] : normalizeEmployeeRoleSalaryComponents(empData.roleSalaryComponents, { keepEmpty: true })
       .filter(row => secondaryPositions.includes(row.position) && row.amount > 0);
     const salesLeaderId = isSalesPayload ? `${empData.salesLeaderId || ''}`.trim() : '';
@@ -624,6 +631,7 @@ export function createEmployeeView(runtime) {
       experienceSalary: isCollaboratorPayload ? 0 : (parseInt(empData.experienceSalary)||0), 
       commissionBaseMode: isCollaboratorPayload ? 'total_revenue' : (empData.commissionBaseMode || 'above_target'),
       commissionRate: isSalesPayload ? parseCommissionPercentInput(empData.commissionRate) : 0, 
+      ...(commissionTiers.length || Object.hasOwn(editingEmp||{},'commissionTiers') ? {commissionTiers} : {}),
       targetRevenue: isCollaboratorPayload ? 0 : (parseInt(empData.targetRevenue)||0), 
       salesLeaderId,
       salesManagerId: salesLeaderId,
@@ -710,6 +718,7 @@ export function createEmployeeView(runtime) {
         pData.autoLateCheckoutOvertimeEnabled = editingEmp.autoLateCheckoutOvertimeEnabled !== false;
       }
     }
+    if (!commissionTiers.length && !Object.hasOwn(editingEmp||{},'commissionTiers')) delete pData.commissionTiers;
     if (canEditEmployeeSalaryPolicy || !editingEmp) {
       Object.assign(pData, buildEmployeePayrollPolicyUpdate({
         employee: editingEmp,
@@ -726,6 +735,7 @@ export function createEmployeeView(runtime) {
         salaryPolicyVersion: editingEmp.salaryPolicyVersion || '',
         salaryPolicyEffectiveFrom: editingEmp.salaryPolicyEffectiveFrom || editingEmp.startDate || ''
       });
+      preserveCommissionPolicyFields(pData,editingEmp);
     }
     if (employeeSaveInFlightRef.current) return;
     try {
@@ -1693,6 +1703,7 @@ export function createEmployeeView(runtime) {
                       ? 'Công thức CTV: Hoa hồng = tổng doanh thu khách hàng phụ trách x % hoa hồng. Nhập 0.3 nghĩa là 0.3%.'
                       : 'Công thức: Hoa hồng = (Doanh thu thực tế - Chỉ tiêu doanh số) x % hoa hồng. Nhập 1.55 nghĩa là 1.55%.'}
                   </p>
+                  {!isSalesCollaboratorDraft && <CommissionTierEditor rows={empData.commissionTiers||[]} onChange={commissionTiers=>setEmpData(previous=>({...previous,commissionTiers}))} basePercent={empData.commissionRate} targetRevenue={empData.targetRevenue} disabled={!canManageSalaryPolicy}/>}
                 </div>
               )}
               

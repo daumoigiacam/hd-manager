@@ -25,6 +25,7 @@ export const PAYROLL_POLICY_FIELDS = Object.freeze([
   'departmentSalaryComponents',
   'salaryByDepartment',
   'commissionRate',
+  'commissionTiers',
   'commissionBaseMode',
   'targetRevenue',
   'salesLeaderId',
@@ -183,6 +184,11 @@ export const applyEmployeePayrollPolicyForMonth = (employee = {}, monthKey = '')
   return {
     ...employee,
     ...cloneValue(policy.values),
+    // Legacy live-preview fallback can select the first policy even for an
+    // earlier month. Never backdate newly introduced tiers through that fallback.
+    ...(Object.hasOwn(employee,'commissionTiers') || Object.hasOwn(policy.values,'commissionTiers')
+      ? {commissionTiers:resolvePolicyFromHistory([policy],monthKey) ? cloneValue(policy.values.commissionTiers||[]) : []}
+      : {}),
     resolvedPayrollPolicy: cloneValue(policy),
     payrollPolicyVersion: policy.version,
     payrollPolicyEffectiveFrom: policy.effectiveFrom,

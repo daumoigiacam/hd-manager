@@ -1,3 +1,4 @@
+import {salesCommissionBreakdown} from '../../utils/salesCommissionTiers.js';
 // Exact original App declarations and transitive pure dependencies; generated without formula changes.
 import {isOwnerAccountUser} from "./payrollOriginalShared.js";
 
@@ -1043,6 +1044,9 @@ const calculateCommission = (revenue, target, rate) => {
 
 const calculateDirectSalesCommission = (employee = {}, revenue = 0) => {
   const commissionRate = parseFloat(employee?.commissionRate) || 0;
+  if (Array.isArray(employee?.commissionTiers) && employee.commissionTiers.length) {
+    return roundMoneyValue(salesCommissionBreakdown(revenue||0,employee?.targetRevenue||0,commissionRate,employee.commissionTiers).amount);
+  }
   if (!commissionRate) return 0;
   return roundMoneyValue(calculateCommission(revenue || 0, employee?.targetRevenue || 0, commissionRate));
 };
