@@ -3,7 +3,6 @@ import { useAppScreenBack } from "../../hooks/useAppScreenBack.js";
 import { LOYALTY_ELIGIBILITY_CONDITION_DEFINITIONS, normalizeLoyaltyEligibilityConditions } from "../../utils/customerLoyaltyEligibility.js";
 import { Check, ChevronRight, ChevronDown, ChevronUp, Lock, CreditCard, Wallet, Banknote, Archive, ArchiveRestore, Database, Bell, PlusCircle, Download, Gift, Star } from "lucide-react";
 import CustomerCareSettings, { CARE_RULES } from "../settings/CustomerCareSettings.jsx";
-import SyncQueueStatus from "../../layout/SyncQueueStatus.jsx";
 import { isVpsMode } from "@hd/hd-connect-runtime";
 import CompanyBankAccounts from "../settings/CompanyBankAccounts.jsx";
 import EmployeeReviewSettings from "../settings/EmployeeReviewSettings.jsx";
@@ -517,7 +516,6 @@ export function createSettingsView(runtime) {
 
   if (!safeActiveSettingsPanel) return (
     <div data-settings-page="menu" className="divide-y divide-gray-200 bg-white pb-20">
-          <SyncQueueStatus />
           {settingsPanels.map((panel) => {
             const PanelIcon = panel.icon;
             return (
