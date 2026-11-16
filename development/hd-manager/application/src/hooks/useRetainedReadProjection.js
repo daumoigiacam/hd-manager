@@ -10,8 +10,9 @@ export function selectRetainedReadProjection(projection, previous, identity, ena
     value: ready ? projection.value : retained ? previous.value : undefined};
 }
 
-export function useRetainedReadProjection(projection, identity, {enabled = true} = {}) {
-  const previous = useRef(null);
+export function useRetainedReadProjection(projection, identity, {enabled = true, cache} = {}) {
+  const owned = useRef(null);
+  const previous = cache || owned;
   const presentation = selectRetainedReadProjection(projection, previous.current, identity, enabled);
   useLayoutEffect(() => {
     if (!presentation.available) previous.current = null;

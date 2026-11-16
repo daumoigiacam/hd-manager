@@ -36,7 +36,7 @@ test('actual debt form rejects Enter/submit before touching draft or business ca
 test('canonical wiring reuses the original calculation and keeps freshness checks on every debt mutation',()=>{
  assert.match(app,/enabled:isPreviewDataMode\|\|mainLedgerSourcesReady\|\|retainedDebtLedgerSources/);
  assert.match(app,/mainLedgerReady = mainLedgerAvailability.transactionsReady/);
- assert.match(app,/activeTab==='debt'\?debtReadLedgerMap:reconciledLedgerMap/);
+ assert.match(app,/<ReconciledLedgerContext.Provider value=\{debtReadLedgerMap\}>/);
  assert.match(app,/runReadyFinancialMutation\(mainLedgerReady,callback,args\)/);
  assert.match(app,/onAddRepayment=\{\(data\) => runDebtMutation\(onAddExpense,\[employee.id,data\]\)\}/);
  for(const name of ['onAddPayment','onDeletePayment'])assert(app.includes(name+'={(...args)=>runDebtMutation('+name+',args)}'));

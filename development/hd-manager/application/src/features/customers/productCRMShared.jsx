@@ -2,6 +2,9 @@
 // Factory/controller imports run only through the existing intent preloader.
 import PreloadedWorkspace from "../../layout/PreloadedWorkspace.jsx";
 import {customerReadiness,shouldRequestCustomerSupplements} from './customerReadiness.js';
+import {CUSTOMER_FINANCIAL_READ_KEYS,customerFinancialSnapshot,customerEditNeedsFinancialReadiness} from './customerFinancialPresentation.js';
+import {useRetainedReadProjection} from '../../hooks/useRetainedReadProjection.js';
+import {runReadyFinancialMutation} from '../../services/orderWorkspaceReadPlan.js';
 import React from "react";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { calculateLoyaltyPoints } from "../../../functions/loyaltyRewards.mjs";
@@ -2570,6 +2573,14 @@ const noCustomerSearchSubscription = () => () => {};
 const deferredSQLiteCRMModule=createPreloadableModule(()=>Promise.all([deferredCustomerCRMViewModule.preload(),import("./SQLiteProductCRM.jsx")]).then(([view,adapter])=>({default:props=><adapter.default {...props} View={view.default}/>})));
 
 function CustomerCRMView(props) {
+  const financialFresh=props.financialDataReady!==false;
+  const readiness=customerReadiness({localFirstRequired:props.localFirstRequired,runtimeCurrent:Boolean(props.localRuntime?.isCurrent()),
+    supplementsRequested:props.supplementsRequested,online:props.localOnline,setupError:props.localSetupError});
+  const sharedLedger=React.useContext(ReconciledLedgerContext);
+  const snapshot=React.useMemo(()=>customerFinancialSnapshot(props,sharedLedger),
+    [sharedLedger,...CUSTOMER_FINANCIAL_READ_KEYS.map(key=>props[key])]);
+  const financialRead=useRetainedReadProjection({value:snapshot,pending:!financialFresh,error:props.financialReadError},props.privacyScope,
+    {enabled:readiness==='cloud'&&(props.financialReadAllowed??financialFresh),cache:props.financialReadCache});
   const [committedDirectoryScope,setCommittedDirectoryScope]=useState(null);
   const directoryReady=useCallback(()=>{
     setCommittedDirectoryScope(props.privacyScope);
@@ -2586,15 +2597,23 @@ function CustomerCRMView(props) {
   const readSearch = useCallback(() => props.searchStore ? props.searchStore.getSnapshot() : props.searchKeyword,
     [props.searchStore, props.searchKeyword]);
   const keyword = useSyncExternalStore(props.searchStore?.subscribe || noCustomerSearchSubscription, readSearch, readSearch);
-  const readiness=customerReadiness({localFirstRequired:props.localFirstRequired,runtimeCurrent:Boolean(props.localRuntime?.isCurrent()),
-    supplementsRequested:props.supplementsRequested,online:props.localOnline,setupError:props.localSetupError});
   if(readiness==='offline-not-configured')return <section role="alert" className="p-4">Chưa thiết lập truy cập Khách hàng khi mất mạng trên thiết bị này. Hãy kết nối mạng để tiếp tục. Các giao dịch đang chờ trên máy được giữ nguyên.</section>;
   if(readiness==='authorization-unavailable')return <section role="alert" className="p-4">Chưa xác minh được quyền truy cập Khách hàng Offline. Hãy kết nối mạng để xác thực lại. Dữ liệu cục bộ không bị xóa.</section>;
   if(readiness==='restoring')return <section role="status" aria-busy="true" data-hd-module-loading>Đang mở dữ liệu local đã được cấp quyền…</section>;
   if(readiness==='sqlite'){
     return <PreloadedWorkspace module={deferredSQLiteCRMModule} viewProps={{...props,searchKeyword:keyword}} label="Khách hàng"/>;
   }
-  return <PreloadedWorkspace module={deferredCustomerCRMViewModule} viewProps={{...props, onDirectoryReady:directoryReady, searchKeyword:keyword}} label={"Khách hàng"} />;
+  const viewProps={...props,...(financialRead.available?financialRead.value.sources:{}),
+    financialDataReady:financialRead.available,financialWritesReady:financialFresh,
+    onDirectoryReady:directoryReady,searchKeyword:keyword};
+  for(const name of ['onDeleteCustomer','onAddCustomerLoan','onEditCustomerLoan','onDeleteCustomerLoan']) {
+    if(props[name])viewProps[name]=(...args)=>runReadyFinancialMutation(financialFresh,props[name],args);
+  }
+  if(props.onEditCustomer)viewProps.onEditCustomer=(id,patch,...rest)=>runReadyFinancialMutation(
+    !customerEditNeedsFinancialReadiness(patch)||financialFresh,props.onEditCustomer,[id,patch,...rest]);
+  return <ReconciledLedgerContext.Provider value={financialRead.available?financialRead.value.ledgerMap:sharedLedger}>
+    <PreloadedWorkspace module={deferredCustomerCRMViewModule} viewProps={viewProps} label={"Khách hàng"} />
+  </ReconciledLedgerContext.Provider>;
 }
 
 export {
