@@ -22,8 +22,8 @@ test('Orders waits for committed sales/catalog data and calls the original build
  const text=files.app;
  assert.match(text,/const orderLedgerSourcesReady=areHomeSourcesCommitted\([\s\S]*?collections:\['customers','orders','payments','products'\]/);
  assert.match(text,/prepareOrderSalesLedger=useCallback\(function\*\(\)[\s\S]*?yield\* buildCustomerLedgerMap\(customers,orders,payments,\{cooperative:true\}\)/);
- assert.match(text,/projection=\{activeTab==='orders'\?orderLedgerProjection:mainLedgerProjection\}/);
- assert.match(text,/customerLedgerMap=\{orderLedgerMap\}/);
+ assert.match(text,/<OrderReadBoundary projection=\{orderLedgerProjection\} identity=\{orderReadIdentity\} enabled=\{orderLedgerSourcesAvailable\}/);
+ assert.match(text,/customerLedgerMap=\{orderReadLedgerMap\}/);
  assert.match(text,/collections:\['customers','orders','payments','warehouseImports','expenses'\]/);
  assert.match(text,/orderLedgerScope=JSON.stringify\(\[dashboardPrivacyScope,notificationDateKey\]\)/);
  assert.match(text,/enabled:activeTab==='orders'&&!mainLedgerReady&&orderLedgerSourcesAvailable/);

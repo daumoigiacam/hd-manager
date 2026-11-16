@@ -1,9 +1,9 @@
 // Shared original App CRM bindings. Declaration order and singleton identities are preserved.
 // Factory/controller imports run only through the existing intent preloader.
 import PreloadedWorkspace from "../../layout/PreloadedWorkspace.jsx";
-import {customerReadiness} from './customerReadiness.js';
+import {customerReadiness,shouldRequestCustomerSupplements} from './customerReadiness.js';
 import React from "react";
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { calculateLoyaltyPoints } from "../../../functions/loyaltyRewards.mjs";
 import { createCustomerLedgerMapBuilder, createCustomerRecordSelector } from "../../utils/customerLedgerIndex.js";
 import { createPreloadableModule } from "../../utils/preloadableModule.js";
@@ -2570,6 +2570,19 @@ const noCustomerSearchSubscription = () => () => {};
 const deferredSQLiteCRMModule=createPreloadableModule(()=>Promise.all([deferredCustomerCRMViewModule.preload(),import("./SQLiteProductCRM.jsx")]).then(([view,adapter])=>({default:props=><adapter.default {...props} View={view.default}/>})));
 
 function CustomerCRMView(props) {
+  const [committedDirectoryScope,setCommittedDirectoryScope]=useState(null);
+  const directoryReady=useCallback(()=>{
+    setCommittedDirectoryScope(props.privacyScope);
+    props.onDirectoryReady?.();
+  },[props.privacyScope,props.onDirectoryReady]);
+  const requestSupplements=shouldRequestCustomerSupplements(props,committedDirectoryScope);
+  useEffect(()=>{
+    if(!requestSupplements || !props.onRequestSupplements)return;
+    // Let the committed directory paint first; reuse the existing owner-bound
+    // read plan and reconciliation rather than adding queries or listeners.
+    const timer=setTimeout(()=>props.onRequestSupplements(),0);
+    return()=>clearTimeout(timer);
+  },[requestSupplements,props.onRequestSupplements]);
   const readSearch = useCallback(() => props.searchStore ? props.searchStore.getSnapshot() : props.searchKeyword,
     [props.searchStore, props.searchKeyword]);
   const keyword = useSyncExternalStore(props.searchStore?.subscribe || noCustomerSearchSubscription, readSearch, readSearch);
@@ -2581,7 +2594,7 @@ function CustomerCRMView(props) {
   if(readiness==='sqlite'){
     return <PreloadedWorkspace module={deferredSQLiteCRMModule} viewProps={{...props,searchKeyword:keyword}} label="Khách hàng"/>;
   }
-  return <PreloadedWorkspace module={deferredCustomerCRMViewModule} viewProps={{...props, searchKeyword:keyword}} label={"Khách hàng"} />;
+  return <PreloadedWorkspace module={deferredCustomerCRMViewModule} viewProps={{...props, onDirectoryReady:directoryReady, searchKeyword:keyword}} label={"Khách hàng"} />;
 }
 
 export {
