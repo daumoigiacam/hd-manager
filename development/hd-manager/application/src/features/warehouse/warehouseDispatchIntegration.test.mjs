@@ -5,6 +5,8 @@ import vm from 'node:vm';
 import {parse} from '@babel/parser';
 import * as model from './offlineWarehouseModel.js';
 import {dispatchWriteAccess} from './warehouseDispatchAccess.js';
+import {retainedScopedPage} from '../../services/retainedScopedPage.js';
+import {focusWorkspacePanel} from '../../utils/focusWorkspacePanel.js';
 const source=fs.readFileSync(new URL('./OfflineWarehouseWorkspace.jsx',import.meta.url),'utf8'),tree=parse(source,{sourceType:'module',plugins:['jsx']});
 function nodes(n,p,out=[]){if(!n||typeof n!=='object')return out;if(p(n))out.push(n);for(const [k,v]of Object.entries(n))if(!['loc','start','end'].includes(k)){if(Array.isArray(v))for(const x of v)nodes(x,p,out);else if(v&&typeof v==='object')nodes(v,p,out);}return out;}
 const fn=tree.program.body.find(n=>n.type==='ExportDefaultDeclaration').declaration,last=fn.body.body.at(-1);
@@ -16,15 +18,22 @@ function harness({ready=true}={}){
  const scope={projectId:'demo-test',tenantId:'t',principalId:'u',permissionRevision:'r',sessionId:'s'},cp={...scope,generation:'g',seq:1,sourceProfile:'legacy-v1',dayKey:'2026-11-09'},slots=[],listeners=new Set();let index=0,dirty=true,effects=[],view,reattach=false;
  const runtime={scope,expiresAtMs:Date.now()+60000,capabilities:['home.read','home.dispatches.read','home.stock.read','home.debt.read','customers.read','warehouseDispatches.create','warehouseDispatches.createWithoutOrderRequest'],isCurrent:()=>true,home:{status:()=>({state:'SYNCED',generation:'g',seq:1})},appSession:{currentUser:{id:'e',firebaseUid:'u',companyId:'t',accountType:'employee'},currentCompany:{id:'t'}}};
  const repo={scope,projectId:'demo-test',employeeId:'e',ready,protocolVersion:1};
- const directory={page:async source=>({items:[{id:'wd_t_a',state:'SERVER_CONFIRMED',document:{companyId:'t'}}],hasMore:false,metadata:{source,checkpoint:cp,serverConfirmedOnly:true,financialCalculationAllowed:false,timeZone:'Asia/Ho_Chi_Minh'}}),detail:async()=>({document:{id:'wd_t_a',companyId:'t'},items:[],metadata:{checkpoint:cp,projection:'warehouse-stored-detail-v1'}})};
+ const reads=[];
+ const directory={page:async (source,options)=>{reads.push({source,...options});return {items:[{id:'wd_t_a',state:'SERVER_CONFIRMED',document:{companyId:'t'}}],hasMore:false,metadata:{source,checkpoint:cp,serverConfirmedOnly:true,financialCalculationAllowed:false,timeZone:'Asia/Ho_Chi_Minh'}};},detail:async()=>({document:{id:'wd_t_a',companyId:'t'},items:[],metadata:{checkpoint:cp,projection:'warehouse-stored-detail-v1'}})};
  const useState=initial=>{const i=index++;slots[i]??={value:typeof initial==='function'?initial():initial};return [slots[i].value,next=>{next=typeof next==='function'?next(slots[i].value):next;if(!Object.is(next,slots[i].value)){slots[i].value=next;dirty=true;}}];};
  const useRef=initial=>{const i=index++;slots[i]??={current:initial};return slots[i];};
  const useEffect=(work,deps)=>{const i=index++,old=slots[i],changed=reattach||!old||deps.some((d,n)=>!Object.is(d,old.deps[n]));slots[i]={...old,deps};if(changed)effects.push(()=>{old?.cleanup?.();slots[i].cleanup=work();});};
  const window={addEventListener:(_,f)=>listeners.add(f),removeEventListener:(_,f)=>listeners.delete(f)};
- const context=vm.createContext({...model,dispatchWriteAccess,useState,useRef,useEffect,window}),render=vm.runInContext(hook+'\n'+prelude+'\n'+body+'\nOfflineWarehouseWorkspace',context);
+ const context=vm.createContext({...model,dispatchWriteAccess,retainedScopedPage,focusWorkspacePanel,useState,useRef,useEffect,useLayoutEffect:useEffect,window}),render=vm.runInContext(hook+'\n'+prelude+'\n'+body+'\nOfflineWarehouseWorkspace',context);
  async function settle(){for(let n=0;n<14;n++){if(dirty){dirty=false;index=0;effects=[];view=render({runtime,directory,initialSource:'warehouseDispatches',warehouseDispatchRepository:repo});reattach=false;for(const f of effects)f();}await Promise.resolve();await Promise.resolve();}}
- return {runtime,repo,settle,get view(){return view;},get listeners(){return listeners.size;},back(){const e={detail:{},defaultPrevented:false,preventDefault(){this.defaultPrevented=true;}};for(const f of listeners)f(e);return e;},hide(){for(const s of slots)s.cleanup?.();},show(){dirty=true;reattach=true;}};
+ return {runtime,repo,reads,settle,get view(){return view;},get listeners(){return listeners.size;},back(){const e={detail:{},defaultPrevented:false,preventDefault(){this.defaultPrevented=true;}};for(const f of listeners)f(e);return e;},hide(){for(const s of slots)s.cleanup?.();},show(){dirty=true;reattach=true;}};
 }
+
+test('Warehouse requests a bounded SQL page and reuses its unchanged completed read after reattachment',async()=>{
+ const h=harness();await h.settle();assert.equal(h.reads.length,1);assert.equal(h.reads[0].limit,25);
+ h.hide();h.show();await h.settle();assert.equal(h.reads.length,1,'reattaching an unchanged list does not repeat SQLite reads');
+ h.view.changeSource('warehouseImports');await h.settle();assert.equal(h.reads.at(-1).source,'warehouseImports');assert.equal(h.reads.at(-1).limit,25);
+});
 test('actual warehouse create control uses signed-ready Dispatch repository; editor blocks navigation/filter and parent back delegates draft handling',async()=>{
  const h=harness();await h.settle();assert.equal(h.view.canCreateDispatch,true);
  const callback=nodes(fn,n=>n.type==='JSXAttribute'&&n.name.name==='onClick'&&n.value?.expression?.type==='ArrowFunctionExpression'&&source.slice(n.start,n.end).includes('canCreateDispatch?'))[0].value.expression;

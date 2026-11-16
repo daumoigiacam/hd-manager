@@ -1,5 +1,7 @@
 import {createOfflineCommandRepository} from './offlineCommandRepository.js';
+import {ensureExactSQLiteTables} from './exactSQLiteSchema.js';
 import {IMPORT_RULES,canonicalImport,plainImport,importIdentifier,importRevision,assertImportPair,buildImportValues,validateImportPayload,applyImportIntent,normalizeLeadingLabel} from '../features/warehouse/warehouseImportProtocol.js';
+import {existingImportGroups} from '../features/warehouse/warehouseImportProtocol.js';
 const deny=message=>{throw Object.assign(Error(message),{code:'permission-denied'});};
 export async function createOfflineWarehouseImportRepository(options){
   const {database,session,deviceId,employeeId,authorize,digest,protocol,projectId}=options,now=options.now||Date.now;
@@ -15,10 +17,17 @@ export async function createOfflineWarehouseImportRepository(options){
     if(!Number.isSafeInteger(grant?.expiresAtMs)||now()>=grant.expiresAtMs||grant.projectId!==projectId||!['tenantId','principalId','permissionRevision','sessionId'].every(k=>grant[k]===scope[k])||!['home.read','home.imports.read','home.cashflow.read',...(kind==='warehouseImport.read'?[]:[IMPORT_RULES[kind]?.capability])].every(cap=>cap&&grant.capabilities?.includes(cap))||grant.appSession?.user?.id!==employeeId||grant.appSession.user.companyId!==scope.tenantId||grant.appSession.sourceProfile!==undefined)deny('Thiếu quyền nhập kho/chi phí có chữ ký còn hiệu lực.');return grant;
   }
   const tx=work=>database.transaction(async db=>{await access();const result=await work(db);await access();return result;});
-  await tx(async db=>{
-    await db.run('CREATE TABLE IF NOT EXISTS offline_warehouse_imports_v1 (tenant_id TEXT NOT NULL,principal_id TEXT NOT NULL,id TEXT NOT NULL,local_json TEXT NOT NULL,base_json TEXT NOT NULL,last_command_id TEXT NOT NULL,server_json TEXT,receipt_json TEXT,PRIMARY KEY(tenant_id,principal_id,id))');
-    await db.run('CREATE TABLE IF NOT EXISTS offline_warehouse_import_receipts_v1 (tenant_id TEXT NOT NULL,principal_id TEXT NOT NULL,command_id TEXT NOT NULL,id TEXT NOT NULL,receipt_json TEXT NOT NULL,PRIMARY KEY(tenant_id,principal_id,command_id))');
-  });
+  // Reuse the existing exact-schema verifier and the same encrypted owner.
+  // On process restart, two matching tables require one authorized metadata
+  // read rather than a write transaction and two redundant native DDL calls.
+  // Missing tables retain additive transactional creation; incompatible ones
+  // fail closed. No business data or pending command is migrated or deleted.
+  await ensureExactSQLiteTables({transaction:tx,read:database.readQuery?async(sql,params)=>{
+    await access();const rows=await database.readQuery(sql,params);await access();return rows;
+  }:undefined,statements:[
+    'CREATE TABLE IF NOT EXISTS offline_warehouse_imports_v1 (tenant_id TEXT NOT NULL,principal_id TEXT NOT NULL,id TEXT NOT NULL,local_json TEXT NOT NULL,base_json TEXT NOT NULL,last_command_id TEXT NOT NULL,server_json TEXT,receipt_json TEXT,PRIMARY KEY(tenant_id,principal_id,id))',
+    'CREATE TABLE IF NOT EXISTS offline_warehouse_import_receipts_v1 (tenant_id TEXT NOT NULL,principal_id TEXT NOT NULL,command_id TEXT NOT NULL,id TEXT NOT NULL,receipt_json TEXT NOT NULL,PRIMARY KEY(tenant_id,principal_id,command_id))',
+  ]});
   const select='SELECT i.*,c.state FROM offline_warehouse_imports_v1 i JOIN local_commands c ON c.tenant_id=i.tenant_id AND c.principal_id=i.principal_id AND c.command_id=i.last_command_id WHERE i.tenant_id=? AND i.principal_id=?';
   const overlay=async(db,id)=>(await db.query(select+' AND i.id=?',[...keys,id]))[0];
   async function head(db){
@@ -90,7 +99,7 @@ export async function createOfflineWarehouseImportRepository(options){
   }
   return Object.freeze({scope,employeeId,projectId,ready,protocolVersion:ready?1:0,applyReceipt:commands.applyReceipt,
     create:(draft,o)=>submit('warehouseImport.create',`wi_${o?.mutationId}`,draft,o),update:(id,draft,o)=>submit('warehouseImport.update',id,draft,o),archive:(id,o)=>submit('warehouseImport.archive',id,null,o),
-    async groups(){return tx(async db=>{const h=await head(db);if(!h.sources.includes('companies')||!Number.isSafeInteger(h.company_count)||h.company_count<1)throw Error('Nguồn cấu hình công ty chưa được cấp quyền.');const company=await source(db,h,'companies',scope.tenantId);if(!company||company.id!==scope.tenantId||!Array.isArray(company.productGroups)||company.productGroups.length>100)throw Error('Cần danh mục nhóm công ty đã đồng bộ (tối đa 100).');return {items:[...new Set(company.productGroups.filter(x=>typeof x==='string').map(normalizeLeadingLabel).filter(Boolean))]};});},
+    async groups(){return tx(async db=>{const h=await head(db);if(!h.sources.includes('companies')||!Number.isSafeInteger(h.company_count)||h.company_count<1)throw Error('Nguồn cấu hình công ty chưa được cấp quyền.');const company=await source(db,h,'companies',scope.tenantId);if(!company||company.id!==scope.tenantId||Array.isArray(company.productGroups)&&company.productGroups.length>100)throw Error('Cần danh mục nhóm công ty đã đồng bộ (tối đa 100).');return {items:existingImportGroups(company)};});},
     async detail(id,{preferFeed=false}={}){
       if(!importIdentifier(id)||typeof preferFeed!=='boolean')throw Error('Mã phiếu nhập hoặc nguồn đọc không hợp lệ.');
       return tx(async db=>{

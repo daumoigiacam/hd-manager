@@ -45,16 +45,24 @@ html:has([data-hd-instant-shell]),
 body:has([data-hd-instant-shell]),
 #root:has([data-hd-instant-shell]) {
   height: var(--hd-visible-viewport-height, 100vh);
-  height: min(100dvh, var(--hd-visible-viewport-height, 100dvh));
   min-height: 0;
   overflow: hidden;
 }
 .hd-enterprise-app-shell[data-hd-instant-shell] {
   height: var(--hd-visible-viewport-height, 100vh) !important;
-  height: min(100dvh, var(--hd-visible-viewport-height, 100dvh)) !important;
   min-height: 0 !important;
   min-block-size: 0 !important;
-  max-height: var(--hd-visible-viewport-height, 100dvh) !important;
+  max-height: var(--hd-visible-viewport-height, 100vh) !important;
+}
+/* Keep the measured-pixel fallback usable on Android WebView before 108.
+   An unsupported dvh value inside min() invalidates the entire declaration. */
+@supports (height: 100dvh) {
+  html:has([data-hd-instant-shell]), body:has([data-hd-instant-shell]), #root:has([data-hd-instant-shell]) {
+    height: min(100dvh, var(--hd-visible-viewport-height, 100dvh));
+  }
+  .hd-enterprise-app-shell[data-hd-instant-shell] {
+    height: min(100dvh, var(--hd-visible-viewport-height, 100dvh)) !important;
+  }
 }
 
 /* Customer navigation used to be fixed inside a layout-containing block.

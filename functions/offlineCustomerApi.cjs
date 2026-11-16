@@ -30,7 +30,12 @@ function createOfflineCustomerApi({db,projectId,appId,authenticate,privateKey,no
     await db.runTransaction(tx=>authorizeCurrentActor(tx,actor,'app.session',body,access),{readOnly:true});
    }
    if(typeof body.deviceId!=='string'||!body.deviceId||body.deviceId.length>160)throw new Error('Invalid device identity');
-   const scope={projectId,principalId:identity.uid,tenantId:actor.tenantId,permissionRevision:actor.permissionRevision,deviceId:body.deviceId,sessionId:randomUUID()};
+   const renewal=body.renewalScope;
+   if(renewal){
+    if(typeof authorizeCurrentActor!=='function'||['projectId','principalId','tenantId','permissionRevision','deviceId'].some(key=>renewal[key]!==({projectId,principalId:identity.uid,tenantId:actor.tenantId,permissionRevision:actor.permissionRevision,deviceId:body.deviceId})[key])||typeof renewal.sessionId!=='string'||!/^[A-Za-z0-9_-]{1,160}$/.test(renewal.sessionId))throw Object.assign(Error('Grant renewal scope denied'),{code:'permission-denied'});
+    await db.runTransaction(tx=>authorizeCurrentActor(tx,actor,'app.session',body,access),{readOnly:true});
+   }
+   const scope={projectId,principalId:identity.uid,tenantId:actor.tenantId,permissionRevision:actor.permissionRevision,deviceId:body.deviceId,sessionId:renewal?.sessionId||randomUUID()};
    // Emulator policy may shorten a grant to exercise expiry on the APK.
    const ttl=access.offlineLifetimeMs??lifetimeMs;
    if(!Number.isInteger(ttl)||ttl<1000||ttl>lifetimeMs)throw new Error('Invalid offline policy lifetime');

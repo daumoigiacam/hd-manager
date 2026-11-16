@@ -6,6 +6,7 @@ import {parse} from '@babel/parser';
 import traverseModule from '@babel/traverse';
 import * as protocol from './warehouseImportProtocol.js';
 import {businessDayKey} from '../../utils/businessDate.js';
+import {focusWorkspacePanel} from '../../utils/focusWorkspacePanel.js';
 const traverse=traverseModule.default||traverseModule;
 const editor=fs.readFileSync(new URL('./OfflineWarehouseImportEditor.jsx',import.meta.url),'utf8'),queue=fs.readFileSync(new URL('./OfflineWarehouseImportQueue.jsx',import.meta.url),'utf8');
 const ast=parse(editor,{sourceType:'module',plugins:['jsx']}),queueAst=parse(queue,{sourceType:'module',plugins:['jsx']});
@@ -23,7 +24,7 @@ function harness({id=null,kind='editor',ready=true,capabilities=null,readSource=
  const useState=initial=>{const i=index++;if(!slots[i])slots[i]={value:typeof initial==='function'?initial():initial};return [slots[i].value,v=>{const n=typeof v==='function'?v(slots[i].value):v;if(!Object.is(n,slots[i].value)){slots[i].value=n;dirty=true;}}];};
  const useRef=value=>{const i=index++;if(!slots[i])slots[i]={current:value};return slots[i];};
  const useEffect=(work,deps)=>{const i=index++,old=slots[i],changed=reattach||!old||!deps||deps.some((d,n)=>!Object.is(d,old.deps[n]));slots[i]={...old,deps};if(changed)effects.push(()=>{old?.cleanup?.();slots[i].cleanup=work();});};
- const context=vm.createContext({...protocol,businessDayKey,useState,useRef,useEffect,useLayoutEffect:useEffect,useAppScreenBack:()=>{},window:{confirm:()=>confirm},globalThis:{crypto:{randomUUID:()=>crypto.randomUUID()}}});
+ const context=vm.createContext({...protocol,businessDayKey,focusWorkspacePanel,useState,useRef,useEffect,useLayoutEffect:useEffect,useAppScreenBack:()=>{},window:{confirm:()=>confirm},globalThis:{crypto:{randomUUID:()=>crypto.randomUUID()}}});
  const component=vm.runInContext(prelude+'\n'+(kind==='editor'?editorFn:queueFn)+'\n'+(kind==='editor'?'OfflineWarehouseImportEditor':'OfflineWarehouseImportQueue'),context);
  const props={runtime,repository,id,readSource,closeRequestRef,onClose:()=>{closedCount++;},onEdit:()=>{}};
  async function settle(){for(let n=0;n<30;n++){if(dirty&&!hidden){dirty=false;index=0;effects=[];view=component(props);const todo=effects;effects=[];reattach=false;for(const f of todo)f();}await Promise.resolve();await Promise.resolve();if(!dirty&&n>4)return;}throw Error('did not settle');}

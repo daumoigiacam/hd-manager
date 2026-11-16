@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { X } from 'lucide-react';
 
-export default function OrderSearchInput({ searchStore, onCommit, onClose, onDraftChange, inputRef, className, placeholder, commitDelayMs = 250 }) {
+export default function OrderSearchInput({ searchStore, onCommit, onClose, onDraftChange, inputRef, className, placeholder, commitDelayMs = 250, autoFocus = true }) {
   const committed = useSyncExternalStore(searchStore.subscribe, searchStore.getSnapshot);
   const [draft, setDraft] = useState(committed);
   const timer = useRef(null);
@@ -25,7 +25,7 @@ export default function OrderSearchInput({ searchStore, onCommit, onClose, onDra
         else timer.current = setTimeout(() => { timer.current = null; callbacks.current.onCommit(next); }, commitDelayMs);
       }}
       onKeyDown={event => { if (event.key === 'Enter') { commit(draft); event.currentTarget.blur(); } }}
-      placeholder={placeholder} enterKeyHint="search" autoFocus className={className} />
+      placeholder={placeholder} enterKeyHint="search" autoFocus={autoFocus} className={className} />
     <button type="button" aria-label="Xóa tìm kiếm"
       onClick={() => { if (draft) { setDraft('');callbacks.current.onDraftChange?.('');commit(''); } else { cancel(); callbacks.current.onClose(); } }}
       className="hd-header-search-clear inline-flex w-10 shrink-0 items-center justify-center rounded-full p-0 text-gray-400 hover:bg-gray-100 hover:text-gray-600">

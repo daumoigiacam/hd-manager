@@ -2,6 +2,7 @@
 // no browser/unencrypted fallback: callers must show an actionable storage error.
 import {currentSearchTrace,searchMark} from './crmSearchTrace.js';
 import {startupSpan,startupMark} from '../services/offlineStartupTrace.js';
+import {ensureOfflineQueueSchema,nativeSQLBatch,offlineQueueMetadataSQL} from './offlineQueueSchema.js';
 const activeOwners=new Set();
 export function inspectNativeOfflineDatabaseOwners() {
   return Object.freeze({activeOwners:activeOwners.size});
@@ -44,20 +45,26 @@ export async function openNativeOfflineDatabase({ sqlite, databaseName, schema, 
       (SELECT synchronous FROM pragma_synchronous) AS synchronous,
       (SELECT journal_mode FROM pragma_journal_mode) AS journalMode,
       (SELECT file FROM pragma_database_list WHERE name='main') AS path,
-      (SELECT json_group_object(name,sql) FROM sqlite_master WHERE type='table' AND name IN ('offline_customer_delta','offline_customer_sync_seen','offline_customer_conflicts','offline_customer_cursors','offline_customers')) AS customerSchema`)).values?.[0];
+      (SELECT json_group_object(name,sql) FROM sqlite_master WHERE type='table' AND name IN ('offline_customer_delta','offline_customer_sync_seen','offline_customer_conflicts','offline_customer_cursors','offline_customers')) AS customerSchema,
+      (SELECT json_group_array(json_object('type',type,'name',name,'sql',sql)) FROM (${offlineQueueMetadataSQL})) AS queueSchema`)).values?.[0];
     }
     if(!databaseState||!Number.isInteger(databaseState.version)||databaseState.version<0||databaseState.foreignKeys!==1||databaseState.synchronous!==2||databaseState.journalMode!=='wal'||!databaseState.path)throw Error('Encrypted database configuration verification failed');
     const version=databaseState.version;
     schemaVersion=version;
     if(version>1)throw new Error('Offline schema is newer than this application');
-    if(version===0){
+    const repair=await ensureOfflineQueueSchema({schema,scope:verifiedScope,initialRows:databaseState.queueSchema===undefined?undefined:JSON.parse(databaseState.queueSchema),read:async sql=>(await connection.query(sql)).values||[],transaction:async work=>{
       await connection.beginTransaction();
       try {
-        await connection.execute(schema.replace(/^PRAGMA .*;$/gm,''),false);
-        check();await connection.execute('PRAGMA user_version=1;',false);
-        await connection.commitTransaction();schemaVersion=1;
+        const result=await work({query:async(sql,params=[])=>(await connection.query(sql,params)).values||[],run:(sql,params=[])=>connection.run(sql,params,false),execute:sql=>connection.execute(nativeSQLBatch(sql),false)});
+        check();if(version===0)await connection.execute('PRAGMA user_version=1;',false);
+        await connection.commitTransaction();return result;
       } catch(error){await connection.rollbackTransaction();throw error;}
+    }});
+    if(version===0){
+      if(!repair.created){check();await connection.execute('PRAGMA user_version=1;',false);}
+      schemaVersion=1;
     }
+    if(repair.created){databaseState.pendingAtOpen=undefined;startupMark('sqlite.queue-schema-restored',{recovered:repair.recovered});}
   }catch(error){await sqlite.closeConnection(databaseName,false).catch(()=>{});activeOwners.delete(databaseName);throw error;}
   let metadata;
   try{metadata={databaseName,version:schemaVersion,path:databaseState.path,foreignKeys:databaseState.foreignKeys,synchronous:databaseState.synchronous,journalMode:databaseState.journalMode,customerSchema:Object.freeze(JSON.parse(databaseState.customerSchema||'{}'))};}
@@ -103,7 +110,7 @@ export async function openNativeOfflineDatabase({ sqlite, databaseName, schema, 
           const adapter={
             async query(sql,params=[]){check();if(!isReadOnly(sql))wrote();searchMark(traceId,'native-query-start');const result=await connection.query(sql,params);searchMark(traceId,'native-query-return',{rows:result.values?.length||0});return result.values || [];},
             async run(sql,params=[]){check();wrote();return connection.run(sql,params,false);},
-            async execute(sql){check();wrote();return connection.execute(sql,false);},
+            async execute(sql){check();wrote();return connection.execute(nativeSQLBatch(sql),false);},
             async runSet(set){check();wrote();return connection.executeSet(set,false);},
           };
           const result=await work(adapter);check();searchMark(traceId,'db-commit-start');await connection.commitTransaction();searchMark(traceId,'db-commit-done');return result;

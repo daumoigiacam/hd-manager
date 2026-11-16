@@ -5,6 +5,8 @@ import vm from 'node:vm';
 import {parse} from '@babel/parser';
 import traverseModule from '@babel/traverse';
 import * as model from './offlineWarehouseModel.js';
+import {focusWorkspacePanel} from '../../utils/focusWorkspacePanel.js';
+import {retainedScopedPage} from '../../services/retainedScopedPage.js';
 const traverse = traverseModule.default || traverseModule;
 // Execute the actual component's hooks/effects without a DOM/build. Only JSX
 // returns are replaced with an inspection object; all lifecycle code is original.
@@ -30,7 +32,7 @@ function harness() {
  const useRef=initial=>{const i=index++;if(!slots[i])slots[i]={current:initial};return slots[i];};
  const useEffect=(work,deps)=>{const i=index++,old=slots[i],changed=reattach||!old||deps.some((d,n)=>!Object.is(d,old.deps[n]));slots[i]={...old,deps};if(changed)effects.push(()=>{old?.cleanup?.();slots[i].cleanup=work();});};
  const backListeners=new Set(),window={addEventListener(_name,fn){backListeners.add(fn);},removeEventListener(_name,fn){backListeners.delete(fn);}};
- const context=vm.createContext({...model,useState,useEffect,useRef,window});
+ const context=vm.createContext({...model,focusWorkspacePanel,retainedScopedPage,useState,useEffect,useLayoutEffect:useEffect,useRef,window});
  const component=vm.runInContext(backHook+'\n'+prelude+'\n'+fn+'\nOfflineWarehouseWorkspace;',context);
  async function settle(){for(let n=0;n<12;n++){if(dirty){dirty=false;index=0;effects=[];view=component({runtime,directory,initialSource:'warehouseImports'});reattach=false;for(const effect of effects)effect();}await new Promise(resolve=>setImmediate(resolve));}return view;}
  return {settle,get view(){return view;},runtime,cp,result,get pageCalls(){return pageCalls;},get detailCalls(){return detailCalls;},get backListeners(){return backListeners.size;},back(){const event={detail:{},defaultPrevented:false,preventDefault(){this.defaultPrevented=true;}};for(const listener of backListeners)listener(event);return event;},hide(){for(const slot of slots)slot.cleanup?.();},show(){reattach=true;dirty=true;},setPending(value){pendingPage=value;},setSync(value){sync=value;dirty=true;},close(){current=false;dirty=true;}};

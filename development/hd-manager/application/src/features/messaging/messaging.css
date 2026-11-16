@@ -38,7 +38,9 @@
   position: relative;
   flex: none;
   background: #fff;
-  padding-top: max(14px, env(safe-area-inset-top, 0px));
+  /* The chat owns its header. Android edge-to-edge insets are supplied by
+     NativeSafeArea; env() alone is zero in the supported older WebView. */
+  padding-top: calc(var(--hd-safe-top, 0px) + 14px);
 }
 
 .hd-chat-search-row {
@@ -274,7 +276,7 @@
   gap: 2px;
   flex: none;
   min-height: 58px;
-  padding: max(4px, env(safe-area-inset-top, 0px)) 8px 4px;
+  padding: calc(var(--hd-safe-top, 0px) + 4px) 8px 4px;
   border-bottom: 1px solid #f1f5f9;
   background: #fff;
 }
@@ -358,6 +360,25 @@
 .hd-chat-attachment-icon--order { background: #f2eaff; color: #904de6; }
 .hd-chat-attachment-icon--weighing { background: #e7faf3; color: #00ae9c; }
 .hd-chat-offline { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 32px; padding: 5px 10px; background: #fff7ed; color: #9a3412; font-size: 12px; }
+/* Use the shared visible modal viewport. The stable app viewport deliberately
+   stays tall while typing and would put a short result panel behind the IME. */
+.hd-messaging .hd-chat-document-picker {
+  top: var(--hd-modal-viewport-top, 0px);
+  bottom: auto;
+  left: 0;
+  right: 0;
+  height: var(--hd-modal-viewport-height, var(--hd-viewport-height, 100vh));
+  padding-top: calc(var(--hd-safe-top, 0px) + 8px);
+  padding-bottom: var(--hd-modal-safe-bottom, 0px);
+  box-sizing: border-box;
+  align-items: flex-start;
+}
+/* Keep the focused search at the same position when filtering shrinks the
+   list. Bottom-aligning an auto-height panel makes old Android WebView pan
+   the layout after each input, leaving the result behind the keyboard. */
+.hd-chat-document-picker .hd-chat-document-picker-panel { display: flex; flex-direction: column; min-height: 0; height: 100%; max-height: 100%; }
+.hd-chat-document-picker-panel > * { flex-shrink: 0; }
+.hd-chat-document-picker .hd-chat-document-picker-list { flex: 1 1 auto; min-height: 0; max-height: none; overflow-y: auto; }
 @keyframes hd-chat-sheet-in { from { transform: translateY(14px); opacity: .4; } to { transform: translateY(0); opacity: 1; } }
 
 @media (min-width: 760px) {

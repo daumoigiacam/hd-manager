@@ -6,6 +6,7 @@ import {createOfflineReadLease} from './offlineReadLease.js';
 import {CUSTOMER_DIRECTORY_PAGE_SIZE} from './offlineCustomerQuery.js';
 import {createBusinessSearchForegroundGate} from '../services/businessSearchForegroundGate.js';
 import {assertOfflineProject} from '../config/offlineRuntimeEnvironment.js';
+import {renewOfflineGrant} from './offlineGrantRenewal.js';
 // secureStore is a platform-encrypted store. readIdentity returns the identity
 // last saved after online token verification, never a UI/localStorage profile.
 export async function bootstrapOfflineCustomer({projectId,publicKey,secureStore,openDatabase,transport,digest,uuid,environment,online=()=>navigator.onLine,events=globalThis,onPhase=()=>{},beforeReceiptCommit,deferNetwork=false,backgroundHomeSync=true,loadHomeSync=null,loadAttendanceProviders=null,launchCache=null,onVerifiedLaunch=()=>{}}){
@@ -41,6 +42,10 @@ export async function bootstrapOfflineCustomer({projectId,publicKey,secureStore,
   verifiedGrant=await verify({scope:expected,kind:'app.session'});
  }
  session ||=createVerifiedDataSession(expected);
+ // Repositories retain this object. Only the verified signed lifetime may
+ // advance; identity, capabilities and database owner remain unchanged.
+ let activeGrant=verifiedGrant;
+ verifiedGrant=Object.freeze({...verifiedGrant,get issuedAtMs(){return activeGrant.issuedAtMs;},get expiresAtMs(){return activeGrant.expiresAtMs;}});
  fullAuthorize=await createOfflineCustomerAuthorizer({publicKey,secureStore,expected,maxLifetimeMs,clockSkewMs:5000});
  onPhase('PERMISSION_VERIFIED');
  const appSession=restoreOfflineAppSession(verifiedGrant,expected);
@@ -74,7 +79,9 @@ export async function bootstrapOfflineCustomer({projectId,publicKey,secureStore,
  const requireBackgroundIdle=()=>{if(businessForeground.shouldYield())throw Object.assign(Error('Business search background yielded'),{code:'busy'});};
  const listeners=new Set();
  const releaseSession=session.subscribe(()=>{if(!session.isCurrent()){clearTimeout(authorityTimer);authorityAbort?.abort();businessForeground.close();businessSearchOwner?.close();if(importsReadPromise)void importsReadPromise.then(owner=>owner.close()).catch(()=>{});if(scopedReadPromise)void scopedReadPromise.then(owner=>owner.close()).catch(()=>{});releaseForegroundRead();readLease?.close();onPhase('ERROR');for(const listener of listeners)listener();}});
- const expiryTimer=setTimeout(()=>session.close(),Math.max(0,verifiedGrant.expiresAtMs-Date.now()));
+ let expiryTimer;
+ const scheduleExpiry=()=>{clearTimeout(expiryTimer);expiryTimer=setTimeout(()=>session.close(),Math.max(0,verifiedGrant.expiresAtMs-Date.now()));};
+ scheduleExpiry();
  let customerRevision=0,homeRevision=0,preparedCustomerPage=null,preparingCustomerPage=null;
  const changed=(topic='customers')=>{if(topic==='home'){homeRevision++;businessSearchOwner?.invalidate();}if(topic==='customers'){customerRevision++;preparedCustomerPage=null;}if(!closed&&session.isCurrent())for(const listener of listeners){try{listener(topic);}catch{/* UI observers cannot turn a durable receipt into a failed commit. */}}};
  try{
@@ -271,7 +278,10 @@ export async function bootstrapOfflineCustomer({projectId,publicKey,secureStore,
    async applyReceipt(...args){const command=args[1];if(command.kind.startsWith('attendancePeriod.')){await(await getAttendancePeriods()).applyReceipt(...args);changed('attendancePeriods');}else if(command.kind.startsWith('salarySettlement.')){await(await getSalarySettlements()).applyReceipt(...args);changed('salarySettlements');}else if(command.kind.startsWith('attendanceRequest.')){await(await getAttendanceRequests()).applyReceipt(...args);changed('attendanceRequests');}else if(command.kind.startsWith('salaryAdvance.')){await(await getSalaryAdvances()).applyReceipt(...args);changed('salaryAdvances');}else if(command.kind.startsWith('employeeProfile.')){await(await getEmployeeProfiles()).applyReceipt(...args);changed('employeeProfiles');}else if(['order.create','order.update','order.archive'].includes(command.kind)){await(await getOrders()).applyReceipt(...args);changed('orders');}else if(/^cashflow\.(income|expense)\.(create|update)$/.test(command.kind)){await(await getCashflow()).applyReceipt(...args);changed('cashflow');}else if(['stockCount.create','stockCount.update','stockCount.archive'].includes(command.kind)){await(await getStockCount()).applyReceipt(...args);changed('stockCounts');}else if(['warehouseImport.create','warehouseImport.update','warehouseImport.archive'].includes(command.kind)){await(await getWarehouseImport()).applyReceipt(...args);changed('warehouseImports');}else if(['warehouseDispatch.create','warehouseDispatch.update','warehouseDispatch.archive'].includes(command.kind)){await(await getWarehouseDispatch()).applyReceipt(...args);changed('warehouseDispatches');}else if(['deliveryReport.create','deliveryReport.update','deliveryReport.archive'].includes(command.kind)){await(await getDelivery()).applyReceipt(...args);changed('deliveryReports');}else if(['attendance.check_in','attendance.check_out'].includes(command.kind)){await(await getAttendance()).applyReceipt(...args);changed('attendance');}else if(command.kind.startsWith('payroll.')){await(await getPayroll()).applyReceipt(...args);changed('payroll');}else{await repository.applyReceipt(...args);changed();}if((!command.kind.startsWith('attendancePeriod.')||command.kind==='attendancePeriod.assignWorkRole')&&!command.kind.startsWith('salarySettlement.')&&(!command.kind.startsWith('attendanceRequest.')||args[2]?.document?.applied===true)&&args[2]?.outcome==='accepted'&&home&&(homeSyncPromise||businessSourcesRequested))home.sourceChanged();},
    async failLease(...args){await repository.failLease(...args);changed(args[1]?.kind?.startsWith('attendancePeriod.')?'attendancePeriods':args[1]?.kind?.startsWith('salarySettlement.')?'salarySettlements':args[1]?.kind?.startsWith('attendanceRequest.')?'attendanceRequests':args[1]?.kind?.startsWith('salaryAdvance.')?'salaryAdvances':args[1]?.kind?.startsWith('employeeProfile.')?'employeeProfiles':args[1]?.kind?.startsWith('order.')?'orders':args[1]?.kind?.startsWith('cashflow.')?'cashflow':args[1]?.kind?.startsWith('stockCount.')?'stockCounts':args[1]?.kind?.startsWith('warehouseImport.')?'warehouseImports':args[1]?.kind?.startsWith('warehouseDispatch.')?'warehouseDispatches':['deliveryReport.create','deliveryReport.update','deliveryReport.archive'].includes(args[1]?.kind)?'deliveryReports':args[1]?.kind?.startsWith('payroll.')?'payroll':args[1]?.kind?.startsWith('attendance.')?'attendance':'customers');},
   };
-  sync=createOfflineSyncEngine({repository:syncRepository,transport:synchronizedTransport,session,online});
+  const localSyncStage=(stage,code='none')=>{
+   if(import.meta.env.MODE==='emulator'&&/^demo-/.test(projectId)&&globalThis.Capacitor?.getPlatform?.()==='android')void globalThis.Capacitor.nativePromise('NativeSafeArea','recordLocalSyncStage',{stage,code}).catch(()=>{});
+  };
+  sync=createOfflineSyncEngine({repository:syncRepository,transport:synchronizedTransport,session,online,onStatus:({stage,code})=>localSyncStage(stage,code)});
   const pages=hasCustomerRead?createCustomerPageCoordinator({repository,fetchPage:page=>transport.page(page,undefined,session.scope),isCurrent:()=>session.isCurrent()}):null;
   if(hasCustomerRead&&import.meta.env.VITE_CUSTOMER_DELTA_SYNC==='true')delta=createCustomerDeltaCoordinator({repository,transport,scope:session.scope,isCurrent:()=>session.isCurrent(),online,onChange:()=>changed(),uuid,onFatal:async()=>{await secureStore.revoke(expected);session.close();}});
   const refresh=async(more=false)=>{
@@ -291,9 +301,10 @@ export async function bootstrapOfflineCustomer({projectId,publicKey,secureStore,
    if(closed||!session.isCurrent()||!online())return Promise.resolve(false);
    if(authorityPromise)return authorityPromise;
    authorityPromise=(async()=>{
+    localSyncStage('authority-start');
     const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),10000);authorityAbort=controller;
     try{
-     const fresh=await transport.grant(expected.deviceId,controller.signal,session.scope);
+     const fresh=await (transport.renewGrant?transport.renewGrant(expected,controller.signal):transport.grant(expected.deviceId,controller.signal,session.scope));
      if(closed||!session.isCurrent())return false;
      if(!fresh?.scope||['projectId','tenantId','principalId','deviceId'].some(key=>fresh.scope[key]!==expected[key]))throw Object.assign(Error('Online permission owner mismatch'),{code:'permission-denied'});
      const candidate={identity:fresh.scope,signedGrant:fresh.signedGrant,highWaterMs:fresh.issuedAtMs,revoked:false};
@@ -302,12 +313,17 @@ export async function bootstrapOfflineCustomer({projectId,publicKey,secureStore,
      if(closed||!session.isCurrent())return false;
      const capabilities=value=>JSON.stringify([...value].sort());
      if(checked.permissionRevision!==expected.permissionRevision||capabilities(checked.capabilities)!==capabilities(verifiedGrant.capabilities))throw Object.assign(Error('Online permission changed; reauthentication required'),{code:'permission-denied'});
-     return true;
-    }catch(error){if(error.code==='permission-denied'||error.code==='unauthenticated'){session.close();await secureStore.revoke(expected);}return false;}
+     if(fresh.scope.sessionId===expected.sessionId&&secureStore.renewGrant){
+      const renewed=await renewOfflineGrant({publicKey,secureStore,expected,currentGrant:activeGrant,fresh,maxLifetimeMs,isCurrent:()=>!closed&&session.isCurrent()});
+      if(closed||!session.isCurrent())return false;
+      activeGrant=renewed;scheduleExpiry();startupMark('permission.online-renewed');
+     }
+     localSyncStage('authority-valid');return true;
+    }catch(error){localSyncStage('authority-failed',error?.code||'unknown');if(error.code==='permission-denied'||error.code==='unauthenticated'){session.close();await secureStore.revoke(expected);}return false;}
     finally{clearTimeout(timeout);if(authorityAbort===controller)authorityAbort=null;}
    })().finally(()=>{authorityPromise=null;});return authorityPromise;
   };
-  const scheduleAuthority=()=>{clearTimeout(authorityTimer);if(closed||!session.isCurrent())return;authorityTimer=setTimeout(()=>{if(globalThis.document?.visibilityState==='hidden'){scheduleAuthority();return;}void revalidateAuthority().then(valid=>{if(valid&&!closed&&session.isCurrent())sync.notifyConnectivity();}).finally(scheduleAuthority).catch(()=>{});},30000);};
+  const scheduleAuthority=()=>{clearTimeout(authorityTimer);if(closed||!session.isCurrent())return;authorityTimer=setTimeout(()=>{if(globalThis.document?.visibilityState==='hidden'){scheduleAuthority();return;}void revalidateAuthority().then(valid=>{if(valid&&!closed&&session.isCurrent())sync.notifyConnectivity();}).finally(scheduleAuthority).catch(()=>{});},Math.min(30000,Math.max(250,Math.floor((verifiedGrant.expiresAtMs-Date.now())/2))));};
   const connectivity=()=>{void revalidateAuthority().then(valid=>{if(!valid||closed||!session.isCurrent())return;if(adjustmentPromise)void adjustmentPromise.then(repo=>repo.refresh()).catch(()=>{});if(importsReadPromise)void importsReadPromise.then(owner=>owner.sync()).catch(()=>{});if(scopedReadPromise)void scopedReadPromise.then(owner=>owner.sync()).catch(()=>{});startupMark('background.refresh-start');startupMark('background.sync-start');sync.notifyConnectivity();if(home&&(backgroundHomeSync||homeSyncPromise||businessSourcesRequested))void home.sync().catch(()=>{});void refresh().catch(()=>{}).finally(()=>startupMark('background.refresh-complete',{online:online()}));});};
   let networkStarted=false,timer=null;
   const startNetwork=()=>{if(closed||networkStarted||!session.isCurrent())return;networkStarted=true;events.addEventListener('online',connectivity);timer=setTimeout(connectivity,0);scheduleAuthority();};
@@ -325,7 +341,7 @@ export async function bootstrapOfflineCustomer({projectId,publicKey,secureStore,
    releaseForegroundRead=()=>{release();globalThis.document?.removeEventListener('visibilitychange',visibility);};
   }
   onPhase('READY');
-  return Object.freeze({scope:session.scope,appSession,expiresAtMs:verifiedGrant.expiresAtMs,startNetwork,activateReads:()=>{const a=readLease?.activate(),b=delta?.activate(),c=repository.activateDirectory();return()=>{a?.();b?.();c();};},noteCustomerDirectoryVisible:()=>repository.noteDirectoryVisible(),capabilities:Object.freeze([...verifiedGrant.capabilities]),repository,history,home,orders,business,cashflowRepository:getCashflow,stockCountRepository:getStockCount,warehouseImportRepository:getWarehouseImport,warehouseDispatchRepository:getWarehouseDispatch,deliveryRepository:getDelivery,payrollRepository:getPayroll,attendancePeriodRepository:getAttendancePeriods,salarySettlementRepository:getSalarySettlements,attendanceRequestRepository:getAttendanceRequests,attendanceRepository:getAttendance,employeeProfileRepository:getEmployeeProfiles,salaryAdvanceRepository:getSalaryAdvances,warehouse:getWarehouseDirectory,orderProduct:getOrderProduct,
+  return Object.freeze({scope:session.scope,appSession,get expiresAtMs(){return verifiedGrant.expiresAtMs;},startNetwork,activateReads:()=>{const a=readLease?.activate(),b=delta?.activate(),c=repository.activateDirectory();return()=>{a?.();b?.();c();};},noteCustomerDirectoryVisible:()=>repository.noteDirectoryVisible(),capabilities:Object.freeze([...verifiedGrant.capabilities]),repository,history,home,orders,business,cashflowRepository:getCashflow,stockCountRepository:getStockCount,warehouseImportRepository:getWarehouseImport,warehouseDispatchRepository:getWarehouseDispatch,deliveryRepository:getDelivery,payrollRepository:getPayroll,attendancePeriodRepository:getAttendancePeriods,salarySettlementRepository:getSalarySettlements,attendanceRequestRepository:getAttendanceRequests,attendanceRepository:getAttendance,employeeProfileRepository:getEmployeeProfiles,salaryAdvanceRepository:getSalaryAdvances,warehouse:getWarehouseDirectory,orderProduct:getOrderProduct,
    prepareCustomerNavigation(){
     if(preparingCustomerPage)return preparingCustomerPage;
     const version=customerRevision;startupMark('crm.intent-read-start');

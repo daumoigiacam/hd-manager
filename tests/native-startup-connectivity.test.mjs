@@ -16,7 +16,8 @@ async function controller(enabled,fixture={}) {
   const stubs={
     '@hd/native-bootstrap-core':'export const preloadedNativeCore=null;',
     './offlineStartupTrace.js':'export const startupMark=()=>{};',
-    '@capacitor/core':"export const Capacitor={getPlatform:()=>'android'};",
+    '@capacitor/core':"export const Capacitor={getPlatform:()=>'android'};export const registerPlugin=()=>({});",
+    './nativeConnectivity.js':'export const runtimeOnline=()=>navigator.onLine;export const createNativeConnectivityObserver=()=>({start(){},close(){}});',
     './startupTelemetry.js':'export const recordStartupEvent=()=>{};',
     '../config/offlineRuntimeBuildConfig.js':`export const trustedOfflineEnabled=${enabled};export const trustedOfflineEnvironment={apiBaseUrl:'https://app.hdconnect.net/api/offline/',publicKey:{}};`,
     './firebaseClientRuntime.js':'export const auth=fixture.auth;',
@@ -34,7 +35,7 @@ async function controller(enabled,fixture={}) {
     plugins:[{name:'test-boundaries',setup(b){b.onResolve({filter:/.*/},args=>{assert.ok(Object.hasOwn(stubs,args.path),args.path);return {path:args.path,namespace:'stub'};});b.onLoad({filter:/.*/,namespace:'stub'},args=>({contents:stubs[args.path]}));}}]});
   const window=new WindowEvents(),navigator={onLine:true},module={exports:{}};
   vm.runInNewContext(bundled.outputFiles[0].text,{module,exports:module.exports,fixture,window,navigator,
-    setTimeout,clearTimeout,crypto:globalThis.crypto,console:{info(){}}});
+    setTimeout,clearTimeout,crypto:globalThis.crypto,console:{info(){},warn(){}}});
   const store=module.exports.getNativeStartupController(fixture.auth);
   return {store,window,navigator,getAgain:()=>module.exports.getNativeStartupController(fixture.auth)};
 }
@@ -65,4 +66,50 @@ test('A failed initial grant retries on reconnect without a second Auth observer
   await waitFor(()=>store.getSnapshot().runtime===runtime);
   assert.equal(requests,2);assert.equal(starts,1);assert.equal(fixture.owners,1);assert.equal(fixture.observers,1);
   window.dispatchEvent(new Event('pagehide'));await waitFor(()=>fixture.observers===0);
+});
+
+function recoverableFixture(grant){
+ const make=label=>{let valid=true;const listeners=new Set();return{label,scope:{principalId:'A',tenantId:'tenant-A'},
+  expiresAtMs:Date.now()+60000,isCurrent:()=>valid,subscribe(fn){listeners.add(fn);return()=>listeners.delete(fn);},startNetwork(){},close(){valid=false;},
+  invalidate(){valid=false;for(const listener of [...listeners])listener();},get listeners(){return listeners.size;}};};
+ const old=make('old'),fresh=make('new');let installed=false;
+ const f={owners:0,observers:0,requests:0,installs:0,old,fresh,
+  auth:{currentUser:{uid:'A',isAnonymous:false},authStateReady:async()=>{}},
+  platform:{secureStore:{readIdentity:async()=>null},installOnlineGrant:async()=>{f.installs++;installed=true;},discardPreparedDatabase:async()=>{}},
+  owner:{replace:factory=>factory(),close:async()=>{},dispose:async()=>{}},
+  transport:{grant:async()=>{f.requests++;return grant(f);}},bootstrap:async()=>installed?fresh:old};return f;
+}
+test('closed signed directory is hidden immediately and reverified online without a second owner or Auth observer',async()=>{
+ let accept;const f=recoverableFixture(()=>new Promise(resolve=>{accept=resolve;}));
+ const {store,window}=await controller(true,f);store.attachUI();await waitFor(()=>store.getSnapshot().runtime===f.old&&f.observers===1);
+ f.old.invalidate();assert.equal(store.getSnapshot().runtime,null);await waitFor(()=>f.requests===1);
+ assert.equal(f.installs,0);assert.equal(store.getSnapshot().runtime,null,'old private data cannot return while a new grant is pending');
+ accept({});await waitFor(()=>store.getSnapshot().runtime===f.fresh);
+ assert.equal(f.installs,1);assert.equal(f.owners,1);assert.equal(f.observers,1);assert.equal(f.old.listeners,0);assert.equal(f.fresh.listeners,1);
+ window.dispatchEvent(new Event('pagehide'));await waitFor(()=>f.observers===0);
+});
+test('server-denied authority recovery fails closed once; repeated closed-owner notifications cannot loop',async()=>{
+ const f=recoverableFixture(()=>{throw Object.assign(Error('permission revoked'),{code:'permission-denied'});});
+ const {store,window}=await controller(true,f);store.attachUI();await waitFor(()=>store.getSnapshot().runtime===f.old&&f.observers===1);
+ f.old.invalidate();await waitFor(()=>f.requests===1&&store.getSnapshot().error==='Phiên hoặc quyền Offline đã kết thúc. Giao dịch đang chờ vẫn được giữ trên máy.');
+ for(let i=0;i<20;i++)f.old.invalidate();await new Promise(resolve=>setTimeout(resolve,30));
+ assert.equal(f.requests,1);assert.equal(f.installs,0);assert.equal(store.getSnapshot().runtime,null);window.dispatchEvent(new Event('pagehide'));
+});
+test('offline closure does not request a grant; logout during online recovery cannot republish old account data',async()=>{
+ let accept;const f=recoverableFixture(()=>new Promise(resolve=>{accept=resolve;}));
+ const {store,window,navigator}=await controller(true,f);store.attachUI();await waitFor(()=>store.getSnapshot().runtime===f.old&&f.observers===1);
+ navigator.onLine=false;window.dispatchEvent(new Event('offline'));f.old.invalidate();await new Promise(resolve=>setTimeout(resolve,20));
+ assert.equal(f.requests,0);assert.equal(store.getSnapshot().runtime,null);
+ navigator.onLine=true;window.dispatchEvent(new Event('online'));await waitFor(()=>f.requests===1);
+ await store.getSnapshot().controller.logout();accept({});await new Promise(resolve=>setTimeout(resolve,30));
+ assert.equal(f.installs,0);assert.equal(store.getSnapshot().runtime,null);window.dispatchEvent(new Event('pagehide'));
+});
+test('switching A to B while revalidation is pending cannot install or publish the grant for A',async()=>{
+ let accept;const f=recoverableFixture(()=>new Promise(resolve=>{accept=resolve;}));
+ const {store,window}=await controller(true,f);store.attachUI();await waitFor(()=>store.getSnapshot().runtime===f.old&&f.observers===1);
+ f.old.invalidate();await waitFor(()=>f.requests===1);
+ await store.getSnapshot().controller.beforeIdentityChange('B');f.auth.currentUser={uid:'B',isAnonymous:false};
+ accept({});await new Promise(resolve=>setTimeout(resolve,30));
+ assert.equal(f.installs,0);assert.equal(store.getSnapshot().runtime,null);assert.equal(f.old.listeners,0);
+ window.dispatchEvent(new Event('pagehide'));
 });

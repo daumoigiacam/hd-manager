@@ -1,17 +1,10 @@
 import {createDeliverySavePlan} from '../../utils/deliverySavePlan.js';
 import {resolveTransactionBillingSnapshot} from '../../services/customerProductBilling.js';
-import {createOriginalDeliveryPlanners} from './deliveryOriginalPlans.js';
-import {originalDeliveryForm} from './deliveryOriginalForm.js';
-import {originalDeliveryFinancialOperations} from './deliveryOriginalFinancialForm.js';
 import {parseInputCurrency,parseLooseQuantityValue} from './deliveryOriginalRules.js';
 
-export const DELIVERY_RULES=Object.freeze({
- 'deliveryReport.create':{capability:'deliveryReports.create',action:'create_delivery_report'},
- 'deliveryReport.update':{capability:'deliveryReports.update',action:'edit_delivery_report'},
- 'deliveryReport.archive':{capability:'deliveryReports.archive',action:'delete_delivery_report'},
-});
+import {DELIVERY_RULES,DELIVERY_READ_CAPS} from './deliveryAccessContract.js';
+export {DELIVERY_RULES,DELIVERY_READ_CAPS} from './deliveryAccessContract.js';
 export const DELIVERY_FEATURE_CAPS=Object.freeze({income:'deliveryReports.income',expense:'deliveryReports.expense',returns:'deliveryReports.returns',addCost:'deliveryReports.assetCosts.create',editCost:'deliveryReports.assetCosts.update'});
-export const DELIVERY_READ_CAPS=Object.freeze(['home.read','home.quick-report.read','home.cashflow.read','home.orders.read','orders.read','home.dispatches.read','home.stock.read','home.debt.read','customers.read']);
 export const DELIVERY_CONTEXT_SOURCES=Object.freeze(['companies','customers','products','warehouseDispatches','deliveryReports','orders','payments','expenses','assets','assetCostLogs']);
 export const DELIVERY_SLOTS=Object.freeze({report:'deliveryReports',dispatch:'warehouseDispatches',customer:'customers',product:'products',company:'companies',order:'orders',expense:'expenses',orderExpense:'expenses',costExpense:'expenses',asset:'assets',cost:'assetCostLogs'});
 export const deliveryId=v=>typeof v==='string'&&/^[A-Za-z0-9_-]{1,160}$/.test(v);
@@ -58,6 +51,12 @@ export async function planDelivery(kind,base,values,{id,tenantId,employee,edited
  for(const slot of ['dispatch','customer','product','order','expense','cost','orderExpense','costExpense','asset'])if(base[slot])assertDeliveryDocument(base[slot],tenantId,base[slot].id);
  for(const [name,doc]of Object.entries(base).filter(([k])=>!['targets','report','employee'].includes(k))){if(doc===null)continue;if(name==='relations')continue;if(Array.isArray(doc))continue;if(doc.companyId!==tenantId&&!(name==='company'&&doc.id===tenantId))deliveryFail('Nguồn giao hàng khác công ty.','permission-denied');}
  if(base.report&&['accepted','rejected','lost_charged'].includes(base.report.resolutionStatus))deliveryFail('Báo cáo đã xử lý lệch cân cần đúng lệnh giải quyết gốc.');
+ // Repository/list readiness needs the protocol validators, not the original
+ // mutation planners. Import those unchanged callees only for an explicit
+ // preview/write plan. ESM owns reuse; no second repository or service starts.
+ const [{createOriginalDeliveryPlanners},{originalDeliveryForm},{originalDeliveryFinancialOperations}]=await Promise.all([
+  import('./deliveryOriginalPlans.js'),import('./deliveryOriginalForm.js'),import('./deliveryOriginalFinancialForm.js'),
+ ]);
  const report=base.report,writePlan=[],plannerContext={employeeId,tenantId,editedAt,company:base.company,customer:base.customer,product:base.product,dispatch:base.dispatch,base:report,order:base.order,orders:memoOrders,expenses:[base.expense,base.orderExpense,base.costExpense].filter(Boolean),assets:[base.asset].filter(Boolean),assetCostLogs:[base.cost].filter(Boolean),day:values?.date||report.date},planners=createOriginalDeliveryPlanners(plannerContext);
  if(kind==='deliveryReport.archive')await planners.editReport(id,{isArchived:true,archivedAt:editedAt,archivedByEmpId:employeeId},writePlan);
  else{

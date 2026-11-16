@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {initialLocalWorkspace,showRestoredWorkspace,localWorkspaceTab,localWorkspaceInitialSource,restoredWorkspaceEntryTab} from '../development/hd-manager/application/src/services/workspacePresentation.js';
+import {initialLocalWorkspace,showRestoredWorkspace,canPresentFullWorkspace,localWorkspaceTab,localWorkspaceInitialSource,restoredWorkspaceEntryTab} from '../development/hd-manager/application/src/services/workspacePresentation.js';
 
 test('online Web opens the complete product; an Offline launch retains local presentation',()=>{
   assert.equal(initialLocalWorkspace({native:false,online:true}),false);
@@ -47,4 +47,18 @@ test('existing Web route names map only to available local modules',()=>{
   assert.equal(localWorkspaceInitialSource('payroll'),'payrollSnapshots');
   assert.equal(localWorkspaceInitialSource('employees'),'employees');
   assert.equal(localWorkspaceInitialSource('finance'),undefined);
+});
+
+test('the native full catalog needs an explicit current actor, tenant, online and biometric match',()=>{
+ const runtime={scope:{principalId:'a',tenantId:'ta'},isCurrent:()=>true};
+ const value={intent:{tab:'more',principalId:'a',tenantId:'ta'},runtime,firebaseUid:'a',tenantId:'ta',companyId:'ta',biometricUnlocked:true,online:true};
+ assert.equal(canPresentFullWorkspace(value),true);
+ for(const change of [{intent:null},{online:false},{biometricUnlocked:false},{firebaseUid:'b'},{tenantId:'tb'},{companyId:'tb'},
+  {intent:{...value.intent,principalId:'b'}},{intent:{...value.intent,tenantId:'tb'}},{intent:{...value.intent,tab:'payroll'}},
+  {runtime:{...runtime,isCurrent:()=>false}}])assert.equal(canPresentFullWorkspace({...value,...change}),false);
+ const existing={native:true,localMode:false,restored:true,online:true,hasCurrentUser:true,minimalEntry:true,enabled:true,firebaseUid:'a',principalId:'a',biometricUnlocked:true};
+ assert.equal(showRestoredWorkspace(existing),true,'no change to native restoration without explicit intent');
+ assert.equal(showRestoredWorkspace({...existing,fullWorkspaceAuthorized:canPresentFullWorkspace(value)}),false);
+ assert.equal(showRestoredWorkspace({...existing,localMode:true,fullWorkspaceAuthorized:true}),true,'reconnect does not replace a local editing route');
+ assert.equal(showRestoredWorkspace({...existing,online:false,fullWorkspaceAuthorized:canPresentFullWorkspace({...value,online:false})}),true);
 });

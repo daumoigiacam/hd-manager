@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const {requiresIdentitySetup}=require('./identitySetupPolicy.cjs');
 const { createPasskeyService } = require('./identityPasskeys');
 const { asIso } = require('./identityTime');
 const { recordManualAttendance } = require('./attendanceManual');
@@ -452,7 +453,7 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
       identityKey: identityId,
       identity: { ...buildPublicIdentity(identity), identityKey: identityId },
       device: { ...cleanDevice, trusted: Boolean(currentDevice.trusted) },
-      requiresSetup: Boolean(identity.requiresPasswordChange || !identity.setup?.pinSet || !identity.setup?.trustedDevice),
+      requiresSetup: requiresIdentitySetup(identity),
       setup: { ...(identity.setup || {}), biometricEnabled: Boolean(currentDevice.biometricEnabled && !currentDevice.revokedAt) }
     };
   };

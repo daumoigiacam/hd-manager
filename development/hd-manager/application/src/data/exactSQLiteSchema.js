@@ -1,14 +1,15 @@
 // Bounded schema metadata only, through the caller's existing authorized owner.
 // No connection, global readiness cache, migration policy or data reset.
 const incompatible=()=>Object.assign(new Error('Unsupported existing Home schema'),{code:'schema-incompatible'});
-function signature(sql){
+export function sqliteSchemaSignature(sql){
   if(typeof sql!=='string')throw incompatible();
   const tokens=sql.match(/'(?:[^']|'')*'|"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[[^\]]*\]|[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[^\s]/g)||[];
   const normalized=tokens.map(token=>/^[A-Za-z_]/.test(token)?token.toLowerCase():token);
-  if(normalized.slice(0,5).join(' ')==='create table if not exists')normalized.splice(2,3);
+  if(normalized[0]==='create'&&['table','index','trigger'].includes(normalized[1])&&normalized.slice(2,5).join(' ')==='if not exists')normalized.splice(2,3);
   if(normalized.at(-1)===';')normalized.pop();
   return normalized.join('\0');
 }
+const signature=sqliteSchemaSignature;
 export async function ensureExactSQLiteTables({statements,read,transaction,afterCreate}){
   if(!Array.isArray(statements)||!statements.length||statements.length>16||typeof transaction!=='function')throw new TypeError('Bounded schema definitions and existing owner required');
   const definitions=statements.map(sql=>{

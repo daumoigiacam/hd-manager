@@ -2,6 +2,7 @@ import {homeFeedSources,homeCalculationBodySql} from './homeFeedContract.js';
 import {createProjectionScheduler} from '../services/cooperativeProjection.js';
 import {BUSINESS_SEARCH_SCHEMA,BUSINESS_SEARCH_VERSION,BUSINESS_SEARCH_FIELDS,businessSearchUpserts,runSearchStatements,hasOrderSearchProjection,businessOrderSearchUpserts,backfillOrderSearchPage,publishOrderSearchCoverage,ORDER_SEARCH_TABLE} from './offlineBusinessSearchProjection.js';
 import {ensureExactSQLiteTables} from './exactSQLiteSchema.js';
+import {cashflowSortSource,hasCashflowSortProjection,cashflowSortUpserts,backfillCashflowSortPage,CASHFLOW_SORT_TABLE} from './cashflowSortProjection.js';
 export async function createHomeFeedStorage({transaction,keys,scope,sourceProfile,streamRead}){
  await ensureExactSQLiteTables({transaction,read:streamRead?((sql,params)=>streamRead(query=>query(sql,params))):undefined,statements:[
   'CREATE TABLE IF NOT EXISTS offline_home_feed_checkpoint_v1 (tenant_id TEXT,principal_id TEXT,revision TEXT,generation TEXT,applied_seq INTEGER,reported_seq INTEGER,PRIMARY KEY(tenant_id,principal_id,revision,generation))',
@@ -12,6 +13,8 @@ export async function createHomeFeedStorage({transaction,keys,scope,sourceProfil
  // Lazy first mutation probe; Orders-demand migration flips it only AFTER the
  // existing transaction commits. A cancelled migration cannot publish a flag.
  let orderProjectionPresent;
+ let cashflowProjectionPresent;
+ const cashflowProjectionEnabled=async db=>cashflowProjectionPresent??=await hasCashflowSortProjection(db);
  const orderProjectionEnabled=async db=>{
   if(orderProjectionPresent===undefined)orderProjectionPresent=await hasOrderSearchProjection(db);
   return orderProjectionPresent;
@@ -41,7 +44,7 @@ export async function createHomeFeedStorage({transaction,keys,scope,sourceProfil
  };
  return Object.freeze({
   checkpoint:head=>transaction(db=>checkpoint(db,head)),
-  backfillSearchPage(head,{source,limit=16,signal,orderSort=false,shouldContinue}={}){return transaction(async ownerDb=>{
+  backfillSearchPage(head,{source,limit=16,signal,orderSort=false,cashflowSort=false,shouldContinue}={}){return transaction(async ownerDb=>{
    const check=()=>{if(signal?.aborted)throw Object.assign(Error('Search projection backfill cancelled'),{name:'AbortError'});if(shouldContinue&&shouldContinue()!==true)throw Object.assign(Error('Foreground read preempted derived batch'),{code:'foreground-yield'});};
    if(shouldContinue!==undefined&&typeof shouldContinue!=='function')throw new TypeError('Synchronous foreground continuation required');
    // Guard every native await, including checkpoint/schema helpers. Throwing
@@ -49,13 +52,20 @@ export async function createHomeFeedStorage({transaction,keys,scope,sourceProfil
    const db={...ownerDb};
    for(const method of ['query','run','runSet','execute'])if(typeof ownerDb[method]==='function')db[method]=async(...args)=>{check();const result=await ownerDb[method](...args);check();return result;};
    check();validate(head);
-   if(!Object.hasOwn(BUSINESS_SEARCH_FIELDS,source)||!head.sources.includes(source)||!Number.isInteger(limit)||limit<1||limit>100||typeof orderSort!=='boolean'||(orderSort&&source!=='orders'))throw Error('Invalid search backfill batch');
+   if(!Object.hasOwn(BUSINESS_SEARCH_FIELDS,source)||!head.sources.includes(source)||!Number.isInteger(limit)||limit<1||limit>100||typeof orderSort!=='boolean'||(orderSort&&source!=='orders')||typeof cashflowSort!=='boolean'||(cashflowSort&&!cashflowSortSource(source)))throw Error('Invalid search backfill batch');
    let saved;try{saved=await checkpoint(db,head);}catch(failure){if(failure.message==='Home feed revision rollback')failure.code='stale-checkpoint';throw failure;}check();
    if(saved.applied_seq!==head.seq||saved.reported_seq!==head.seq||saved.reported_day!==head.asOfDay)throw Object.assign(Error('Completed search backfill checkpoint changed'),{code:'stale-checkpoint'});
    const published=(await db.query("SELECT json_extract(snapshot_json,'$.feedGeneration') AS generation,json_extract(snapshot_json,'$.feedSeq') AS seq,json_extract(snapshot_json,'$.sourceCounts') AS counts,json_extract(snapshot_json,'$.availableSources') AS sources,COALESCE(json_extract(snapshot_json,'$.sourceProfile'),'legacy-v1') AS profile FROM offline_home_head_v1 WHERE tenant_id=? AND principal_id=? AND revision=? AND generation=?",[...keys,scope.permissionRevision,head.generation]))[0];
    if(published?.generation!==head.generation||published?.seq!==head.seq)throw Object.assign(Error('Search backfill snapshot differs'),{code:'stale-checkpoint'});
    let counts,sources;try{counts=JSON.parse(published.counts);sources=JSON.parse(published.sources);}catch{throw Object.assign(Error('Search backfill manifest is invalid'),{code:'stale-checkpoint'});}
    if(published.profile!==(sourceProfile||'legacy-v1')||counts?.[source]!==head.counts[source]||!Array.isArray(sources)||!sources.includes(source))throw Object.assign(Error('Search backfill manifest differs'),{code:'stale-checkpoint'});
+   if(cashflowSort){
+    const sorted=await backfillCashflowSortPage(db,{keys,head,source,limit,check});
+    // Preserve the original v1 search backfill for older imported databases.
+    // Do not declare the demand complete after building only date keys, or do
+    // two body batches in one foreground-aware quantum.
+    if(sorted.processed>0||!sorted.complete)return {...sorted,complete:false};
+   }
    if(source==='orders'&&orderSort){
     if(counts.customers!==head.counts.customers||!sources.includes('customers'))throw Object.assign(Error('Orders customer manifest differs'),{code:'stale-checkpoint'});
     const result=await backfillOrderSearchPage(db,{keys,scope,head,limit,check});check();
@@ -72,13 +82,14 @@ export async function createHomeFeedStorage({transaction,keys,scope,sourceProfil
    const complete=rows.length<limit&&(await projectionCoverage(db,head,source)).includes(source);check();
    if(rows.length<limit&&!complete)throw Object.assign(Error('Search projection coverage differs from completed feed'),{code:'stale-checkpoint'});
    return {source,processed:rows.length,complete,generation:head.generation,seq:head.seq,version:BUSINESS_SEARCH_VERSION};
-  }).then(result=>{if(orderSort)orderProjectionPresent=true;return result;});},
+  }).then(result=>{if(orderSort)orderProjectionPresent=true;if(cashflowSort)cashflowProjectionPresent=true;return result;});},
   applyPage(head,page){return transaction(async db=>{
    const saved=await checkpoint(db,head);
    const orderProjection=await orderProjectionEnabled(db);
+   const cashflowProjection=await cashflowProjectionEnabled(db);
    if(page.generation!==head.generation||page.tenantId!==scope.tenantId||page.principalId!==scope.principalId||page.permissionRevision!==scope.permissionRevision||page.after!==saved.applied_seq||page.target!==head.seq||!Array.isArray(page.events)||!page.events.length||page.events.length>100)throw Error('Home feed checkpoint mismatch');
    let seq=saved.applied_seq,upserts=[];
-   const flush=async()=>{if(!upserts.length)return;await runSearchStatements(db,[{statement:'INSERT INTO offline_home_feed_records_v1 VALUES '+upserts.map(()=>'(?,?,?,?,?,?,?)').join(',')+' ON CONFLICT(tenant_id,principal_id,generation,source,id) DO UPDATE SET seq=excluded.seq,body=excluded.body WHERE excluded.seq>offline_home_feed_records_v1.seq',values:upserts.flat()},...businessSearchUpserts(upserts),...(orderProjection?businessOrderSearchUpserts(upserts):[])]);upserts=[];};
+   const flush=async()=>{if(!upserts.length)return;await runSearchStatements(db,[{statement:'INSERT INTO offline_home_feed_records_v1 VALUES '+upserts.map(()=>'(?,?,?,?,?,?,?)').join(',')+' ON CONFLICT(tenant_id,principal_id,generation,source,id) DO UPDATE SET seq=excluded.seq,body=excluded.body WHERE excluded.seq>offline_home_feed_records_v1.seq',values:upserts.flat()},...businessSearchUpserts(upserts),...(orderProjection?businessOrderSearchUpserts(upserts):[]),...(cashflowProjection?cashflowSortUpserts(upserts):[])]);upserts=[];};
    for(const event of page.events){
     if(event.seq!==++seq||seq>head.seq||event.generation!==head.generation||!homeFeedSources(head.sourceProfile,head.sources).includes(event.source)||typeof event.id!=='string')throw Error('Noncontiguous Home feed');
     if(event.operation==='delete'){await flush();const values=[...keys,head.generation,event.source,event.id];await runSearchStatements(db,[{statement:'DELETE FROM offline_home_feed_records_v1 WHERE tenant_id=? AND principal_id=? AND generation=? AND source=? AND id=?',values},...(Object.hasOwn(BUSINESS_SEARCH_FIELDS,event.source)?[{statement:'DELETE FROM offline_business_search_v1 WHERE tenant_id=? AND principal_id=? AND generation=? AND source=? AND id=?',values}]:[]),...(orderProjection?[{statement:`DELETE FROM ${ORDER_SEARCH_TABLE} WHERE tenant_id=? AND principal_id=? AND generation=? AND source=? AND id=?`,values}]:[])]);}
@@ -86,6 +97,7 @@ export async function createHomeFeedStorage({transaction,keys,scope,sourceProfil
      if(!event.document||event.document.id!==event.id||(event.source==='companies'?event.id!==scope.tenantId:event.document.companyId!==scope.tenantId))throw Error('Home event tenant mismatch');
      upserts.push([...keys,head.generation,event.source,event.id,seq,JSON.stringify(event.document)]);if(upserts.length===50)await flush();
     }else throw Error('Invalid Home operation');
+    if(event.operation==='delete'&&cashflowProjection&&cashflowSortSource(event.source))await db.run(`DELETE FROM ${CASHFLOW_SORT_TABLE} WHERE tenant_id=? AND principal_id=? AND generation=? AND source=? AND id=?`,[...keys,head.generation,event.source,event.id]);
    }
    await flush();await db.run('UPDATE offline_home_feed_checkpoint_v1 SET applied_seq=? WHERE tenant_id=? AND principal_id=? AND revision=? AND generation=?',[seq,...keys,scope.permissionRevision,head.generation]);return seq;
   });},
@@ -145,6 +157,7 @@ export async function createHomeFeedStorage({transaction,keys,scope,sourceProfil
    await db.run('DELETE FROM offline_home_feed_records_v1 WHERE tenant_id=? AND principal_id=? AND generation<>?',[...keys,head.generation]);
    await runSearchStatements(db,['offline_business_search_v1','offline_business_search_coverage_v1'].map(table=>({statement:`DELETE FROM ${table} WHERE tenant_id=? AND principal_id=? AND generation<>?`,values:[...keys,head.generation]})));
    if(orderProjection)await db.run(`DELETE FROM ${ORDER_SEARCH_TABLE} WHERE tenant_id=? AND principal_id=? AND generation<>?`,[...keys,head.generation]);
+   if(await cashflowProjectionEnabled(db))await db.run(`DELETE FROM ${CASHFLOW_SORT_TABLE} WHERE tenant_id=? AND principal_id=? AND generation<>?`,[...keys,head.generation]);
    return {generation:head.generation,seq:head.seq};
   });},
  });

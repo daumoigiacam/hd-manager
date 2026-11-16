@@ -1,4 +1,4 @@
-import {DELIVERY_RULES,DELIVERY_READ_CAPS} from './deliveryCommandProtocol.js';
+import {DELIVERY_RULES,DELIVERY_READ_CAPS} from './deliveryAccessContract.js';
 export const deliveryCommandStatus={PENDING_SYNC:'Đã lưu trên thiết bị · Chờ đồng bộ',SYNCING:'Đang chờ máy chủ xác nhận',SYNCED:'Máy chủ đã xác nhận toàn bộ chứng từ',SERVER_CONFIRMED:'Chứng từ nguồn máy chủ',SYNC_FAILED:'Chưa đồng bộ · Ý định vẫn được giữ',CONFLICT_REQUIRES_REVIEW:'Nguồn đã thay đổi · Cần đối chiếu, chưa ghi đè'};
 export function deliveryWriteAccess(runtime,repository,kind){
  const s=runtime?.scope,u=runtime?.appSession?.currentUser;

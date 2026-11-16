@@ -7,13 +7,14 @@ import {CASHFLOW_COMMANDS} from '../../data/offlineCashflowRepository.js';
 import OfflineCashflowEditor from './OfflineCashflowEditor.jsx';
 import OfflineCashflowQueue from './OfflineCashflowQueue.jsx';
 import {createVisibleFinanceReadPlan} from './visibleFinanceReadPlan.js';
+import {getDefaultListPageSize} from '../../services/renderOptimization.js';
 import {
   CASHFLOW_APPROVAL_STATUS, getDateKeyFromAnyValue, getEntityTimestamp, getPaymentDateSource,
   getPaymentMethodLabel, getPaymentSourceLabel, parseInputCurrency, isCashflowOfficial,
   isPayosPaymentRecord, requiresCashflowApproval,
-} from '../customers/productCRMShared.jsx';
+} from '@hd/cashflow-presentation';
 import {
-  createFinancePresentation, createFinanceFilters, financeSearchInputTime, financeReadAccess, FINANCE_WRITE_UNAVAILABLE,
+  createFinancePresentation, createFinanceFilters, financeSearchInputTime, financeReadAccess, financeReadIdentity, FINANCE_WRITE_UNAVAILABLE,
   readFinanceDetail, readFinancePage, supportsFinanceApprovalFilter, financeDirectoryOptions, FINANCE_PAGE_SIZE,
 } from './offlineFinanceModel.js';
 
@@ -92,10 +93,10 @@ function TransactionDetail({runtime, directory, selected, employees, onClose, on
   </HDCard>;
 }
 
-function FinanceSourceList({runtime, directory, fetchDirectory = directory, source, filters, employees, onSelect, inputTrace, onChooseDay, onInitialCommit}) {
+function FinanceSourceList({runtime, directory, directoryOwner=directory, fetchDirectory = directory, source, filters, employees, onSelect, inputTrace, onChooseDay, onInitialCommit, onReadPhase, pageSize=FINANCE_PAGE_SIZE}) {
   const queryKey = JSON.stringify(filters);
   const owner = useRef(null), completed = useRef(null);
-  if (!owner.current || owner.current.runtime !== runtime || owner.current.directory !== directory || owner.current.queryKey !== queryKey) owner.current = {runtime,directory,queryKey};
+  owner.current=financeReadIdentity(owner.current,runtime,directoryOwner,queryKey);
   const identity = owner.current;
   const [page, setPage] = useState({identity: null, rows: [], head: null, nextCursor: null, loading: true, error: ''});
   const operation = useRef(0), busy = useRef(false);
@@ -104,7 +105,7 @@ function FinanceSourceList({runtime, directory, fetchDirectory = directory, sour
   useEffect(() => {
     // Activity reattaches effects with identical deps. A completed same-query
     // page/cursor stays intact until a real identity change or explicit reload.
-    if (completed.current?.identity === identity && completed.current.reload === reload) return () => {operation.current++;busy.current=false;};
+    if (completed.current?.identity === identity && completed.current.directory===directory && completed.current.reload === reload) return () => {operation.current++;busy.current=false;};
     let active = true;
     let settled = false;
     const trace = measuredTrace.current === inputTrace ? null : inputTrace;
@@ -112,9 +113,11 @@ function FinanceSourceList({runtime, directory, fetchDirectory = directory, sour
     busy.current = true;
     setPage(previous => previous.identity === identity ? {...previous,loading:true,error:''}
       : {identity, rows: [], head: null, nextCursor: null, loading: true, error: ''});
-    readFinancePage({runtime, directory: fetchDirectory, source, filters: JSON.parse(queryKey)}).then(result => {
+    onReadPhase?.(source+'-read-start');
+    readFinancePage({runtime, directory: fetchDirectory, source, filters: JSON.parse(queryKey),limit:pageSize}).then(result => {
+      onReadPhase?.(source+'-read-end');
       settled = true;
-      if (active && ticket === operation.current) {completed.current={identity,reload};setPage({identity, rows: result.rows, head: result.head, nextCursor: result.nextCursor, loading: false, error: '', inputTrace: trace});}
+      if (active && ticket === operation.current) {completed.current={identity,directory,reload};setPage({identity, rows: result.rows, head: result.head, nextCursor: result.nextCursor, loading: false, error: '', inputTrace: trace});}
     }).catch(error => {
       settled = true;
       if (active && ticket === operation.current) setPage(previous => ({...previous,identity,loading:false,error:error.message,inputTrace:trace}));
@@ -123,7 +126,7 @@ function FinanceSourceList({runtime, directory, fetchDirectory = directory, sour
       active = false;operation.current++;busy.current = false;
       if (trace && !settled) recordStartupEvent('finance.search.superseded', {queryId: trace.id, source, elapsedMs: performance.now() - trace.startedAt});
     };
-  }, [runtime, directory, fetchDirectory, source, queryKey, identity, reload, inputTrace]);
+  }, [runtime, directory, fetchDirectory, source, queryKey, identity, reload, inputTrace,pageSize]);
 
   const current = page.identity === identity;
   const loadMore = async () => {
@@ -132,7 +135,7 @@ function FinanceSourceList({runtime, directory, fetchDirectory = directory, sour
     busy.current = true;
     setPage(previous => ({...previous, loading: true, error: ''}));
     try {
-      const result = await readFinancePage({runtime, directory, source, filters, after: page.nextCursor, head: page.head});
+      const result = await readFinancePage({runtime, directory, source, filters, after: page.nextCursor, head: page.head,limit:pageSize});
       if (ticket !== operation.current) return;
       const ids = new Set(page.rows.map(row => row.id));
       if (result.rows.some(row => ids.has(row.id))) throw Error('Nguồn Thu chi đã thay đổi hoặc trùng phiếu. Hãy tải lại danh sách.');
@@ -145,10 +148,10 @@ function FinanceSourceList({runtime, directory, fetchDirectory = directory, sour
   const rows = current && !denied ? page.rows : [];
   const loading = !current || page.loading;
   useLayoutEffect(() => {
-    // Result OR error DOM for this actual query is committed. Promise resolve,
+    // Successful result DOM for this actual query is committed. Promise resolve,
     // row count, loading-shell commits and frame callbacks are not readiness.
-    if(current&&!loading&&!denied)onInitialCommit?.(source);
-  }, [current, loading, denied, source, onInitialCommit]);
+    if(current&&!loading&&!denied&&!page.error)onInitialCommit?.(source);
+  }, [current, loading, denied, page.error, source, onInitialCommit]);
   useLayoutEffect(() => {
     const trace = page.inputTrace;
     if (!current || denied || loading || !trace || trace !== inputTrace || measuredTrace.current === trace) return;
@@ -193,14 +196,15 @@ function FinanceSourceList({runtime, directory, fetchDirectory = directory, sour
 
 // Navigation/lifecycle stay with the native host. This route consumes its
 // existing signed runtime and directory; it owns only filters and loaded pages.
-export default function OfflineFinanceWorkspace({runtime, onNavigate, directory, cashflow, onInitialContentReady}) {
+export default function OfflineFinanceWorkspace({runtime, onNavigate, directory, directoryOwner=directory, cashflow, onInitialContentReady,onReadPhase}) {
   const [filters, setFilters] = useState(initialFilters);
   const [type, setType] = useState('all');
+  const [pageSize]=useState(()=>getDefaultListPageSize()===15?15:FINANCE_PAGE_SIZE);
   const visibleDirectory=useMemo(()=>{
     if(type!=='all')return directory;
-    try{return createVisibleFinanceReadPlan(directory,['payments','expenses'].map(source=>({source,options:{...financeDirectoryOptions(directory,source,filters),cursor:null,limit:FINANCE_PAGE_SIZE}})));}
+    try{return createVisibleFinanceReadPlan(directory,['payments','expenses'].map(source=>({source,options:{...financeDirectoryOptions(directory,source,filters),cursor:null,limit:pageSize}})));}
     catch{return directory;}
-  },[directory,filters,type]);
+  },[directory,filters,type,pageSize]);
   const [selected, setSelected] = useState(null);
   const [editor,setEditor]=useState(null), [editorOpen,setEditorOpen]=useState(false), [queueRefresh,setQueueRefresh]=useState(0), [writeError,setWriteError]=useState('');
   const saving=useRef(false), editTicket=useRef(0), alive=useRef(true);
@@ -286,28 +290,27 @@ export default function OfflineFinanceWorkspace({runtime, onNavigate, directory,
     finally{saving.current=false;}
   };
   return <section className="space-y-4" aria-label="Thu chi Offline">
-    <HDPageHeader title="Thu chi" description="Phiếu thu và phiếu chi từ bản nguồn hoàn tất trên thiết bị." onBack={typeof onNavigate === 'function' ? () => {if(!closeInner())onNavigate('home');} : undefined}/>
-    <p className="rounded-xl bg-blue-50 p-3 text-sm text-blue-900">Danh sách phân trang không phải tổng thu, tổng chi hay số dư. Trạng thái máy chủ đã xác nhận không thay cho phê duyệt thu chi.</p>
-    <p id="offline-finance-write-reason" className="text-sm text-slate-600">{repository?.protocol==='offline-cashflow-v1'?'Development · Chỉ hỗ trợ báo thu tiền mặt chờ xác nhận và chi thủ công trong quyền có chữ ký. Phiếu liên kết và xác nhận thanh toán dùng quy trình gốc.':FINANCE_WRITE_UNAVAILABLE}</p>
+    <HDPageHeader title="Thu chi" description="Danh sách phiếu đã lưu · Không phải tổng thu chi hoặc số dư." onBack={typeof onNavigate === 'function' ? () => {if(!closeInner())onNavigate('home');} : undefined}/>
+    <details className="text-sm text-slate-600"><summary className="cursor-pointer font-semibold">Thông tin dữ liệu và quyền lập phiếu</summary><p className="py-2">Trạng thái máy chủ đã xác nhận không thay cho phê duyệt thu chi. Phiếu chờ không được cộng vào tổng hoặc số dư.</p><p id="offline-finance-write-reason">{repository?.protocol==='offline-cashflow-v1'?'Chỉ lập báo thu tiền mặt và phiếu chi thủ công theo quyền được cấp. Phiếu liên kết và xác nhận thanh toán dùng quy trình gốc.':FINANCE_WRITE_UNAVAILABLE}</p></details>
     <div className="flex flex-wrap gap-2"><HDButton disabled={Boolean(denied)||!canWrite('payments','create')} aria-describedby="offline-finance-write-reason" onClick={()=>createDraft('payments')}>Khoản thu</HDButton><HDButton disabled={Boolean(denied)||!canWrite('expenses','create')} aria-describedby="offline-finance-write-reason" onClick={()=>createDraft('expenses')}>Khoản chi</HDButton>{draftCurrent&&<HDButton variant="secondary" onClick={()=>setEditorOpen(true)}>Tiếp tục bản nhập</HDButton>}</div>
     {writeError&&<p role="alert">{writeError}</p>}
     {denied ? <p role="alert">{denied}</p> : <>
       <React.Activity mode={editing?'visible':'hidden'}>{draftCurrent&&<OfflineCashflowEditor draft={editor} onChange={(key,value)=>setEditor(previous=>({...previous,input:{...previous.input,[key]:value}}))} onSave={saveDraft} onClose={()=>{editTicket.current++;setEditorOpen(false);}} onDiscard={()=>{if(!saving.current){editTicket.current++;setEditor(null);setEditorOpen(false);}}}/>}</React.Activity>
       <React.Activity mode={!editing&&selection?'visible':'hidden'}>{selection&&<TransactionDetail key={JSON.stringify([scopeKey, selection.source, selection.id, selection.head])} runtime={runtime} directory={directory} selected={selection} employees={employees} onClose={() => setSelected(null)} onEdit={editDraft} canEdit={canWrite(selection.source,'update')}/>}</React.Activity>
       <React.Activity mode={!editing&&!selection?'visible':'hidden'}>
-      {repository?.protocol==='offline-cashflow-v1'&&<OfflineCashflowQueue repository={repository} refresh={queueRefresh} onResolve={resolveDraft}/>}
+      {repository?.protocol==='offline-cashflow-v1'&&<OfflineCashflowQueue compact repository={repository} refresh={queueRefresh} onResolve={resolveDraft}/>}
       <HDSearchBar label="Tìm kiếm thu chi" placeholder="Tìm mã phiếu, nội dung, khách hàng…" maxLength={128} value={filters.search} onChange={event => update('search', event.target.value, event.timeStamp)} onClear={event => update('search', '', event.timeStamp)}/>
-      <HDFilterBar label="Bộ lọc thu chi" className="flex flex-wrap gap-3">
+      <details><summary className="cursor-pointer text-sm font-semibold text-blue-700">Bộ lọc · {dateLabel(filters.dateFrom)}{filters.dateTo!==filters.dateFrom?` – ${dateLabel(filters.dateTo)}`:''}{type!=='all'?type==='payments'?' · Khoản thu':' · Khoản chi':''}</summary><HDFilterBar label="Bộ lọc thu chi" className="mt-3 flex flex-wrap gap-3">
         <HDDateInput label="Từ ngày" value={filters.dateFrom} onChange={event => update('dateFrom', event.target.value)}/>
         <HDDateInput label="Đến ngày" value={filters.dateTo} onChange={event => update('dateTo', event.target.value)}/>
         <HDSelect label="Loại giao dịch" value={type} onChange={event => {setType(event.target.value);update('status', 'all');}}><option value="all">Tất cả thu chi</option><option value="payments">Khoản thu</option><option value="expenses">Khoản chi</option></HDSelect>
         <HDSelect label="Nhân viên" value={filters.employeeId} onChange={event => update('employeeId', event.target.value)}><option value="">Tất cả trong quyền được cấp</option>{employees.map(employee => <option key={employee.id} value={employee.id}>{employee.name || employee.id}</option>)}</HDSelect>
         <HDSelect label="Trạng thái xác nhận" value={filters.status} disabled={!approvalFilterReady} aria-describedby={!approvalFilterReady ? 'offline-finance-status-reason' : undefined} onChange={event => update('status', event.target.value)}><option value="all">Tất cả trạng thái</option><option value="pending">Chờ xác nhận</option><option value="approved">Đã xác nhận</option><option value="rejected">Không duyệt</option></HDSelect>
         <HDButton variant="secondary" onClick={() => {inputTrace.current = null;setFilters(initialFilters());setType('all');}}>Đặt lại hôm nay</HDButton>
-      </HDFilterBar>
+      </HDFilterBar></details>
       {!approvalFilterReady && <p id="offline-finance-status-reason" className="text-sm text-slate-600">Nguồn SQLite chưa hỗ trợ lọc phê duyệt thu chi trước khi phân trang. Không dùng trạng thái nguồn thay cho Chờ xác nhận / Đã xác nhận / Không duyệt.</p>}
       {invalidDates ? <p role="alert">Ngày kết thúc phải từ ngày bắt đầu trở đi.</p> : <div className="grid gap-4 lg:grid-cols-2">
-        {['payments', 'expenses'].filter(source => type === 'all' || type === source).map(source => <FinanceSourceList key={`${scopeKey}:${source}`} runtime={runtime} directory={directory} fetchDirectory={visibleDirectory} source={source} filters={filters} employees={employees} inputTrace={inputTrace.current} onChooseDay={chooseDay} onInitialCommit={onListInitialCommit} onSelect={value => setSelected({runtime, directory, scopeKey, value})}/>)}
+        {['payments', 'expenses'].filter(source => type === 'all' || type === source).map(source => <FinanceSourceList key={`${scopeKey}:${source}`} runtime={runtime} directory={directory} directoryOwner={directoryOwner} fetchDirectory={visibleDirectory} source={source} filters={filters} employees={employees} pageSize={pageSize} inputTrace={inputTrace.current} onChooseDay={chooseDay} onInitialCommit={onListInitialCommit} onReadPhase={onReadPhase} onSelect={value => setSelected({runtime, directory, scopeKey, value})}/>)}
       </div>}
       </React.Activity>
     </>}

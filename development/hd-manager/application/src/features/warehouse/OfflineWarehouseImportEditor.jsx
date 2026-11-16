@@ -2,6 +2,7 @@ import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
 import {HDButton,HDInput,HDDateInput} from '../../design-system/components.jsx';
 import {useAppScreenBack} from '../../hooks/useAppScreenBack.js';
 import {businessDayKey} from '../../utils/businessDate.js';
+import {focusWorkspacePanel} from '../../utils/focusWorkspacePanel.js';
 import {IMPORT_RULES,buildImportValues,canonicalImport,importDraftFromPair} from './warehouseImportProtocol.js';
 import {WAREHOUSE_IMPORT_SOURCE_OPTIONS} from './warehouseImportOriginalPlan.js';
 export const importStatusLabel={PENDING_SYNC:'Đã lưu trên thiết bị · Chờ đồng bộ',SYNCING:'Đang gửi và chờ máy chủ xác nhận',SYNCED:'Máy chủ đã xác nhận nhập kho và phiếu chi',SERVER_CONFIRMED:'Chứng từ nguồn máy chủ',SYNC_FAILED:'Đồng bộ chưa thành công · Ý định vẫn được giữ',CONFLICT_REQUIRES_REVIEW:'Cần đối chiếu nhập kho và phiếu chi; chưa ghi đè'};
@@ -11,7 +12,14 @@ export function importWriteAccess(runtime,repository,kind){
 }
 const emptyDraft=()=>({groupName:'',quantity:'',totalKg:'',quantityUnit:'',purchaseUnit:'',unitPrice:'',sourceType:'purchase_resale',date:businessDayKey(Date.now()),supplier:'',supplierPhone:'',supplierCustomerId:'',productId:'',productName:'',productCode:'',productBarcode:'',note:'',extraMeasures:[]});
 export default function OfflineWarehouseImportEditor({runtime,repository,id=null,onClose,onSaved,closeRequestRef,readSource='local'}){
+  const panel=useRef(null),heading=useRef(null),shownReceipt=useRef(null);
   const [draft,setDraft]=useState(emptyDraft),[record,setRecord]=useState(null),[groups,setGroups]=useState(null),[error,setError]=useState(''),[notice,setNotice]=useState(''),[saved,setSaved]=useState(null),[saving,setSaving]=useState(false),[confirmArchive,setConfirmArchive]=useState(false),[reviewed,setReviewed]=useState(null),[reload,setReload]=useState(0),[attempted,setAttempted]=useState(false);
+  useLayoutEffect(()=>{
+    if(!saved?.commandId||shownReceipt.current===saved.commandId)return;
+    // The completed form collapses. Show its durable local acknowledgement,
+    // rather than leaving the viewport in the unrelated list below it.
+    focusWorkspacePanel(panel.current,heading.current);shownReceipt.current=saved.commandId;
+  },[saved?.commandId]);
   const scopeKey=JSON.stringify(runtime.scope),key=JSON.stringify([scopeKey,id,readSource]),current=useRef(key),initialized=useRef(null),attached=useRef(false),inFlight=useRef(false),intent=useRef(null),savedRef=useRef(saved),task=useRef(null),groupTask=useRef(null),dirty=useRef(false),archiveIntent=useRef(false);current.current=key;savedRef.current=saved;
   const target=id||saved?.entityId,statusKey=JSON.stringify([key,target,reload]),statusCurrent=useRef(statusKey);statusCurrent.current=statusKey;
   const kind=id?'warehouseImport.update':'warehouseImport.create',canWrite=importWriteAccess(runtime,repository,kind),canArchive=!!id&&importWriteAccess(runtime,repository,'warehouseImport.archive');
@@ -42,8 +50,8 @@ export default function OfflineWarehouseImportEditor({runtime,repository,id=null
   if(!runtime.isCurrent())return null;
   let preview='Chưa đủ dữ liệu';try{preview=String(buildImportValues(draft).amount);}catch{}
   const choices=groups?.key===key?groups.items:[],locked=saving||awaiting||attempted||!canWrite;
-  return <section aria-label="Ghi nhận nhập kho Offline" className="space-y-3 rounded-2xl border-2 border-emerald-300 bg-white p-4">
-    <div className="flex justify-between gap-2"><h2 className="font-bold">{id?'Sửa / lưu trữ phiếu nhập kho':'Thêm phiếu nhập kho'}</h2><HDButton variant="secondary" disabled={saving} onClick={close}>Đóng phiếu nhập</HDButton></div>
+  return <section ref={panel} aria-label="Ghi nhận nhập kho Offline" className="space-y-3 rounded-2xl border-2 border-emerald-300 bg-white p-4">
+    <div className="flex justify-between gap-2"><h2 ref={heading} tabIndex={-1} className="font-bold">{id?'Sửa / lưu trữ phiếu nhập kho':'Thêm phiếu nhập kho'}</h2><HDButton variant="secondary" disabled={saving} onClick={close}>Đóng phiếu nhập</HDButton></div>
     <p className="text-sm">Phiếu nhập và phiếu chi đi kèm lưu nguyên tử. Hàng chờ chưa phải xác nhận máy chủ. Không ghi thanh toán hoặc trả nợ nhà cung cấp.</p>
     {!canWrite&&<p role="status">Thiếu quyền có chữ ký hoặc giao thức nhập kho/chi phí chưa sẵn sàng.</p>}
     {record&&<p role="status">{importStatusLabel[record.state]||record.state}</p>}

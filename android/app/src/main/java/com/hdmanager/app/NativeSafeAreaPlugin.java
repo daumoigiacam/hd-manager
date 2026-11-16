@@ -13,6 +13,85 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 
 @CapacitorPlugin(name = "NativeSafeArea")
 public class NativeSafeAreaPlugin extends Plugin {
+    private android.net.ConnectivityManager networkManager;
+    private android.net.ConnectivityManager.NetworkCallback networkCallback;
+    private long networkSequence=0;
+    private JSObject currentNetwork() {
+        android.net.Network network=networkManager.getActiveNetwork();
+        android.net.NetworkCapabilities caps=network==null?null:networkManager.getNetworkCapabilities(network);
+        JSObject result=new JSObject();
+        result.put("online",caps!=null&&caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET));
+        result.put("sequence",++networkSequence);
+        return result;
+    }
+    @PluginMethod public void startNetworkObservation(PluginCall call) {
+        getActivity().runOnUiThread(()->{
+            try {
+                if(networkManager==null)networkManager=(android.net.ConnectivityManager)getContext().getSystemService(android.content.Context.CONNECTIVITY_SERVICE);
+                if(networkCallback==null){
+                    networkCallback=new android.net.ConnectivityManager.NetworkCallback(){
+                        private void publish(){getActivity().runOnUiThread(()->{if(networkCallback==this)notifyListeners("nativeNetworkChange",currentNetwork());});}
+                        @Override public void onAvailable(android.net.Network network){publish();}
+                        @Override public void onLost(android.net.Network network){publish();}
+                        @Override public void onCapabilitiesChanged(android.net.Network network,android.net.NetworkCapabilities caps){publish();}
+                    };
+                    networkManager.registerDefaultNetworkCallback(networkCallback);
+                }
+                call.resolve(currentNetwork());
+            } catch(RuntimeException error){stopNetworkObservation();call.reject("Unable to observe Android network",error);}
+        });
+    }
+    private void stopNetworkObservation(){
+        if(networkCallback!=null){try{networkManager.unregisterNetworkCallback(networkCallback);}catch(RuntimeException ignored){}networkCallback=null;}
+    }
+    @PluginMethod public void stopNetworkObservation(PluginCall call){getActivity().runOnUiThread(()->{stopNetworkObservation();call.resolve();});}
+    @PluginMethod public void recordModuleReadiness(PluginCall call) {
+        if (!"com.hdmanager.app.localdev".equals(getContext().getPackageName())) { call.reject("Local module metadata only"); return; }
+        String module=call.getString("module", ""), document=call.getString("documentTraceId", "");
+        String surface=call.getString("surface","full");
+        Double origin=call.getDouble("origin"), start=call.getDouble("start"), shell=call.getDouble("shellCommitted"), ready=call.getDouble("sourceAndDomReady"), essential=call.getDouble("essentialDataMs");
+        if (!surface.matches("(full|restored-local|restored-local-actions)") || !module.matches("(home|more|orders|order_requests|products|customers|finance|debt|warehouse_import|warehouse_dispatch|delivery_reports|employees|payroll|company_attendance|executive_dashboard|messages|pricing|price_quotes|asset_management|bank_payments|employee_reviews|settings|role_permissions|billing|attendanceRequests|attendancePeriods|salarySettlements)") || !document.matches("[a-f0-9-]{36}") || origin==null || start==null || shell==null || ready==null || essential==null
+            || !Double.isFinite(origin) || !Double.isFinite(start) || !Double.isFinite(shell) || !Double.isFinite(ready) || !Double.isFinite(essential)
+            || origin<=0 || start<0 || shell<start || ready<shell || essential<0 || essential>ready-start || ready>86400000) { call.reject("Invalid module timing metadata"); return; }
+        JSObject result=new JSObject();result.put("module",module);result.put("surface",surface);result.put("documentTraceId",document);result.put("origin",origin);result.put("start",start);result.put("shellCommitted",shell);result.put("sourceAndDomReady",ready);result.put("essentialDataMs",essential);result.put("readyMs",ready-start);
+        JSObject provided=call.getObject("phases"),phases=new JSObject();
+        if(provided!=null)for(String key:new String[]{"module-loaded","directory-ready","cashflow-ready","payments-read-start","payments-read-end","expenses-read-start","expenses-read-end"}){
+            if(!provided.has(key))continue;double value=provided.optDouble(key,Double.NaN);
+            if(!Double.isFinite(value)||value<0||value>ready-start){call.reject("Invalid phase duration");return;}phases.put(key,value);
+        }
+        result.put("phases",phases);
+        result.put("receivedElapsedNs",android.os.SystemClock.elapsedRealtimeNanos());result.put("receivedWallMs",System.currentTimeMillis());result.put("stage","source-dom-ready-not-frame");
+        android.util.Log.i("HDModule",result.toString());
+        getActivity().runOnUiThread(()->{
+            android.webkit.WebView view=getBridge().getWebView();
+            if(view!=null)view.postVisualStateCallback(0,new android.webkit.WebView.VisualStateCallback(){
+                @Override public void onComplete(long requestId){
+                    JSObject visual=new JSObject();visual.put("module",module);visual.put("surface",surface);visual.put("documentTraceId",document);visual.put("stage","webview-visual-state-not-surface-present");visual.put("elapsedNs",android.os.SystemClock.elapsedRealtimeNanos());visual.put("wallMs",System.currentTimeMillis());
+                    android.util.Log.i("HDModule",visual.toString());android.os.Trace.beginSection("HDModuleVisual."+module);android.os.Trace.endSection();
+                }
+            });
+        });
+        call.resolve();
+    }
+    @PluginMethod public void recordLocalInteraction(PluginCall call) {
+        if (!"com.hdmanager.app.localdev".equals(getContext().getPackageName())) { call.reject("Local interaction metadata only"); return; }
+        String module=call.getString("module",""),action=call.getString("action",""),status=call.getString("status","");
+        Double duration=call.getDouble("durationMs");Integer count=call.getInt("count"),id=call.getInt("id");
+        if (!"asset_management".equals(module)||!"search".equals(action)||!status.matches("(committed|superseded|cancelled)")
+            ||duration==null||!Double.isFinite(duration)||duration<0||duration>86400000||count==null||count<0||id==null||id<1) {call.reject("Invalid Local interaction metadata");return;}
+        JSObject result=new JSObject();result.put("id",id);result.put("module",module);result.put("action",action);result.put("status",status);result.put("durationMs",duration);result.put("count",count);
+        result.put("scope","handler-to-react-commit-not-frame");result.put("receivedElapsedNs",android.os.SystemClock.elapsedRealtimeNanos());
+        android.util.Log.i("HDInteraction",result.toString());call.resolve();
+    }
+    @PluginMethod public void recordLocalSyncStage(PluginCall call) {
+        String stage=call.getString("stage",""),code=call.getString("code","none");
+        if (!"com.hdmanager.app.localdev".equals(getContext().getPackageName()) || !stage.matches("(authority-start|authority-valid|authority-failed|claimed|claim-failed|idle|sending|send-failed|receipt-failed|receipt-applied)")) {call.reject("Local sync metadata only");return;}
+        if(!code.matches("(none|accepted|conflict|rejected|unknown|storage-error|permission-denied|unauthenticated|unavailable|deadline-exceeded|network-error|invalid-argument|resource-exhausted|SQLITE_BUSY|SQLITE_LOCKED|SQLITE_IOERR)"))code="other";
+        // Fixed stage and error category only. No IDs, payloads, SQL, identity,
+        // request URL, input text or exception messages may enter Android logs.
+        android.util.Log.i("HDLocalSync",stage+" "+code);
+        call.resolve();
+    }
     @PluginMethod public void inspectLocalPreferenceFootprint(PluginCall call) {
         if (!"com.hdmanager.app.localdev".equals(getContext().getPackageName())) { call.reject("Local metadata only"); return; }
         JSObject result = new JSObject();
@@ -57,6 +136,7 @@ public class NativeSafeAreaPlugin extends Plugin {
         });
     }
     @Override protected void handleOnDestroy() {
+        stopNetworkObservation();
         if (localFrames != null) { localFrames.close(null); localFrames = null; }
         super.handleOnDestroy();
     }
@@ -98,6 +178,13 @@ public class NativeSafeAreaPlugin extends Plugin {
         if (!stage.matches("(html.initial-script|react.entry|workspace.interactive|home.report-commit|background.auth-start|background.sync-start)") ||
             !document.matches("[a-f0-9-]{36}") || at == null || origin == null || !Double.isFinite(at) || !Double.isFinite(origin)) { call.reject("Invalid startup metadata"); return; }
         AndroidStartupTimeline.js(stage, document, at, origin);
+        if (stage.equals("workspace.interactive")) {
+            // Local test coordination only: this existing DOM milestone is NOT
+            // a presented Android frame or a new startup acceptance metric.
+            JSObject metadata = new JSObject(); metadata.put("stage", stage);
+            metadata.put("documentTraceId", document); metadata.put("elapsedNs", android.os.SystemClock.elapsedRealtimeNanos());
+            android.util.Log.i("HDStartupPhase", metadata.toString());
+        }
         if (stage.equals("workspace.interactive") || stage.equals("home.report-commit")) {
             android.webkit.WebView view = getBridge().getWebView();
             if (view != null) view.post(() -> view.postVisualStateCallback(0, new android.webkit.WebView.VisualStateCallback() {

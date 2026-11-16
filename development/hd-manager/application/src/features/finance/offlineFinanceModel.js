@@ -14,6 +14,13 @@ export function financeSearchInputTime(eventTimestamp, now) {
 }
 
 export const FINANCE_PAGE_SIZE = 40;
+// A new revision wrapper requests a fresh read; it is not a new authority.
+// Only the exact live Runtime + underlying directory owner + filter may retain
+// a rendered page while that read runs. Never key retention by tenant ID alone.
+export function financeReadIdentity(previous,runtime,directoryOwner,queryKey){
+  return previous?.runtime===runtime&&previous.directoryOwner===directoryOwner&&previous.queryKey===queryKey
+    ?previous:{runtime,directoryOwner,queryKey};
+}
 export const FINANCE_WRITE_UNAVAILABLE = 'Giao thức Thu chi Development chưa được nối hoặc phiên chưa có quyền ghi tương ứng có chữ ký. Mặc định chỉ đọc; không tạo, sửa hay xác nhận phiếu khi thiếu quyền.';
 export const FINANCE_APPROVAL_FIELDS = Object.freeze(['requiresApproval', 'handoverStatus', 'createdByRole',
   'isPaymentIntent', 'paymentIntent', 'isCustomerDebtPaymentIntent', 'paymentStatus', 'settlementStatus', 'reconciliationStatus']);
@@ -138,18 +145,19 @@ function unpackPage(runtime, source, result) {
 
 // Only read the directory owned by the existing runtime. Never open SQLite,
 // register a listener, call a remote endpoint or enqueue a generic mutation.
-export async function readFinancePage({runtime, directory, source, filters, after = null, head = null}) {
+export async function readFinancePage({runtime, directory, source, filters, after = null, head = null, limit = FINANCE_PAGE_SIZE}) {
   const denied = financeReadAccess(runtime, directory);
   if (denied) throw Error(denied);
   if (!['payments', 'expenses'].includes(source)) throw Error('Nguồn Thu chi không hợp lệ.');
+  if (!Number.isInteger(limit) || limit < 1 || limit > FINANCE_PAGE_SIZE) throw Error('Số phiếu trên trang không hợp lệ.');
   const result = unpackPage(runtime, source, await directory.page(source, {
-    ...financeDirectoryOptions(directory, source, filters), cursor: after, limit: FINANCE_PAGE_SIZE,
+    ...financeDirectoryOptions(directory, source, filters), cursor: after, limit,
     ...(head ? {checkpoint: head} : {}),
   }));
   if (!runtime.isCurrent() || Date.now() >= runtime.expiresAtMs) throw Error('Phiên Offline đã thay đổi.');
   validateFinanceHead(runtime, result?.head);
   if (head && headKey(head) !== headKey(result.head)) throw Error('Nguồn Thu chi đã thay đổi. Hãy tải lại danh sách.');
-  if (!Array.isArray(result.rows) || result.rows.length > FINANCE_PAGE_SIZE
+  if (!Array.isArray(result.rows) || result.rows.length > limit
     || !(result.nextCursor === null || typeof result.nextCursor === 'string' && result.nextCursor.length > 0)
     || result.hasMore !== (result.nextCursor !== null)
     || result.nextCursor !== null && (result.nextCursor === after || result.rows.length === 0)) {

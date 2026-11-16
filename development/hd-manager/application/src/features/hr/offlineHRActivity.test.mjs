@@ -7,6 +7,7 @@ import traverseModule from '@babel/traverse';
 import * as model from './offlineHRModel.js';
 import * as attendanceModel from './offlineAttendanceEditorModel.js';
 import {businessDayKey} from '../../utils/businessDate.js';
+import {focusHRPanel} from './focusHRPanel.js';
 
 // Execute the real component hook/effect bodies and existing Back hook. Only
 // JSX returns become inspection objects; no DOM, bundler, build or native app.
@@ -51,7 +52,7 @@ function hooks(program,name,initialProps){
   };
   const window={addEventListener(name,handler){assert.equal(name,'hd-manager-screen-back');listeners.add(handler);},
     removeEventListener(_name,handler){listeners.delete(handler);}};
-  const component=vm.runInNewContext(backCode+'\n'+program+`\n${name};`,{...model,...attendanceModel,businessDayKey,useState,useRef,useEffect,window});
+  const component=vm.runInNewContext(backCode+'\n'+program+`\n${name};`,{...model,...attendanceModel,businessDayKey,focusHRPanel,useState,useRef,useEffect,useLayoutEffect:useEffect,window});
   return {
     async settle(){
       for(let n=0;n<12;n++){

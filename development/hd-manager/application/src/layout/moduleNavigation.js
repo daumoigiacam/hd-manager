@@ -15,12 +15,13 @@ export function createModuleNavigation(initialTab, onIntent = () => {}) {
     },
     set(next) {
       const target = typeof next === 'function' ? next(tab) : next;
-      if (Object.is(target, tab)) return;
+      if (Object.is(target, tab)) return false;
       // Start only the module explicitly requested, ahead of the route's
       // subscription/render work. This hook must never delay navigation.
-      try { if(onIntent(target)===false)return; } catch { /* The module view owns load errors. */ }
+      try { if(onIntent(target)===false)return false; } catch { /* The module view owns load errors. */ }
       tab = target;
       for (const listener of [...listeners]) listener();
+      return true;
     },
   });
 }

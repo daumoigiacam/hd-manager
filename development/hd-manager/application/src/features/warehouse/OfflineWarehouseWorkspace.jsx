@@ -1,5 +1,7 @@
-import React, {useEffect, useRef, useState} from 'react';
+import React, {useEffect, useLayoutEffect, useRef, useState} from 'react';
+import {focusWorkspacePanel} from '../../utils/focusWorkspacePanel.js';
 import {useAppScreenBack} from '../../hooks/useAppScreenBack.js';
+import {retainedScopedPage} from '../../services/retainedScopedPage.js';
 import OfflineStockCountEditor,{OfflineStockCountPending,stockCountWriteAccess} from './OfflineStockCountEditor.jsx';
 import OfflineWarehouseImportEditor,{importWriteAccess} from './OfflineWarehouseImportEditor.jsx';
 import OfflineWarehouseImportQueue from './OfflineWarehouseImportQueue.jsx';
@@ -76,6 +78,7 @@ export default function OfflineWarehouseWorkspace({runtime, onNavigate, director
   loadedRef.current = loaded;
   const detailTicket = useRef(0);
   const detailPanel = useRef(null);
+  const detailHeading = useRef(null),focusedDetail = useRef(null);
   useAppScreenBack(() => {
     // Editors own draft confirmation. Navigation cannot silently discard them.
     if(runtime.isCurrent() && dispatchEditor) {dispatchClose.current?.();return true;}
@@ -84,7 +87,13 @@ export default function OfflineWarehouseWorkspace({runtime, onNavigate, director
     if(!runtime.isCurrent() || detail?.key !== queryKey) return false;
     detailTicket.current++;setDetail(null);return true;
   });
-  useEffect(() => {if(detail?.key === queryKey) detailPanel.current?.focus();},[detail,queryKey]);
+  useLayoutEffect(() => {
+    const selected=detail?.key===queryKey?detail.item:null;
+    if(!selected){focusedDetail.current=null;return;}
+    if(focusedDetail.current===selected)return;
+    focusWorkspacePanel(detailPanel.current,detailHeading.current);
+    focusedDetail.current=selected;
+  },[detail?.item,queryKey]);
   useEffect(() => {
     if(initialSourceRef.current === initialSource) return;
     initialSourceRef.current = initialSource;
@@ -128,7 +137,7 @@ export default function OfflineWarehouseWorkspace({runtime, onNavigate, director
   const knownCheckpointChanged = loaded?.result && sync?.generation && Number.isSafeInteger(sync?.seq) &&
     (sync.generation !== loaded.result.metadata.checkpoint.generation || sync.seq !== loaded.result.metadata.checkpoint.seq);
   const invalidRead = readState?.key === requestKey && readState.invalid;
-  const result = loaded?.key === queryKey && !knownCheckpointChanged && !invalidRead ? loaded.result : null;
+  const {result,refreshing:listRefreshing,fresh:listFresh}=retainedScopedPage({runtime,loaded,queryKey,requestKey,directory,invalid:invalidRead,checkpointChanged:knownCheckpointChanged,pending:readState?.key===requestKey&&readState.pending});
   const error = readState?.key === requestKey ? readState.error : null, pending = !result && !error;
   const activeDetail = detail?.key === queryKey && !knownCheckpointChanged && !invalidRead ? detail : null;
   const checkpoint = result?.metadata.checkpoint;
@@ -152,6 +161,7 @@ export default function OfflineWarehouseWorkspace({runtime, onNavigate, director
     catch {setFilterError('Khoảng ngày chưa hợp lệ. Ngày kết thúc phải từ ngày bắt đầu trở đi.');}
   }
   async function openDetail(item, cursor = null) {
+    if(!listFresh)return;
     const ticket = ++detailTicket.current, key = queryKey;
     setDetail({key,item,checkpoint,pending:true});
     try {
@@ -181,8 +191,8 @@ export default function OfflineWarehouseWorkspace({runtime, onNavigate, director
       {Object.entries(WAREHOUSE_SOURCES).filter(([key])=>!runtime.business?.readSources||runtime.business.readSources.includes(key)).map(([key,value]) => <HDButton key={key} disabled={Boolean(importEditor||dispatchEditor)} variant={source === key ? 'primary' : 'secondary'} aria-current={source === key ? 'page' : undefined} onClick={() => changeSource(key)}>{value.label}</HDButton>)}
     </nav>
     <section className="rounded-2xl border border-amber-200 bg-amber-50 p-3" aria-label="Quyền ghi kho Offline">
-      <p className="text-sm">{dispatchRepositoryReady?'Chỉ hỗ trợ phiếu xuất một dòng ngoài đơn đặt. Máy chủ kiểm tra tồn, đơn vị và giá; phiếu gắn đơn đặt/hóa đơn/giao hàng hoặc sổ kho cần hợp đồng gốc riêng.':importRepositoryReady?'Phiếu nhập và chi phí liên quan được lưu cùng giao dịch trên thiết bị, chờ máy chủ xác nhận.':stockRepositoryReady?'Phiếu kiểm tồn được lưu trên thiết bị và kiểm tra quyền tạo, sửa, lưu trữ riêng.':WAREHOUSE_WRITE_GAP.message}</p>
-      <div className="mt-2 flex flex-wrap gap-2"><HDButton disabled={Boolean(importEditor||dispatchEditor)||(!canCreateCount&&!canCreateImport&&!canCreateDispatch)} onClick={() => canCreateDispatch?setDispatchEditor({id:null,readSource:'local'}):canCreateImport?setImportEditor({id:null,readSource:'local'}):setStockEditor({id:null})}>{descriptor.action}</HDButton>{!stockRepositoryReady&&!importRepositoryReady&&!dispatchRepositoryReady&&<><HDButton disabled variant="secondary">Sửa phiếu</HDButton><HDButton disabled variant="secondary">Xóa phiếu</HDButton></>}</div>
+
+      <div className="flex flex-wrap items-center gap-2"><HDButton disabled={Boolean(importEditor||dispatchEditor)||(!canCreateCount&&!canCreateImport&&!canCreateDispatch)} onClick={() => canCreateDispatch?setDispatchEditor({id:null,readSource:'local'}):canCreateImport?setImportEditor({id:null,readSource:'local'}):setStockEditor({id:null})}>{descriptor.action}</HDButton>{!stockRepositoryReady&&!importRepositoryReady&&!dispatchRepositoryReady&&<><HDButton disabled variant="secondary">Sửa phiếu</HDButton><HDButton disabled variant="secondary">Xóa phiếu</HDButton></>}<details><summary className="cursor-pointer text-sm font-semibold">Thông tin</summary><p className="text-sm">{dispatchRepositoryReady?'Chỉ hỗ trợ phiếu xuất một dòng ngoài đơn đặt. Máy chủ kiểm tra tồn, đơn vị và giá; phiếu gắn đơn đặt/hóa đơn/giao hàng hoặc sổ kho cần hợp đồng gốc riêng.':importRepositoryReady?'Phiếu nhập và chi phí liên quan được lưu cùng giao dịch trên thiết bị, chờ máy chủ xác nhận.':stockRepositoryReady?'Phiếu kiểm tồn được lưu trên thiết bị và kiểm tra quyền tạo, sửa, lưu trữ riêng.':WAREHOUSE_WRITE_GAP.message}</p></details></div>
     </section>
     {stockRepositoryReady&&stockEditor&&<OfflineStockCountEditor key={JSON.stringify([scopeIdentity(runtime),stockEditor.id])} runtime={runtime} repository={stockCountRepository} id={stockEditor.id} onClose={()=>setStockEditor(null)} onSaved={()=>setStockRefresh(value=>value+1)}/>}
     {stockRepositoryReady&&<OfflineStockCountPending runtime={runtime} repository={stockCountRepository} refreshToken={stockRefresh} onEdit={id=>setStockEditor({id})}/>}
@@ -190,39 +200,8 @@ export default function OfflineWarehouseWorkspace({runtime, onNavigate, director
     {importRepositoryReady&&<OfflineWarehouseImportQueue runtime={runtime} repository={warehouseImportRepository} disabled={Boolean(importEditor)} refreshToken={importRefresh} onEdit={id=>{if(!importEditor)setImportEditor({id,readSource:'local'});}}/>}
     {dispatchRepositoryReady&&dispatchEditor&&<React.Suspense fallback={<p role="status">Đang mở trình sửa xuất kho…</p>}><OfflineWarehouseDispatchEditor key={JSON.stringify([scopeIdentity(runtime),dispatchEditor.id,dispatchEditor.readSource||'local'])} runtime={runtime} repository={warehouseDispatchRepository} id={dispatchEditor.id} readSource={dispatchEditor.readSource||'local'} closeRequestRef={dispatchClose} onClose={()=>setDispatchEditor(null)} onSaved={()=>setDispatchRefresh(value=>value+1)}/></React.Suspense>}
     {dispatchRepositoryReady&&<React.Suspense fallback={<p role="status">Đang mở hàng chờ xuất kho…</p>}><OfflineWarehouseDispatchQueue runtime={runtime} repository={warehouseDispatchRepository} disabled={Boolean(dispatchEditor)} refreshToken={dispatchRefresh} onOpen={id=>{if(!dispatchEditor)setDispatchEditor({id,readSource:'local'});}}/></React.Suspense>}
-    <form onSubmit={applyFilters} className="grid gap-3 rounded-2xl border bg-white p-3 sm:grid-cols-2" aria-label="Lọc chứng từ kho">
-      <HDInput label="Tìm chứng từ" maxLength={128} value={draft.text} placeholder="Mã phiếu, tên sản phẩm trên phiếu, ghi chú" onChange={event => setDraft({...draft,text:event.target.value})}/>
-      <label className="grid gap-1 text-sm">Nhân viên lập phiếu<select className="rounded-xl border p-2" value={draft.employeeId} onChange={event => setDraft({...draft,employeeId:event.target.value})}><option value="">Tất cả nhân viên được cấp quyền</option>{employeeOptions.map(employee => <option key={employee.id} value={employee.id}>{employee.name || employee.id}</option>)}</select></label>
-      <HDDateInput label="Từ ngày nghiệp vụ" value={draft.from} onChange={event => setDraft({...draft,from:event.target.value})}/>
-      <HDDateInput label="Đến hết ngày nghiệp vụ" value={draft.through} onChange={event => setDraft({...draft,through:event.target.value})}/>
-      <HDInput label="Trạng thái nguồn (đúng giá trị đã lưu)" maxLength={128} value={draft.status} placeholder="Để trống để xem tất cả" onChange={event => setDraft({...draft,status:event.target.value})}/>
-      <div className="flex items-end gap-2"><HDButton type="submit">Áp dụng bộ lọc</HDButton><HDButton variant="secondary" onClick={async() => {try{await directory.syncSource?.(source);setCursors([null]);setPage(0);setRefresh(value => value+1);}catch(error){setFilterError(warehouseErrorMessage(error));}}}>Tải lại danh sách</HDButton></div>
-      {filterError && <p role="alert" className="text-sm text-rose-700">{filterError}</p>}
-      <p className="text-xs text-slate-500 sm:col-span-2">Ngày nghiệp vụ theo múi giờ Việt Nam. Chứng từ không có ngày vẫn hiện khi không lọc ngày. Danh sách gồm cả phiếu lưu trữ và ghi rõ trạng thái.</p>
-    </form>
-    <div role="status" className="text-sm text-slate-600">
-      {result?.metadata.coverage ? <>Phạm vi đã lưu: {result.metadata.coverage.cachedRows} / {result.metadata.coverage.totalSourceRows} phiếu · {result.metadata.coverage.mode==='stored-only'?'Đang lọc trong phần đã lưu trên thiết bị':'Trang truy vấn máy chủ đã lưu'} · {result.metadata.coverage.completeSource?'Đã lưu đủ nguồn Nhập kho':'Còn chứng từ chưa được lưu; không phải toàn bộ nguồn'}</> : checkpoint ? <>Nguồn hoàn tất đến {checkpoint.dayKey} · Checkpoint {checkpoint.seq} · {syncedCheckpoint ? 'Đã đồng bộ nguồn máy chủ' : sync?.state === 'SYNCING' ? 'Đang đồng bộ; đang xem bản hoàn tất đã lưu' : sync?.state === 'SYNC_FAILED' ? 'Đồng bộ chưa thành công; đang xem bản hoàn tất đã lưu' : 'Bản hoàn tất trên thiết bị; tải lại danh sách để đối chiếu nguồn mới'}</> : 'Chưa xác nhận nguồn hoàn tất cho danh sách này.'}
-    </div>
-    {!sourceAllowed && <p role="alert">Phiên này chưa được cấp quyền xem {descriptor.label.toLowerCase()} Offline. Cần cập nhật quyền từ phiên trực tuyến được cấp phép và đồng bộ lại.</p>}
-    {pending && <p role="status" aria-busy="true">Đang đọc chứng từ kho từ thiết bị…</p>}
-    {result && readState?.key === requestKey && readState.pending && <p role="status" aria-busy="true">Đang đối chiếu lại danh sách; giữ bản hoàn tất đang xem…</p>}
-    {error && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-rose-800">{error}</p>}
-    {result?.items.length === 0 && <HDEmptyState title={result.metadata.coverage&&!result.metadata.coverage.completeSource?"Chưa thấy chứng từ trong phạm vi đã đọc":"Không có chứng từ phù hợp"} description={result.metadata.coverage&&!result.metadata.coverage.completeSource?"Có thể còn chứng từ chưa được lưu. Khi Online, mở trang tiếp theo hoặc truy vấn lại; khi Offline, chỉ lọc phần đã lưu.":"Hãy kiểm tra bộ lọc ngày, nhân viên hoặc trạng thái."}/>}
-    {result && <div className="space-y-3" aria-label="Danh sách chứng từ kho">
-      {result.items.map(item => {const row = {...item.document,id:item.id}, status = warehouseStatus(source,row);return <article key={item.id} className="rounded-2xl border bg-white p-4">
-        <div className="flex items-start justify-between gap-2"><div><h2 className="font-bold">{row.productName || row.groupName || descriptor.singular}</h2><p className="break-all text-xs text-slate-500">{item.id}</p></div><HDBadge>{status.label}</HDBadge></div>
-        <p className="mt-2 text-sm">Ngày nghiệp vụ: {item.businessDate || 'Chưa ghi nhận'} · Nhân viên: {employeeName(row.empId || row.createdByEmpId)}</p>
-        {source === 'warehouseDispatches' && <p className="text-sm">Khách hàng: {row.customerName || row.customerNameSnapshot || 'Chưa ghi nhận'}</p>}
-        {row.note && <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-600">{row.note}</p>}
-        <HDButton variant="secondary" disabled={Boolean(dispatchEditor)} className="mt-3" onClick={() => {void openDetail(item);}}>Mở chi tiết</HDButton>
-      </article>;})}
-      <nav className="flex items-center justify-between gap-2" aria-label="Trang chứng từ kho">
-        <HDButton variant="secondary" disabled={page === 0} onClick={() => setPage(value => value-1)}>Trang trước</HDButton><span>Trang {page+1} · {result.items.length} phiếu trên trang</span>
-        <HDButton variant="secondary" disabled={!result.hasMore} onClick={() => {setCursors(previous => [...previous.slice(0,page+1),result.nextCursor]);setPage(value => value+1);}}>Trang sau</HDButton>
-      </nav>
-    </div>}
     {activeDetail && <section ref={detailPanel} tabIndex={-1} className="rounded-2xl border-2 border-emerald-200 bg-white p-4" aria-label="Chi tiết chứng từ kho" aria-busy={activeDetail.pending || undefined}>
-      <div className="mb-4 flex items-center justify-between gap-2"><h2 className="font-black">{descriptor.singular}</h2><HDButton variant="secondary" onClick={() => {detailTicket.current++;setDetail(null);}}>Đóng chi tiết</HDButton></div>
+      <div className="mb-4 flex items-center justify-between gap-2"><h2 ref={detailHeading} tabIndex={-1} className="font-black">{descriptor.singular}</h2><HDButton variant="secondary" onClick={() => {detailTicket.current++;setDetail(null);}}>Đóng chi tiết</HDButton></div>
       {activeDetail.pending && <p role="status">Đang đọc chi tiết đã lưu…</p>}
       {activeDetail.error && <p role="alert">{activeDetail.error}</p>}
       {activeDetail.unavailable && <p role="status">Chi tiết sản phẩm chưa được gắn vào bộ đọc kho của phiên này. Chưa có dữ liệu để hiển thị đơn vị hoặc đơn giá lịch sử.</p>}
@@ -249,6 +228,40 @@ export default function OfflineWarehouseWorkspace({runtime, onNavigate, director
         <p className="mt-3 text-xs text-slate-500">Văn bản dài hiển thị tối đa {activeDetail.value.metadata.stringLimit} ký tự mỗi trường. Chứng từ gốc và các dòng khác không bị sửa.</p>
       </>}
     </section>}
+    <form onSubmit={applyFilters} className="grid gap-3 rounded-2xl border bg-white p-3 sm:grid-cols-2" aria-label="Lọc chứng từ kho">
+      <div className="flex items-end gap-2 sm:col-span-2"><HDInput className="min-w-0 flex-1" label="Tìm chứng từ" maxLength={128} value={draft.text} placeholder="Mã phiếu, tên sản phẩm, ghi chú" onChange={event => setDraft({...draft,text:event.target.value})}/><HDButton type="submit">Tìm kiếm</HDButton></div>
+      <details className="sm:col-span-2"><summary className="cursor-pointer text-sm font-semibold text-blue-700">Bộ lọc chứng từ{filters.from||filters.to?' · Đang lọc ngày':''}{filters.employeeId?' · Nhân viên':''}{filters.status?' · Trạng thái':''}</summary><div className="mt-3 grid gap-3 sm:grid-cols-2">
+      <label className="grid gap-1 text-sm">Nhân viên lập phiếu<select className="rounded-xl border p-2" value={draft.employeeId} onChange={event => setDraft({...draft,employeeId:event.target.value})}><option value="">Tất cả nhân viên được cấp quyền</option>{employeeOptions.map(employee => <option key={employee.id} value={employee.id}>{employee.name || employee.id}</option>)}</select></label>
+      <HDDateInput label="Từ ngày nghiệp vụ" value={draft.from} onChange={event => setDraft({...draft,from:event.target.value})}/>
+      <HDDateInput label="Đến hết ngày nghiệp vụ" value={draft.through} onChange={event => setDraft({...draft,through:event.target.value})}/>
+      <HDInput label="Trạng thái nguồn (đúng giá trị đã lưu)" maxLength={128} value={draft.status} placeholder="Để trống để xem tất cả" onChange={event => setDraft({...draft,status:event.target.value})}/>
+      <div className="flex items-end gap-2"><HDButton type="submit">Áp dụng bộ lọc</HDButton><HDButton variant="secondary" onClick={async() => {try{await directory.syncSource?.(source);setCursors([null]);setPage(0);setRefresh(value => value+1);}catch(error){setFilterError(warehouseErrorMessage(error));}}}>Tải lại danh sách</HDButton></div>
+      {filterError && <p role="alert" className="text-sm text-rose-700">{filterError}</p>}
+      <p className="text-xs text-slate-500 sm:col-span-2">Ngày nghiệp vụ theo múi giờ Việt Nam. Chứng từ không có ngày vẫn hiện khi không lọc ngày. Danh sách gồm cả phiếu lưu trữ và ghi rõ trạng thái.</p>
+      </div></details>
+    </form>
+    <div role="status" className="text-sm text-slate-600">
+      {result?.metadata.coverage ? <>Phạm vi đã lưu: {result.metadata.coverage.cachedRows} / {result.metadata.coverage.totalSourceRows} phiếu · {result.metadata.coverage.mode==='stored-only'?'Đang lọc trong phần đã lưu trên thiết bị':'Trang truy vấn máy chủ đã lưu'} · {result.metadata.coverage.completeSource?'Đã lưu đủ nguồn Nhập kho':'Còn chứng từ chưa được lưu; không phải toàn bộ nguồn'}</> : checkpoint ? <>Bản đã lưu {checkpoint.dayKey.split('-').reverse().join('/')} · {syncedCheckpoint ? 'Nguồn máy chủ đã xác nhận' : sync?.state === 'SYNCING' ? 'Đang cập nhật nền' : sync?.state === 'SYNC_FAILED' ? 'Chưa lấy được thay đổi mới' : 'Chưa kiểm tra thay đổi mới'}</> : 'Chưa xác nhận nguồn hoàn tất cho danh sách này.'}
+    </div>
+    {!sourceAllowed && <p role="alert">Phiên này chưa được cấp quyền xem {descriptor.label.toLowerCase()} Offline. Cần cập nhật quyền từ phiên trực tuyến được cấp phép và đồng bộ lại.</p>}
+    {pending && <p role="status" aria-busy="true">Đang đọc chứng từ kho từ thiết bị…</p>}
+    {result && listRefreshing && <p role="status">Đang cập nhật nền; giữ bản đã xem. Chi tiết và chuyển trang mở lại khi nguồn hiện tại được kiểm tra xong.</p>}
+    {error && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-rose-800">{error}</p>}
+    {result?.items.length === 0 && <HDEmptyState title={result.metadata.coverage&&!result.metadata.coverage.completeSource?"Chưa thấy chứng từ trong phạm vi đã đọc":"Không có chứng từ phù hợp"} description={result.metadata.coverage&&!result.metadata.coverage.completeSource?"Có thể còn chứng từ chưa được lưu. Khi Online, mở trang tiếp theo hoặc truy vấn lại; khi Offline, chỉ lọc phần đã lưu.":"Hãy kiểm tra bộ lọc ngày, nhân viên hoặc trạng thái."}/>}
+    {result && <div className="space-y-3" aria-label="Danh sách chứng từ kho">
+      {result.items.map(item => {const row = {...item.document,id:item.id}, status = warehouseStatus(source,row);return <article key={item.id} className="rounded-2xl border bg-white p-4">
+        <div className="flex items-start justify-between gap-2"><div><h2 className="font-bold">{row.productName || row.groupName || descriptor.singular}</h2><p className="break-all text-xs text-slate-500">{item.id}</p></div><HDBadge>{status.label}</HDBadge></div>
+        <p className="mt-2 text-sm">Ngày nghiệp vụ: {item.businessDate || 'Chưa ghi nhận'} · Nhân viên: {employeeName(row.empId || row.createdByEmpId)}</p>
+        {source === 'warehouseDispatches' && <p className="text-sm">Khách hàng: {row.customerName || row.customerNameSnapshot || 'Chưa ghi nhận'}</p>}
+        {row.note && <p className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-600">{row.note}</p>}
+        <HDButton variant="secondary" disabled={Boolean(dispatchEditor)||!listFresh} className="mt-3" onClick={() => {void openDetail(item);}}>Mở chi tiết</HDButton>
+      </article>;})}
+      <nav className="flex items-center justify-between gap-2" aria-label="Trang chứng từ kho">
+        <HDButton variant="secondary" disabled={page === 0||!listFresh} onClick={() => setPage(value => value-1)}>Trang trước</HDButton><span>Trang {page+1} · {result.items.length} phiếu trên trang</span>
+        <HDButton variant="secondary" disabled={!result.hasMore||!listFresh} onClick={() => {setCursors(previous => [...previous.slice(0,page+1),result.nextCursor]);setPage(value => value+1);}}>Trang sau</HDButton>
+      </nav>
+    </div>}
+
   </section>;
 }
 

@@ -1,6 +1,6 @@
 import {createProjectionCache} from './cooperativeProjection.js';
 export const EMPTY_MODULE_PROJECTION_SOURCE=Object.freeze({});
-const counts=Object.freeze({requestVisible:5,requestStatuses:6,orderViews:11,orderDirectory:3,orderLedgerIndex:1,orderPaymentIndex:1,orderSorted:3,payroll:15});
+const counts=Object.freeze({requestVisible:5,requestStatuses:6,requestTableRows:6,orderViews:11,orderDirectory:3,orderLedgerIndex:1,orderPaymentIndex:1,orderSorted:3,payroll:15});
 const caches=Object.fromEntries(Object.keys(counts).map(kind=>[kind,createProjectionCache({maxScopes:4})]));
 
 // Complete immutable read projections only. Forms, drafts, commands, network

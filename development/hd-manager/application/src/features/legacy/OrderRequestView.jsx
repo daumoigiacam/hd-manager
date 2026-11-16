@@ -9,7 +9,8 @@ import { createRecordCalculationCache } from "../../services/recordCalculationCa
 import { sortProjection } from "../../services/cooperativeProjection.js";
 import { useCooperativeProjection } from "../../hooks/useCooperativeProjection.js";
 import {usePreparedSearchIndex} from '../../hooks/usePreparedSearchIndex.js';
-import {getReadOnlyModuleProjectionEntry,getLocalProjectionClockScope} from '../../services/moduleProjectionCaches.js';
+import {getReadOnlyModuleProjectionEntry,getLocalProjectionClockScope,readCompletedModuleProjection} from '../../services/moduleProjectionCaches.js';
+import {requestReadiness} from '../../services/moduleReadAvailability.js';
 import { createBoundedCollationCompare } from "../../services/collationCompareCache.js";
 import { applyOrderRequestClassificationEdit, getOrderRequestSizeDisplayValue } from "../../utils/orderRequestEditing.js";
 import { createIncrementalStableSorter } from "../../services/incrementalStableSort.js";
@@ -17,6 +18,7 @@ import { getPreviousOrderSuggestions, previousOrderDraftFields } from "../../uti
 import { getOrderRequestAttributeOptions, expandOrderRequestAttributes } from "../../utils/orderRequestAttributes.js";
 import { getProductSearchFields, searchCustomers as searchCustomerRecords } from "../../services/searchEngine.js";
 import { getGroupedRowPage } from "../../services/groupedRowPage.js";
+import {getDefaultListPageSize} from '../../services/renderOptimization.js';
 import { buildOrderRequestSharePagesByCustomer, groupOrderRequestShareRowsByCustomer } from "../../utils/orderRequestShareGrouping.js";
 import { configScopeFingerprint } from "../../utils/customerProductAutoSync.js";
 import { ORDER_REQUEST_SELECTION_LOCK_MS, releaseOrderRequestSelectionLock, tryAcquireOrderRequestSelectionLock } from "../../utils/orderRequestInteraction.js";
@@ -35,7 +37,7 @@ import CoreRowPager from "../orders/CoreRowPager.jsx";
 // Generated binding contract is checked against the real source AST.
 export function createOrderRequestView(runtime) {
   const {APP_SCREEN_BACK_EVENT,EMPTY_REQUEST_STATUS_MAPS,GEMINI_PROXY_ENABLED,HDSingleCellEditDialog,OrderRequestSelectableProductGroup,SHARE_IMAGE_CACHE_TTL_MS,buildOrderRequestDuplicateSignature,buildStableHash,buildWarehouseDispatchShortageSummary,canvasToBlob,capitalizeFirst,capitalizeFirstPreservingSpacing,debugShareImageCache,drawRoundedRect,ensureMicrophoneAccess,findBestEntityMatch,fitCanvasFontSize,formatCurrency,formatDateLabel,formatInputCurrency,formatNumber,getCompactProductName,getCustomerBranchById,getCustomerBranchDisplayName,getCustomerBranchFixedProductIds,getCustomerBranchProductConfigSource,getCustomerDisplayName,getCustomerFixedProductIds,getCustomerProductAttribute,getCustomerProductConfig,getCustomerProductDefaultUnit,getCustomerProductPrice,getCustomerProductPricingUnit,getCustomerProductSize,getCustomerProductVariants,getEntityTimestamp,getFriendlyFirebaseErrorMessage,getOrderPlacedAtLabel,getOrderPlacedAtTimeLabel,getProductAttributes,getProductShortName,getSalesDownlineEmployeeIds,getTodayString,getTransactionBillingPresentation,groupOrderRequestProductVariants,hasCustomerProductPrice,isEmployeeSalesPosition,isEmployeeWarehouseScalePosition,isNativeRuntime,isOwnerPosition,isShareCancelled,isTimeoutLikeError,mapMicrophoneAccessErrorMessage,markAppBackHandled,normalizeCustomerBranches,normalizeLeadingLabel,normalizeLookupText,parseDateInputValue,parseInputCurrency,parseLooseMoneyValue,parseLooseQuantityValue,readPersistentShareImageAsset,requestOrderRequestDraftFromGeminiAudio,requestOrderRequestDraftFromGeminiTranscript,resolveCustomerProductBillingConfiguration,roundMoneyValue,saveBlobFile,shareBlobFile,tokenizeLookupText,useAutoDismissMessage,vietnamNumericCollator,writeBlobToShareCache,writePersistentShareImageAsset} = runtime;
-  function OrderRequestView({ employee, employees = [], customers, products, orderRequests, warehouseDispatches = [], onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onEditCustomer, onGetCustomerProductPreference, onSaveCustomerProductPreference, onSyncCustomerFixedProductDefaults, showFilterPanel, setShowFilterPanel, canViewAllOrderRequests = false, canCreateOrderRequest = false, canEditOrderRequest = false, canEditOrderRequestQuantityUnit = false, canEditOrderRequestSizePrice = false, canDeleteOrderRequest = false, canSetOrderRequestDeposit = false, canEditOrderRequestDeposit = false, canShareOrderRequestSheet = false, canFilterOrderRequests = false, quickActionIntent = null, onQuickActionHandled = () => {} }) {
+  function OrderRequestView({ requestDataReady = true, dispatchDataReady = true, requestCacheReady = false, dispatchCacheReady = false, onDispatchDemandChange, employee, employees = [], customers, products, orderRequests, warehouseDispatches = [], onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onEditCustomer, onGetCustomerProductPreference, onSaveCustomerProductPreference, onSyncCustomerFixedProductDefaults, showFilterPanel, setShowFilterPanel, canViewAllOrderRequests = false, canCreateOrderRequest = false, canEditOrderRequest = false, canEditOrderRequestQuantityUnit = false, canEditOrderRequestSizePrice = false, canDeleteOrderRequest = false, canSetOrderRequestDeposit = false, canEditOrderRequestDeposit = false, canShareOrderRequestSheet = false, canFilterOrderRequests = false, quickActionIntent = null, onQuickActionHandled = () => {} }) {
   const isSales = isEmployeeSalesPosition(employee);
   const isOwner = isOwnerPosition(employee?.position);
   const isWarehouseScale = isEmployeeWarehouseScalePosition(employee);
@@ -659,7 +661,7 @@ export function createOrderRequestView(runtime) {
     permissionKey:JSON.stringify([canViewAllRequests,isSales,Array.from(salesVisibleEmployeeIdSet).sort()]),periodKey:requestWorkingDate,
     clockKey:getLocalProjectionClockScope(getTodayString())};
   const visibleRequestEntry=getReadOnlyModuleProjectionEntry('requestVisible',[employee,employees,customers,products,orderRequests],requestProjectionScope);
-  const visibleRequestsProjection=useCooperativeProjection(prepareVisibleRequests,visibleRequestEntry);
+  const visibleRequestsProjection=useCooperativeProjection(prepareVisibleRequests,visibleRequestEntry,{enabled:requestDataReady||requestCacheReady});
   const visibleRequests=visibleRequestsProjection.value;
   const filteredRequests = useMemo(
     () => visibleRequests.filter((request) => {
@@ -885,9 +887,9 @@ export function createOrderRequestView(runtime) {
   }, [activeProducts, customers, requestWorkingDate, visibleRequests, warehouseDispatches,visibleRequestsProjection.pending,visibleRequestsProjection.error,requestProjectionAttempt]);
   const requestStatusEntry=!visibleRequestsProjection.pending&&!visibleRequestsProjection.error
     ?getReadOnlyModuleProjectionEntry('requestStatuses',[employee,employees,customers,products,orderRequests,warehouseDispatches],requestProjectionScope):undefined;
-  const requestStatusProjection=useCooperativeProjection(prepareRequestWarehouseStatuses,requestStatusEntry);
-  const requestProjectionReady=!visibleRequestsProjection.pending && !visibleRequestsProjection.error
-    && !requestStatusProjection.pending && !requestStatusProjection.error && Boolean(requestStatusProjection.value);
+  const requestStatusProjection=useCooperativeProjection(prepareRequestWarehouseStatuses,requestStatusEntry,{enabled:(requestDataReady||requestCacheReady)&&(dispatchDataReady||dispatchCacheReady)});
+  const {rowsReady:requestRowsReady,projectionReady:requestProjectionReady,writesReady:requestWritesReady,retained:requestRetained}=requestReadiness({baseFresh:requestDataReady,dispatchFresh:dispatchDataReady,baseRetained:requestCacheReady,dispatchRetained:dispatchCacheReady,rowsComplete:!visibleRequestsProjection.pending&&!visibleRequestsProjection.error,statusesComplete:!requestStatusProjection.pending&&!requestStatusProjection.error&&Boolean(requestStatusProjection.value)});
+  useEffect(()=>{onDispatchDemandChange?.(requestRowsReady);return()=>onDispatchDemandChange?.(false);},[requestRowsReady,onDispatchDemandChange]);
   const orderRequestWarehouseStatusMaps=requestProjectionReady ? requestStatusProjection.value : EMPTY_REQUEST_STATUS_MAPS;
 
 
@@ -1147,23 +1149,30 @@ export function createOrderRequestView(runtime) {
       };
     });
   }), [activeProducts, employee?.companyId, employee?.tenantId, productLookup]);
-  const editableCurrentDayRows = useMemo(() => !requestProjectionReady ? [] : sortEditableRequestRows(filteredRequests.flatMap((request) => {
+  const requestTableScope={...requestProjectionScope,
+    permissionKey:JSON.stringify([requestProjectionScope.permissionKey,canEditGeneral,canEditQuantity,canEditSizePrice,canDelete,canViewAllRequests,isOwnerAccount]),
+    periodKey:JSON.stringify([requestWorkingDate,requestFilterDate,requestFilterSalesEmpId])};
+  // Cache only completed immutable source projections. A pending warehouse
+  // check, draft or form never enters this shared, four-scope bounded cache.
+  const requestTableEntry=requestProjectionReady?getReadOnlyModuleProjectionEntry('requestTableRows',
+    [employee,employees,customers,products,orderRequests,warehouseDispatches],requestTableScope):undefined;
+  const editableCurrentDayRows = useMemo(() => !requestRowsReady ? [] : readCompletedModuleProjection(requestTableEntry,()=>sortEditableRequestRows(filteredRequests.flatMap((request) => {
     const requestWarehouseStatus = orderRequestWarehouseStatusMaps.byRequestId.get(request.id) || null;
     const requestCustomer = request.customer || customerLookup.get(request.customerId) || null;
     const salesEmpId = resolveRequestSalesEmpId(request);
     const salesName = resolveSalesEmployeeName(salesEmpId);
-    const canApproveCustomerPortal = canApproveCustomerPortalRequest(request);
+    const canApproveCustomerPortal = requestProjectionReady&&canApproveCustomerPortalRequest(request);
     return getEditableRequestBaseRows(request, requestCustomer, salesEmpId, salesName).map(row => {
       const rowWarehouseStatus = orderRequestWarehouseStatusMaps.byRowKey.get(row.rowKey) || null;
       return {
         ...row,
         canApproveCustomerPortal,
-        warehouseDispatchStatus: rowWarehouseStatus?.status || requestWarehouseStatus?.status || request.warehouseDispatchStatus || request.dispatchStatus || '',
-        warehouseDispatchDate: rowWarehouseStatus?.dispatchedDate || requestWarehouseStatus?.latestDispatchDate || request.warehouseDispatchDate || '',
+        warehouseDispatchStatus: requestProjectionReady?(rowWarehouseStatus?.status || requestWarehouseStatus?.status || request.warehouseDispatchStatus || request.dispatchStatus || ''):'unknown',
+        warehouseDispatchDate: requestProjectionReady?(rowWarehouseStatus?.dispatchedDate || requestWarehouseStatus?.latestDispatchDate || request.warehouseDispatchDate || ''):'',
         warehouseDispatchIds: rowWarehouseStatus?.dispatchIds || []
       };
     });
-  })), [requestProjectionReady,sortEditableRequestRows, getEditableRequestBaseRows, filteredRequests, orderRequestWarehouseStatusMaps, canEdit, canViewAllRequests, customerLookup, customers, employee?.id, employee?.name, isOwnerAccount, salesEmployeeLookup, salesVisibleEmployeeIdSet]);
+  }))), [requestTableEntry,requestRowsReady,requestProjectionReady,sortEditableRequestRows, getEditableRequestBaseRows, filteredRequests, orderRequestWarehouseStatusMaps, canEdit, canViewAllRequests, customerLookup, customers, employee?.id, employee?.name, isOwnerAccount, salesEmployeeLookup, salesVisibleEmployeeIdSet]);
   const editableRowsBySales = useMemo(() => {
     const grouped = new Map();
     editableCurrentDayRows.forEach((row, index) => {
@@ -1226,10 +1235,13 @@ export function createOrderRequestView(runtime) {
     };
   }), [editableRowsBySales]);
   const [requestDisplayPage, setRequestDisplayPage] = useState({ scope: '', offset: 0 });
+  // Match the existing low-power list policy. Resolve once, so keyboard/viewport
+  // changes cannot shift rows while editing. Business totals use ALL rows.
+  const [requestTablePageSize]=useState(()=>getDefaultListPageSize()===15?15:50);
   const requestDisplayScope = `${requestFilterDate}|${requestFilterSalesEmpId}`;
   const requestDisplayOffset = requestDisplayPage.scope === requestDisplayScope ? requestDisplayPage.offset : 0;
   const requestRowPage = useMemo(() => getGroupedRowPage(displayRowsBySales.flatMap(salesGroup =>
-    salesGroup.customerGroups.map(group => ({ ...group, salesGroup }))), requestDisplayOffset), [displayRowsBySales, requestDisplayOffset]);
+    salesGroup.customerGroups.map(group => ({ ...group, salesGroup }))), requestDisplayOffset, requestTablePageSize), [displayRowsBySales, requestDisplayOffset,requestTablePageSize]);
   const visibleRequestSalesGroups = useMemo(() => {
     const groups = [];
     for (const customerGroup of requestRowPage.items) {
@@ -1399,7 +1411,7 @@ export function createOrderRequestView(runtime) {
   };
 
   const updateCustomerPortalOrderApproval = async (requestId, nextStatus = 'confirmed') => {
-    if (!requestId || typeof onEditOrderRequest !== 'function') return;
+    if (!requestWritesReady || !requestId || typeof onEditOrderRequest !== 'function') return;
     const request = latestOrderRequests.find(item => item.id === requestId) || orderRequests.find(item => item.id === requestId);
     if (!request || !canApproveCustomerPortalRequest(request)) return;
     const normalizedStatus = nextStatus === 'rejected' ? 'rejected' : 'confirmed';
@@ -1644,7 +1656,7 @@ export function createOrderRequestView(runtime) {
 
   const openOrderCellEditor = (row, field, event) => {
     event?.stopPropagation?.();
-    if (!row || (!canEditOrderCellField(field) && !canDelete)) return;
+    if (!requestWritesReady || !row || (!canEditOrderCellField(field) && !canDelete)) return;
     startInlineEditRow(row);
     setOrderCellEditor({ row, field });
   };
@@ -3075,7 +3087,7 @@ export function createOrderRequestView(runtime) {
 
   const orderRequestShareBusyRef = useRef(false);
   const handleShareOrderRequestSheet = async () => {
-    if (!requestProjectionReady) return;
+    if (!requestWritesReady) return;
     if (orderRequestShareBusyRef.current) return;
     if (!canShareOrderRequestSheet) {
       setSheetStatus('Bạn chưa được cấp quyền chia sẻ bảng đơn đặt hàng.');
@@ -3394,7 +3406,7 @@ export function createOrderRequestView(runtime) {
   }
 
   return (
-    <div className="premium-data-module premium-orders-module premium-order-request-module space-y-4 animate-in fade-in pb-16" aria-busy={!requestProjectionReady}>
+    <div className="premium-data-module premium-orders-module premium-order-request-module space-y-4 animate-in fade-in pb-16" data-hd-essential-data-ready={requestRowsReady} aria-busy={!requestRowsReady}>
       {requestStatus && (
         <div role="status" className="flex items-start gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">
           <span className="min-w-0 flex-1">{requestStatus}</span>
@@ -3457,7 +3469,7 @@ export function createOrderRequestView(runtime) {
           </button>
         )}
         {canShareOrderRequestSheet && (
-          <button type="button" onClick={handleShareOrderRequestSheet} disabled={isSheetExporting || !requestProjectionReady}
+          <button type="button" onClick={handleShareOrderRequestSheet} disabled={isSheetExporting || !requestWritesReady}
             aria-label={isSheetExporting ? 'Đang chuẩn bị chia sẻ' : 'Chia sẻ'}
             className="hd-request-toolbar__share">
             {isSheetExporting ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
@@ -3467,14 +3479,15 @@ export function createOrderRequestView(runtime) {
       </div>
 
       <div className="hd-request-list bg-white">
-        {!requestProjectionReady ? (
+        {!requestRowsReady ? (
           visibleRequestsProjection.error || requestStatusProjection.error
             ? <p role="alert" className="p-4 text-sm text-amber-800">Chưa đối chiếu xong đơn đặt và xuất kho.
                 <button type="button" onClick={()=>setRequestProjectionAttempt(n=>n+1)} className="ml-3 font-bold underline">Thử lại</button>
               </p>
             : <p role="status" className="p-4 text-sm text-slate-500">Đang chuẩn bị đơn đặt và đối chiếu xuất kho…</p>
         ) : <>
-
+          {requestRetained&&requestRowsReady&&<p role="status" className="p-3 text-sm text-slate-500">Đang hiển thị bản đã tải trong phiên này. Đang kiểm tra thay đổi ở nền; sửa, duyệt và chia sẻ mở sau khi máy chủ xác nhận.</p>}
+          {!requestProjectionReady&&<p role="status" className="p-3 text-sm text-slate-500">Danh sách đơn đã sẵn sàng. Đang đối chiếu xuất kho; sửa đơn và chia sẻ sẽ mở sau khi đối chiếu hoàn tất.</p>}
 
           {showRequestFilterPanel && (
             <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -3553,9 +3566,9 @@ export function createOrderRequestView(runtime) {
                     </div>
                   </td>
                 </tr>
-                <OrderRequestTableRows visibleRequestSalesGroups={visibleRequestSalesGroups} isOwnerAccount={isOwnerAccount}
-                  selectedRowKey={orderCellEditor?.row?.rowKey} canEditGeneral={canEditGeneral} canEditQuantity={canEditQuantity}
-                  canEditSizePrice={canEditSizePrice} canDelete={canDelete} openOrderCellEditor={openRequestTableCell}
+                <OrderRequestTableRows mutationsReady={requestWritesReady} visibleRequestSalesGroups={visibleRequestSalesGroups} isOwnerAccount={isOwnerAccount}
+                  selectedRowKey={orderCellEditor?.row?.rowKey} canEditGeneral={canEditGeneral&&requestWritesReady} canEditQuantity={canEditQuantity&&requestWritesReady}
+                  canEditSizePrice={canEditSizePrice&&requestWritesReady} canDelete={canDelete&&requestWritesReady} openOrderCellEditor={openRequestTableCell}
                   updateCustomerPortalOrderApproval={approveRequestTableRow} formatOrderRequestBranchLabel={formatOrderRequestBranchLabel}
                   getOrderRequestRowProductLabel={readRequestProductLabel} formatDateLabel={formatDateLabel}
                   getOrderRequestRowNoteText={readRequestNote} formatSheetQuantity={readRequestQuantity}

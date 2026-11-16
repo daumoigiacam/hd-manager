@@ -1,7 +1,9 @@
-import React,{useEffect,useRef,useState} from 'react';
+import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
+import {focusWorkspacePanel} from '../../utils/focusWorkspacePanel.js';
 import {useAppScreenBack} from '../../hooks/useAppScreenBack.js';
+import {retainedScopedPage} from '../../services/retainedScopedPage.js';
 import {HDButton,HDBadge,HDInput,HDDateInput,HDEmptyState} from '../../design-system/components.jsx';
-import OfflineDeliveryEditor from './OfflineDeliveryEditor.jsx';
+const OfflineDeliveryEditor=React.lazy(()=>import('./OfflineDeliveryEditor.jsx'));
 import OfflineDeliveryPending from './OfflineDeliveryPending.jsx';
 import {deliveryWriteAccess} from './offlineDeliveryEditorModel.js';
 import {
@@ -36,7 +38,14 @@ export default function OfflineDeliveryWorkspace({runtime,directory,onNavigate,d
   currentQuery.current=queryKey;currentRequest.current=requestKey;loadedRef.current=loaded;
   useAppScreenBack(()=>{if(!runtime?.isCurrent?.())return false;if(editor){editorClose.current?.();return true;}if(detail?.key!==queryKey)return false;detailTicket.current++;setDetail(null);return true;});
   useEffect(()=>{let active=true;const stop=runtime.subscribe?.(topic=>{if(active&&topic==='deliveryReports')setRefresh(v=>v+1);});return()=>{active=false;stop?.();};},[runtime]);
-  useEffect(()=>{if(detail?.key===queryKey)detailPanel.current?.focus();},[detail,queryKey]);
+  const detailHeading=useRef(null),focusedDetail=useRef(null);
+  useLayoutEffect(()=>{
+    const selected=detail?.key===queryKey?detail.item:null;
+    if(!selected){focusedDetail.current=null;return;}
+    if(focusedDetail.current===selected)return;
+    focusWorkspacePanel(detailPanel.current,detailHeading.current);
+    focusedDetail.current=selected;
+  },[detail?.item,queryKey]);
   useEffect(()=>{
     let active=true;
     if(lastQuery.current!==queryKey){lastQuery.current=queryKey;detailTicket.current++;setDetail(null);}
@@ -62,13 +71,13 @@ export default function OfflineDeliveryWorkspace({runtime,directory,onNavigate,d
   if(accessError)return <section className="space-y-3 p-4" role="status"><h1 className="text-xl font-black">Báo cáo giao hàng</h1><p>{runtime?.appSession?.sourceProfile==='native-isolation-v1'?'Nguồn native hiện tại chưa có ánh xạ báo cáo giao hàng của sản phẩm. Không hiển thị nguồn legacy trong phiên này.':accessError}</p>{onNavigate&&<HDButton variant="secondary" onClick={()=>onNavigate('home')}>Trang chủ</HDButton>}</section>;
   const invalid=readState?.key===requestKey&&readState.invalid;
   const checkpointChanged=loaded?.result&&sync?.generation&&Number.isSafeInteger(sync.seq)&&(loaded.result.metadata.checkpoint.generation!==sync.generation||loaded.result.metadata.checkpoint.seq!==sync.seq);
-  const result=loaded?.key===queryKey&&!invalid&&!checkpointChanged?loaded.result:null;
+  const {result,refreshing:listRefreshing,fresh:listFresh}=retainedScopedPage({runtime,loaded,queryKey,requestKey,directory,invalid,checkpointChanged,pending:readState?.key===requestKey&&readState.pending});
   const activeDetail=detail?.key===queryKey&&!invalid&&!checkpointChanged?detail:null,checkpoint=result?.metadata.checkpoint;
   const error=readState?.key===requestKey?readState.error:null,pending=!result&&!error;
   const employees=(runtime.appSession.employees||[]).filter(row=>row.companyId===runtime.scope.tenantId);
   const reporter=id=>employees.find(employee=>employee.id===id)?.name||id||'Chưa ghi nhận';
   function apply(event){event.preventDefault();try{const range=deliveryDateRange(draft.from,draft.through);setFilters({...range,text:draft.text.trim(),employeeId:draft.employeeId||null,status:draft.status||null});setPage(0);setCursors([null]);setRefresh(value=>value+1);setFilterError('');}catch{setFilterError('Khoảng ngày chưa hợp lệ.');}}
-  async function openDetail(item,orderCursor=null){if(editor)return;const ticket=++detailTicket.current,key=queryKey;setDetail({key,item,checkpoint,pending:true});try{
+  async function openDetail(item,orderCursor=null){if(editor||!listFresh)return;const ticket=++detailTicket.current,key=queryKey;setDetail({key,item,checkpoint,pending:true});try{
     const value=await readOfflineDeliveryDetail({runtime,directory,id:item.id,checkpoint,orderCursor});
     if(ticket===detailTicket.current&&currentQuery.current===key){deliveryReadAccess(runtime,directory);setDetail({key,item,checkpoint,value});}
   }catch(failure){if(ticket===detailTicket.current&&currentQuery.current===key)setDetail({key,item,checkpoint,error:deliveryReadError(failure)});}}
@@ -76,22 +85,9 @@ export default function OfflineDeliveryWorkspace({runtime,directory,onNavigate,d
     <header className="flex flex-wrap justify-between gap-3"><div><p className="text-xs text-slate-500">Giao hàng · Chứng từ đã lưu trên thiết bị</p><h1 className="text-xl font-black">Báo cáo giao hàng</h1></div>{onNavigate&&<HDButton variant="secondary" disabled={!!editor} onClick={()=>onNavigate('home')}>Trang chủ</HDButton>}</header>
     {!deliveryRepository?.ready&&<p className="rounded-xl bg-amber-50 p-3 text-sm">Chỉ xem. Giao thức giao hàng nguyên tử chưa sẵn sàng trong phiên này.</p>}
     {deliveryRepository?.ready&&<><HDButton disabled={!!editor||!deliveryWriteAccess(runtime,deliveryRepository,'deliveryReport.create')} onClick={()=>setEditor({id:null,readSource:'local'})}>Thêm báo cáo giao hàng</HDButton><OfflineDeliveryPending runtime={runtime} repository={deliveryRepository} disabled={!!editor} onOpen={id=>{if(!editor)setEditor({id,readSource:'local'});}}/></>}
-    {editor&&deliveryRepository&&<OfflineDeliveryEditor key={JSON.stringify([scopeKey,editor])} runtime={runtime} repository={deliveryRepository} id={editor.id} readSource={editor.readSource} closeRequestRef={editorClose} onClose={()=>setEditor(null)} onSaved={()=>setRefresh(v=>v+1)}/>}
-    <form onSubmit={apply} className="grid gap-3 rounded-2xl border p-3 sm:grid-cols-2" aria-label="Lọc báo cáo giao hàng">
-      <HDInput label="Tìm báo cáo" maxLength={128} value={draft.text} onChange={event=>setDraft({...draft,text:event.target.value})}/>
-      <label className="grid gap-1 text-sm">Người báo cáo<select className="rounded-xl border p-2" value={draft.employeeId} onChange={event=>setDraft({...draft,employeeId:event.target.value})}><option value="">Tất cả trong phạm vi được cấp quyền</option>{employees.map(employee=><option key={employee.id} value={employee.id}>{employee.name||employee.id}</option>)}</select></label>
-      <HDDateInput label="Từ ngày nghiệp vụ" value={draft.from} onChange={event=>setDraft({...draft,from:event.target.value})}/><HDDateInput label="Đến hết ngày" value={draft.through} onChange={event=>setDraft({...draft,through:event.target.value})}/>
-      <label className="grid gap-1 text-sm">Đối chiếu cân đã lưu<select className="rounded-xl border p-2" value={draft.status} onChange={event=>setDraft({...draft,status:event.target.value})}><option value="">Tất cả</option><option value="matched">Khớp</option><option value="short">Lệch · Thiếu</option><option value="over">Lệch · Dư</option><option value="not_measured">Chưa nhập kg</option><option value="reported">Đã ghi báo cáo</option></select></label>
-      <div className="flex items-end gap-2"><HDButton type="submit">Áp dụng bộ lọc</HDButton><HDButton variant="secondary" onClick={()=>{setPage(0);setCursors([null]);setRefresh(value=>value+1);}}>Tải lại danh sách</HDButton></div>{filterError&&<p role="alert">{filterError}</p>}
-    </form>
-    <p role="status" className="text-sm text-slate-500">{checkpoint?`Nguồn hoàn tất đến ${checkpoint.dayKey} · Checkpoint ${checkpoint.seq} · ${sync?.state==='SYNCING'?'Đang đồng bộ, giữ bản hoàn tất':sync?.state==='SYNC_FAILED'?'Đồng bộ chưa thành công, giữ bản hoàn tất':'Bản hoàn tất trên thiết bị'}`:'Chưa có danh sách từ nguồn hoàn tất.'}</p>
-    {pending&&<p role="status" aria-busy="true">Đang đọc báo cáo giao hàng…</p>}{error&&<p role="alert">{error}</p>}
-    {result&&readState?.key===requestKey&&readState.pending&&<p role="status">Đang đối chiếu lại; giữ bản hoàn tất đang xem…</p>}
-    {result?.items.length===0&&<HDEmptyState title="Không có báo cáo phù hợp" description="Hãy kiểm tra lại bộ lọc."/>}
-    {result?.items.map(item=><article key={item.id} className="space-y-2 rounded-2xl border bg-white p-4"><h2 className="font-bold">{item.document.customerNameSnapshot||item.document.customerName||'Báo cáo giao hàng'}</h2><p className="break-all text-xs text-slate-500">{item.id} · {item.businessDate||'Chưa có ngày nghiệp vụ'}</p><p>{item.document.productNameSnapshot||item.document.productName||'Chưa ghi sản phẩm'}</p><div className="flex flex-wrap gap-2"><HDBadge>{deliveryWeightStatus(item.document)}</HDBadge><HDBadge>{deliveryMovementStatus(item.document)}</HDBadge></div><p className="text-sm">Người báo cáo: {reporter(item.document.empId||item.document.createdByEmpId)}</p><p className="text-sm">Tài xế trên phiếu: {deliveryDriverLabel(item.document,employees)}</p><HDButton variant="secondary" onClick={()=>{void openDetail(item);}}>Mở chi tiết</HDButton></article>)}
-    {result&&<nav className="flex items-center justify-between gap-2" aria-label="Trang báo cáo giao hàng"><HDButton variant="secondary" disabled={page===0} onClick={()=>setPage(value=>value-1)}>Trang trước</HDButton><span>Trang {page+1} · {result.items.length} báo cáo</span><HDButton variant="secondary" disabled={!result.hasMore} onClick={()=>{setCursors(old=>[...old.slice(0,page+1),result.nextCursor]);setPage(value=>value+1);}}>Trang sau</HDButton></nav>}
+    {editor&&deliveryRepository&&<React.Suspense fallback={<p role="status">Đang mở trình sửa giao hàng…</p>}><OfflineDeliveryEditor key={JSON.stringify([scopeKey,editor])} runtime={runtime} repository={deliveryRepository} id={editor.id} readSource={editor.readSource} closeRequestRef={editorClose} onClose={()=>setEditor(null)} onSaved={()=>setRefresh(v=>v+1)}/></React.Suspense>}
     {activeDetail&&<section ref={detailPanel} tabIndex={-1} className="space-y-3 rounded-2xl border-2 border-emerald-200 bg-white p-4" aria-label="Chi tiết giao hàng">
-      <div className="flex justify-between gap-2"><h2 className="font-bold">Chi tiết báo cáo giao hàng</h2><HDButton variant="secondary" onClick={()=>{detailTicket.current++;setDetail(null);}}>Đóng chi tiết</HDButton></div>
+      <div className="flex justify-between gap-2"><h2 ref={detailHeading} tabIndex={-1} className="font-bold">Chi tiết báo cáo giao hàng</h2><HDButton variant="secondary" onClick={()=>{detailTicket.current++;setDetail(null);}}>Đóng chi tiết</HDButton></div>
       {activeDetail.pending&&<p role="status">Đang đối chiếu chứng từ liên quan…</p>}{activeDetail.error&&<p role="alert">{activeDetail.error}</p>}
       {activeDetail.value&&!activeDetail.value.report&&<p role="status">Không còn báo cáo này trong nguồn hoàn tất. Hãy tải lại danh sách.</p>}
       {activeDetail.value?.report&&<><ReportFields record={activeDetail.value.report.document}/><p className="text-xs text-slate-500">Đối chiếu cân không phải trạng thái hoàn tất giao hàng. Không tính lại giá, công nợ hoặc tổng giao hàng từ các trang này.</p>
@@ -105,5 +101,21 @@ export default function OfflineDeliveryWorkspace({runtime,directory,onNavigate,d
         {activeDetail.value.nextOrderCursor&&<HDButton variant="secondary" onClick={()=>{void openDetail(activeDetail.item,activeDetail.value.nextOrderCursor);}}>Trang đơn liên quan tiếp theo</HDButton>}
       </>}
     </section>}
+    <form onSubmit={apply} className="grid gap-3 rounded-2xl border p-3 sm:grid-cols-2" aria-label="Lọc báo cáo giao hàng">
+      <div className="flex items-end gap-2 sm:col-span-2"><HDInput className="min-w-0 flex-1" label="Tìm báo cáo" maxLength={128} value={draft.text} onChange={event=>setDraft({...draft,text:event.target.value})}/><HDButton type="submit">Tìm kiếm</HDButton></div>
+      <details className="sm:col-span-2"><summary className="cursor-pointer text-sm font-semibold text-blue-700">Bộ lọc giao hàng{filters.from||filters.to?' · Đang lọc ngày':''}{filters.employeeId?' · Nhân viên':''}{filters.status?' · Trạng thái':''}</summary><div className="mt-3 grid gap-3 sm:grid-cols-2">
+      <label className="grid gap-1 text-sm">Người báo cáo<select className="rounded-xl border p-2" value={draft.employeeId} onChange={event=>setDraft({...draft,employeeId:event.target.value})}><option value="">Tất cả trong phạm vi được cấp quyền</option>{employees.map(employee=><option key={employee.id} value={employee.id}>{employee.name||employee.id}</option>)}</select></label>
+      <HDDateInput label="Từ ngày nghiệp vụ" value={draft.from} onChange={event=>setDraft({...draft,from:event.target.value})}/><HDDateInput label="Đến hết ngày" value={draft.through} onChange={event=>setDraft({...draft,through:event.target.value})}/>
+      <label className="grid gap-1 text-sm">Đối chiếu cân đã lưu<select className="rounded-xl border p-2" value={draft.status} onChange={event=>setDraft({...draft,status:event.target.value})}><option value="">Tất cả</option><option value="matched">Khớp</option><option value="short">Lệch · Thiếu</option><option value="over">Lệch · Dư</option><option value="not_measured">Chưa nhập kg</option><option value="reported">Đã ghi báo cáo</option></select></label>
+      <div className="flex items-end gap-2"><HDButton type="submit">Áp dụng bộ lọc</HDButton><HDButton variant="secondary" onClick={()=>{setPage(0);setCursors([null]);setRefresh(value=>value+1);}}>Tải lại danh sách</HDButton></div>{filterError&&<p role="alert">{filterError}</p>}
+      </div></details>
+    </form>
+    <p role="status" className="text-sm text-slate-500">{checkpoint?`Nguồn hoàn tất đến ${checkpoint.dayKey} · Checkpoint ${checkpoint.seq} · ${sync?.state==='SYNCING'?'Đang đồng bộ, giữ bản hoàn tất':sync?.state==='SYNC_FAILED'?'Đồng bộ chưa thành công, giữ bản hoàn tất':'Bản hoàn tất trên thiết bị'}`:'Chưa có danh sách từ nguồn hoàn tất.'}</p>
+    {pending&&<p role="status" aria-busy="true">Đang đọc báo cáo giao hàng…</p>}{error&&<p role="alert">{error}</p>}
+    {result&&listRefreshing&&<p role="status">Đang cập nhật nền; giữ bản đã xem. Chi tiết và chuyển trang mở lại khi nguồn hiện tại được kiểm tra xong.</p>}
+    {result?.items.length===0&&<HDEmptyState title="Không có báo cáo phù hợp" description="Hãy kiểm tra lại bộ lọc."/>}
+    {result?.items.map(item=><article key={item.id} className="space-y-2 rounded-2xl border bg-white p-4"><h2 className="font-bold">{item.document.customerNameSnapshot||item.document.customerName||'Báo cáo giao hàng'}</h2><p className="break-all text-xs text-slate-500">{item.id} · {item.businessDate||'Chưa có ngày nghiệp vụ'}</p><p>{item.document.productNameSnapshot||item.document.productName||'Chưa ghi sản phẩm'}</p><div className="flex flex-wrap gap-2"><HDBadge>{deliveryWeightStatus(item.document)}</HDBadge><HDBadge>{deliveryMovementStatus(item.document)}</HDBadge></div><p className="text-sm">Người báo cáo: {reporter(item.document.empId||item.document.createdByEmpId)}</p><p className="text-sm">Tài xế trên phiếu: {deliveryDriverLabel(item.document,employees)}</p><HDButton variant="secondary" disabled={!listFresh} onClick={()=>{void openDetail(item);}}>Mở chi tiết</HDButton></article>)}
+    {result&&<nav className="flex items-center justify-between gap-2" aria-label="Trang báo cáo giao hàng"><HDButton variant="secondary" disabled={page===0||!listFresh} onClick={()=>setPage(value=>value-1)}>Trang trước</HDButton><span>Trang {page+1} · {result.items.length} báo cáo</span><HDButton variant="secondary" disabled={!result.hasMore||!listFresh} onClick={()=>{setCursors(old=>[...old.slice(0,page+1),result.nextCursor]);setPage(value=>value+1);}}>Trang sau</HDButton></nav>}
+
   </section>;
 }

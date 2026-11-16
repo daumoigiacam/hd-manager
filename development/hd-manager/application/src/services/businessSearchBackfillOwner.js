@@ -72,7 +72,7 @@ export function createBusinessSearchBackfillOwner({isCurrent,readHead,getFeed,ve
       // The underlying feed rechecks the actual committed checkpoint each batch.
       if(shouldYield()){nextBatchAt=clock()+100;return;}
       checkQuantum();
-      const result=await feed.backfillSearchPage(head,{source,limit:16,signal,orderSort:item.source==='orders'&&source==='orders',shouldContinue:quantum?()=>quantum.check():undefined});
+      const result=await feed.backfillSearchPage(head,{source,limit:16,signal,orderSort:item.source==='orders'&&source==='orders',cashflowSort:source==='payments'||source==='expenses'||source==='warehouseDispatches',shouldContinue:quantum?()=>quantum.check():undefined});
       if(!valid(version,signal))return;
       if(!result||typeof result.complete!=='boolean'||!Number.isInteger(result.processed)||result.processed<0||result.processed>16)throw failure('invalid-progress');
       if(!result.complete&&result.processed===0)throw failure('busy');

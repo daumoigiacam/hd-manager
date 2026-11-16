@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "decisionDate": "2026-11-16",
+  "timezone": "Asia/Saigon",
+  "decision": "OWNER_APPROVED_REPORTED_PERFORMANCE_AND_AUTHORIZED_MAIN_FRONTEND_QA_RELEASE",
+  "approvedSourceCommit": "ac0748727983a7b4e37c8ad22eb41d4520b6197c",
+  "localCandidate": "1.0.12-local-dev.180",
+  "ownerInstruction": "tôi đồng ý các thông số trên và hãy push lên main app.hdconnect.net và tạo file apk",
+  "reportedMeasurementsRetained": {
+    "quoteWarmWeb": {"n": 30, "p95Ms": 21.295000031590458, "witness": "Local cached source/DOM, not Android presented frames"},
+    "quoteUncachedAndroidDiagnostic": {"n": 1, "ms": 1064.300000000003, "witness": "native-plugin source/DOM, not a percentile"},
+    "fullLegacyFirstEntry": "Orders, Debt and Pricing still require their original source downloads. Owner approved the reported state; no original sample or threshold rewritten."
+  },
+  "releaseScope": {
+    "source": "Push reviewed completed source to GitHub main, without force push",
+    "web": "Firebase/Firestore frontend on https://app.hdconnect.net, with static backup and rollback",
+    "android": "Parallel-installable QA Debug APK from the same canonical source, existing Debug identity",
+    "canonicalApplication": "development/hd-manager/application"
+  },
+  "notAuthorizedByThisDecision": [
+    "Activate offlineApi, create cloud services or incur service charges",
+    "Change Firebase Rules, backend API, database or business records",
+    "Invent an accounting ledger or resolve unapproved payroll policies",
+    "Change signing keys or publish Google Play"
+  ],
+  "preservedBaselines": ["dev42 Owner-approved startup exception", "dev83 previously accepted scopes"],
+  "wholeApplicationFunctionalAcceptance": false,
+  "offlineProductionRuntime": "Keep existing deployment state; do not enable an unavailable signed transport or replace JWK verification"
+}
