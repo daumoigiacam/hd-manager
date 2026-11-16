@@ -51,7 +51,7 @@ jobs:
                 elif p.is_file():total=s.st_size;count=1
                 return {'path':str(p),'bytes':total,'fileCount':count,'modifiedUtc':datetime.datetime.fromtimestamp(s.st_mtime,datetime.timezone.utc).isoformat(),'activeRelease':p==current}
             groups={}
-            for key,folder,pattern in [('temporaryStaging','/var/tmp','hd-manager-home-*'),('temporaryArchives','/tmp','hd-manager*'),('frontendReleases','/var/www/hd-manager/releases','owner-home-*'),('frontendBackups','/var/backups','hd-manager-frontend')]:
+            for key,folder,pattern in [('temporaryStaging','/var/tmp','hd-manager-home-*'),('temporaryArchives','/tmp','hd-manager*'),('frontendReleases','/var/www/hd-manager/releases','*'),('frontendBackups','/var/backups','hd-manager-frontend')]:
                 d=pathlib.Path(folder)
                 groups[key]=[info(p) for p in sorted(d.glob(pattern))] if d.is_dir() else []
             s=os.statvfs(BASE)
