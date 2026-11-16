@@ -22,7 +22,7 @@ export const normalizeWarehouseWeightEntries = (entries = []) => entries
 
 /** @param {ReadonlyArray<string | number | null | undefined>} entries */
 export const getWarehouseWeightEntryTotal = (entries = []) => normalizeWarehouseWeightEntries(entries)
-  .reduce((sum, value) => sum + value, 0);
+  .reduce((sum, value) => sum + Math.round(value * 1000), 0) / 1000;
 
 /** @param {ReadonlyArray<string | number | null | undefined>} entries @param {boolean} appendEmptyRowWhenFull */
 export const ensureWarehouseWeightEntryRows = (entries = [], appendEmptyRowWhenFull = false) => {

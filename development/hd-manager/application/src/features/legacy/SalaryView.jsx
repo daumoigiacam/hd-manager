@@ -6,6 +6,7 @@ import { applyEmployeePayrollPolicyForMonth } from "../../utils/payrollPolicyHis
 import { getReadOnlyModuleProjectionEntry, getLocalProjectionClockScope, EMPTY_MODULE_PROJECTION_SOURCE } from "../../services/moduleProjectionCaches.js";
 import { useCooperativeProjection } from "../../hooks/useCooperativeProjection.js";
 import { useCallback } from "react";
+import CommissionCalculationDetails from '../employees/CommissionCalculationDetails.jsx';
 import { projectEvaluationSummaryToPayroll } from "../../utils/payrollEvaluationBonus.js";
 import payrollAutomationConfig from "../../../functions/payrollAutomationConfig.json";
 import { getSalaryAdvanceMonth, isSalaryAdvanceInMonth, normalizeSalaryAdvanceMonth } from "../../utils/salaryAdvancePeriod.js";
@@ -1446,7 +1447,8 @@ export function createSalaryView(runtime) {
                       {!isSalesCollaborator && <div className="flex justify-between"><span>Lương trách nhiệm</span><strong>{formatCurrency(details.responsibilitySalary)} đ</strong></div>}
                       {!isSalesCollaborator && <div className="flex justify-between"><span>Lương kinh nghiệm</span><strong>{formatCurrency(details.experienceSalary)} đ</strong></div>}
                       {!isSalesCollaborator && details.roleSalary > 0 && <div className="flex justify-between text-sky-600"><span>Lương kiêm nhiệm</span><strong>{formatCurrency(details.roleSalary)} đ</strong></div>}
-                      <div className="flex justify-between"><span>Lương hoa hồng</span><strong>{formatCurrency(details.commission)} đ</strong></div>
+                      <div className="flex justify-between"><span>Lương hoa hồng</span><strong>{details.commissionCalculation?.ready===false?'Chưa đối soát':`${formatCurrency(details.commission)} đ`}</strong></div>
+                      <CommissionCalculationDetails calculation={details.commissionCalculation}/>
                       <button
                         type="button"
                         onClick={(event) => {

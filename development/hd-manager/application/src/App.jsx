@@ -1,4 +1,7 @@
+import {buildCommissionCalculation,assertCommissionCalculationReady} from './utils/commissionRevenue.js';
 import {restoreHomeSessionReport,saveHomeSessionReport} from './services/homeSessionReport.js';
+import {isEmployeeReviewEnabled,employeeReviewFeaturePatch} from './utils/companyEmployeeReviews.js';
+import {salesCommissionBreakdown} from './utils/salesCommissionTiers.js';
 import RestoredLocalWorkspace from './layout/RestoredLocalWorkspace.jsx';
 import RetainedFullWorkspace from './layout/RetainedFullWorkspace.jsx';
 import {getProductWorkspaceReadCollections} from './services/productWorkspaceReadPlan.js';
@@ -182,6 +185,7 @@ import { buildEmployeeReviewSourceIndexes } from './utils/employeeReviewSourceIn
 import { getGroupedRowPage } from './services/groupedRowPage.js';
 import CoreRowPager from './features/orders/CoreRowPager.jsx';
 import WarehouseWeightEntriesModal from './features/warehouse/WarehouseWeightEntriesModal.jsx';
+import { buildDispatchEditableRows, requireSingleDispatchSource } from './features/warehouse/dispatchEditableRows.js';
 import DispatchFormActions from './features/warehouse/DispatchFormActions.jsx';
 import DispatchQuantityFields from './features/warehouse/DispatchQuantityFields.jsx';
 import DispatchHistoryDialog from './features/warehouse/DispatchHistoryDialog.jsx';
@@ -276,6 +280,7 @@ import {
 } from 'lucide-react';
 import {
   ensureWarehouseWeightEntryRows,
+  getWarehouseWeightEntryTotal,
   normalizeWarehouseWeightEntries
 } from './utils/warehouseWeightEntries.js';
 import {
@@ -530,6 +535,7 @@ import PricingProductMarginList from './features/pricing/PricingProductMarginLis
 import RetainedModuleActivity from './layout/RetainedModuleActivity.jsx';
 import { useCooperativeProjection } from './hooks/useCooperativeProjection.js';
 import { CompletedProjectionGate, LedgerPreparationNotice } from './hooks/CompletedProjectionGate.jsx';
+import OrderReadBoundary from './features/orders/OrderReadBoundary.jsx';
 import { createProjectionCache, sortProjection,createProjectionScheduler } from './services/cooperativeProjection.js';
 import {createSourcePhaseDiagnostics} from './services/sourcePhaseDiagnostics.js';
 import {createStartupUiAdmission} from './services/startupUiAdmission.js';
@@ -8493,6 +8499,9 @@ const shouldUseTotalRevenueCommission = (employee = {}) => (
 );
 const calculateDirectSalesCommission = (employee = {}, revenue = 0) => {
   const commissionRate = parseFloat(employee?.commissionRate) || 0;
+  if (Array.isArray(employee?.commissionTiers) && employee.commissionTiers.length) {
+    return roundMoneyValue(salesCommissionBreakdown(revenue||0,employee?.targetRevenue||0,commissionRate,employee.commissionTiers).amount);
+  }
   if (!commissionRate) return 0;
   return roundMoneyValue(calculateCommission(revenue || 0, employee?.targetRevenue || 0, commissionRate));
 };
@@ -8659,6 +8668,7 @@ const buildPositiveDailyPayrollRowsFromSalary = ({
     .filter(emp => emp?.role !== 'super_admin' && !isOwnerPosition(emp?.position))
     .map(emp => {
       const details = buildSalaryDetails(emp.id, employees, attendance, financials, performance, customers, orders, payments, holidays, monthKey);
+      assertCommissionCalculationReady(details,emp.id);
       const netSalary = parseLooseMoneyValue(details?.netSalary);
       if (netSalary <= 0) return null;
       const salaryMonthDays = resolveSalaryMonthDays(emp, monthKey);
@@ -8746,9 +8756,10 @@ const buildDashboardPayrollCostSteps = function* ({
         const details = locked
           ? snapshotRows.find(snapshot => snapshot.employeeId === emp.id)?.salaryDetails
           : applyEvaluationBonusToSalaryDetails(
-            buildSalaryDetails(emp.id, policyEmployees, monthAttendance, monthFinancials, performance, customers, monthOrders, payments, holidays, monthKey, { skipDebt: true }),
+            buildSalaryDetails(emp.id, policyEmployees, monthAttendance, monthFinancials, performance, customers, monthOrders, payments, holidays, monthKey, { skipDebt: true, commissionOrders: orders }),
             projectEvaluationSummaryToPayroll(buildEmployeeReviewSummary(emp, evaluationContext), { employeeId: emp.id, monthKey })
           );
+        assertCommissionCalculationReady(details,emp.id);
         const amount = Math.max(0, roundMoneyValue((details?.grossSalary || 0) - (details?.totalPenalty || 0)));
         if (!amount) { yield; continue; }
         const earningDays = [...new Set((details.attendanceEntries || [])
@@ -9723,8 +9734,9 @@ const calculateSalaryDetails = (empId, employees, attendance, financials, perfor
   const experienceCycles = experienceDetails.experienceCycles;
   const experienceCycleLabel = experienceDetails.experienceCycleLabel;
 
-  const effectiveRevenue = isEmployeeSalesPosition(emp) ? calculateMonthRevenue(empId, allOrders, allCustomers, monthKey) : (perf.revenue || 0);
-  const directCommission = calculateDirectSalesCommission(emp, effectiveRevenue || 0);
+  const commissionCalculation = buildCommissionCalculation({employee:emp,orders:allOrders,customers:allCustomers,payments:allPayments,monthKey});
+  const effectiveRevenue = commissionCalculation && Number.isFinite(commissionCalculation.actualRevenue) ? commissionCalculation.actualRevenue : (isEmployeeSalesPosition(emp) ? calculateMonthRevenue(empId, allOrders, allCustomers, monthKey) : (perf.revenue || 0));
+  const directCommission = commissionCalculation ? commissionCalculation.commission : calculateDirectSalesCommission(emp, effectiveRevenue || 0);
   const downlineCommissionRows = isEmployeeSalesPosition(emp)
     ? buildSalesDownlineCommissionRows(empId, employees, allOrders, allCustomers, monthKey)
     : [];
@@ -9780,6 +9792,7 @@ const calculateSalaryDetails = (empId, employees, attendance, financials, perfor
     experienceCycleLabel,
     perf: { ...perf, revenue: effectiveRevenue, overtime: approvedOvertimeHours, earlyOvertimeHours, afterShiftOvertimeHours, automaticOvertimeHours },
     salesRevenue: roundMoneyValue(effectiveRevenue || 0),
+    ...(commissionCalculation ? {commissionCalculation} : {}),
     baseSalaryCalc,
     supportSalary: supportSalaryCalc,
     responsibilitySalary: responsibilitySalaryCalc,
@@ -9899,10 +9912,11 @@ const buildSalaryDetails = (empId, employees, attendance, financials, performanc
   const experienceCycles = experienceDetails.experienceCycles;
   const experienceCycleLabel = experienceDetails.experienceCycleLabel;
 
-  const effectiveRevenue = isEmployeeSalesPosition(emp)
+  const commissionCalculation = buildCommissionCalculation({employee:emp,orders:options.commissionOrders||allOrders,customers:allCustomers,payments:allPayments,monthKey});
+  const effectiveRevenue = commissionCalculation && Number.isFinite(commissionCalculation.actualRevenue) ? commissionCalculation.actualRevenue : (isEmployeeSalesPosition(emp)
     ? calculateRevenueForMonth(empId, allOrders, allCustomers, monthKey)
-    : (perf.revenue || 0);
-  const directCommission = calculateDirectSalesCommission(emp, effectiveRevenue || 0);
+    : (perf.revenue || 0));
+  const directCommission = commissionCalculation ? commissionCalculation.commission : calculateDirectSalesCommission(emp, effectiveRevenue || 0);
   const downlineCommissionRows = isEmployeeSalesPosition(emp)
     ? buildSalesDownlineCommissionRows(empId, employees, allOrders, allCustomers, monthKey)
     : [];
@@ -9983,6 +9997,7 @@ const buildSalaryDetails = (empId, employees, attendance, financials, performanc
     experienceCycleLabel,
     perf: { ...perf, revenue: effectiveRevenue, overtime: approvedOvertimeHours, earlyOvertimeHours, afterShiftOvertimeHours, automaticOvertimeHours },
     salesRevenue: roundMoneyValue(effectiveRevenue || 0),
+    ...(commissionCalculation ? {commissionCalculation} : {}),
     baseSalaryCalc,
     supportSalary: supportSalaryCalc,
     responsibilitySalary: responsibilitySalaryCalc,
@@ -13710,7 +13725,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
       :previous?.owner===readOwnerKey?null:previous);
   },[readOwnerKey]);
   const [customerSupplementDemand,setCustomerSupplementDemand]=useState(null);
-  const customerSupplementsRequested=customerSupplementDemand===readOwnerKey;
+  const customerSupplementsRequested=customerSupplementDemand===readOwnerKey||(activeTab==='customers'&&!offlineWorkspace.enabled);
   const onCustomerSupplementsRequested=useCallback(()=>setCustomerSupplementDemand(readOwnerKey),[readOwnerKey]);
   const homeDemandScope=readOwnerKey;
   const [homeReportDemand,setHomeReportDemand]=useState(null);
@@ -16070,6 +16085,24 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
 
   const handleUpdateCompanySettings = async (settingsData) => {
     if (!firebaseUser || !myCompanyId) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
+    if (Object.prototype.hasOwnProperty.call(settingsData || {}, 'employeeReviewsEnabled')) {
+      if (!isOwnerAccountUser(appCurrentEmployee, currentUser) && currentUser?.role !== 'super_admin') return {success:false,message:'Chỉ Chủ doanh nghiệp được bật/tắt Đánh giá.'};
+      if (Object.keys(settingsData).some(key => key !== 'employeeReviewsEnabled')) return {success:false,message:'Vui lòng lưu riêng cấu hình Đánh giá.'};
+      const actorId = appCurrentEmployee?.id || currentUser?.employeeId || currentUser?.id || '';
+      const patch = employeeReviewFeaturePatch(settingsData.employeeReviewsEnabled, actorId, serverTimestamp());
+      const companyRef = doc(db, 'artifacts', appId, 'public', 'data', 'companies', myCompanyId);
+      // A company feature switch needs a server-confirmed transaction. It must
+      // not report success or change another account's UI while offline.
+      await withTimeout(runTransaction(db, async transaction => {
+        const companySnapshot = await transaction.get(companyRef);
+        if (!companySnapshot.exists()) throw new Error('Không tìm thấy công ty.');
+        transaction.update(companyRef, patch);
+      }), 12000, 'Máy chủ chưa xác nhận cấu hình Đánh giá. Vui lòng kiểm tra kết nối mạng.');
+      const confirmed = {employeeReviewsEnabled:patch.employeeReviewsEnabled,employeeReviewsUpdatedByEmpId:actorId};
+      setCurrentCompany(previous => previous?.id === myCompanyId ? {...previous,...confirmed} : previous);
+      setRawCompanies(previous => previous.map(company => company.id === myCompanyId ? {...company,...confirmed} : company));
+      return {success:true};
+    }
     const wifiKeys = ['attendanceWifiEnabled', 'attendanceWifiSsid', 'attendanceWifiBssid', 'attendanceWifiUpdatedAt'];
     if (settingsData?.attendanceWifiSsid !== undefined && Object.keys(settingsData).every(key => wifiKeys.includes(key))) {
       if (!canManageCompanyWifi(employee)) return { success: false, message: 'Chỉ Chủ/Admin được đặt WiFi công ty.' };
@@ -18284,7 +18317,16 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
     if (updatedData?.position !== undefined) {
       employeePayload.position = normalizeEmployeePosition(updatedData.position);
     }
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'employees', empId), employeePayload, { merge: true });
+    delete employeePayload.commissionExpectedPolicyVersion;
+    const employeeRef=doc(db, 'artifacts', appId, 'public', 'data', 'employees', empId);
+    if(Object.hasOwn(updatedData||{},'commissionExpectedPolicyVersion')) {
+      await runTransaction(db,async transaction=>{
+        const current=await transaction.get(employeeRef);
+        if(!current.exists()||current.data().companyId!==(myCompanyId||currentCompany?.id))throw Error('Hồ sơ không thuộc công ty hiện tại.');
+        if((current.data().salaryPolicyVersion||'')!==updatedData.commissionExpectedPolicyVersion)throw Error('Chính sách lương đã được người khác cập nhật. Mở lại hồ sơ trước khi lưu; nội dung đang nhập được giữ nguyên.');
+        transaction.set(employeeRef,employeePayload,{merge:true});
+      });
+    }else await setDoc(employeeRef, employeePayload, { merge: true });
     setRawEmployees(prev => prev.map(emp => emp.id === empId ? { ...emp, ...employeePayload } : emp));
     return { success: true, message: 'Đã lưu tài khoản nhân sự.' };
   };
@@ -18319,6 +18361,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
 
   const handleAddEmployeeReview = async (reviewData = {}) => {
     if (!firebaseUser || !myCompanyId) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
+    if (!isEmployeeReviewEnabled(currentCompany)) return {success:false,message:'Công ty đã tắt tính năng Đánh giá.'};
     const targetEmployeeId = `${reviewData.targetEmployeeId || ''}`.trim();
     if (!targetEmployeeId) return { success: false, message: 'Vui lòng chọn nhân sự cần đánh giá.' };
     const targetEmployee = rawEmployees.find(emp => emp.id === targetEmployeeId && emp.companyId === myCompanyId && !emp.isArchived);
@@ -22940,7 +22983,11 @@ const hasEmployeePayrollCompensationConfig = (employee = {}) => {
     employee.roleSalaryComponents || employee.departmentSalaryComponents || employee.salaryByDepartment
   ).some(row => parseEmployeeRoleSalaryAmount(row.amount) > 0);
   const commissionRate = parseFloat(employee.commissionRate || 0);
-  const hasSalesCommission = isEmployeeSalesPosition(employee) && Number.isFinite(commissionRate) && commissionRate > 0;
+  const hasSalesCommission = isEmployeeSalesPosition(employee) && (
+    (Number.isFinite(commissionRate) && commissionRate > 0)
+    || (Array.isArray(employee.commissionTiers) && employee.commissionTiers.some(tier => tier?.rate > 0))
+    || employee.commissionPolicy?.status === 'active'
+  );
   return hasDirectSalary || hasRoleSalary || hasSalesCommission;
 };
 
@@ -23245,7 +23292,7 @@ function MainAppView({
   };
   const localWorkflowRoutes=useMemo(()=>localCustomerRuntime?.isCurrent()&&localCustomerRuntime.scope.principalId===localCustomerPrincipalId
     ?availableNativeBusinessRoutes(localCustomerRuntime).filter(route=>['attendanceRequests','attendancePeriods','salarySettlements'].includes(route.id)):[],[localCustomerRuntime,localCustomerPrincipalId]);
-  const canAccess = (permissionId) => ['attendanceRequests','attendancePeriods','salarySettlements'].includes(permissionId)
+  const canAccess = (permissionId) => permissionId === 'employee_reviews' && !isEmployeeReviewEnabled(currentCompany) ? false : ['attendanceRequests','attendancePeriods','salarySettlements'].includes(permissionId)
     ?localWorkflowRoutes.some(route=>route.id===permissionId):(
     permissionId === 'profile' ||
     permissionId === 'more' ||
@@ -23308,7 +23355,7 @@ function MainAppView({
     role_permissions: canAccess('role_permissions'),
     billing: canAccess('billing'),
     messages: canAccess('messages')
-  }), [isOwnerAccount, isSuperAdmin, rolePermissionActions, rolePermissionKey, rolePermissions,localWorkflowRoutes]);
+  }), [isOwnerAccount, isSuperAdmin, rolePermissionActions, rolePermissionKey, rolePermissions,localWorkflowRoutes,currentCompany?.employeeReviewsEnabled]);
 
   // Workspaces load only when opened. The More menu is navigation, not
   // permission to preload payroll, assets or attendance on a weak device.
@@ -23646,6 +23693,7 @@ function MainAppView({
   const setDebtSearchKeyword=debtSearchStore.set;
   const [ledgerPreparationAttempt, setLedgerPreparationAttempt] = useState(0);
   const ledgerActorScope = JSON.stringify([currentCompany?.id || '', employee?.id || currentUser?.id || '']);
+  const customerFinancialReadCache=useRef(null);
   const ledgerProjectionScope = JSON.stringify([ledgerActorScope, notificationDateKey]);
   const ledgerProjectionEntry = useMemo(() => mainCustomerLedgerCache(
     [customers, orders, payments, warehouseImports, expenses], ledgerProjectionScope
@@ -23680,6 +23728,7 @@ function MainAppView({
   const orderSalesProjection=useCooperativeProjection(prepareOrderSalesLedger,orderLedgerEntry,{enabled:activeTab==='orders'&&!mainLedgerReady&&orderLedgerSourcesAvailable});
   const orderLedgerProjection=mainLedgerReady?mainLedgerProjection:orderSalesProjection;
   const orderLedgerMap=!orderLedgerProjection.pending&&!orderLedgerProjection.error?orderLedgerProjection.value:EMPTY_MAIN_LEDGER;
+  const orderReadIdentity=JSON.stringify([currentReadOwnerKey,dashboardPrivacyScope]);
   const retryOrderSalesLedger=()=>setOrderLedgerAttempt(value=>value+1);
   const orderMutationsReady=mainLedgerReady&&orderLedgerSourcesReady;
   const runOrderMutation=useCommittedCallback((callback,args)=>runReadyOrderMutation(orderMutationsReady,callback,args));
@@ -25038,7 +25087,10 @@ function MainAppView({
 
   const renderQuoteWorkspace = () => <PriceQuoteBroadcastView onHistoryRequested={onQuoteHistoryRequested} dataReady={hasRetainedModuleSources({tenantId:currentUser?.companyId,ownerKey:currentReadOwnerKey,state:serverConfirmedCollectionState,collections:QUOTE_PRIMARY_COLLECTIONS})} dataFresh={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:QUOTE_PRIMARY_COLLECTIONS})} shareReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:QUOTE_SHARE_COLLECTIONS})} employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orders={orders} payments={payments} isAccounting={isAccounting} isSales={isSales} isOwnerAccount={isOwnerAccount} onEditCustomer={onEditCustomer} />;
 
-  const renderContent = () => {
+  const renderContent = (orderReadLedgerMap = orderLedgerMap) => {
+    if (activeTab === 'employee_reviews' && !isEmployeeReviewEnabled(currentCompany)) {
+      return <div role="status" className="space-y-3 p-5 text-sm text-slate-700"><p>Công ty đã tắt tính năng Đánh giá. Lương và dữ liệu lịch sử được giữ nguyên.</p>{(isOwnerAccount || currentUser?.role === 'super_admin') && <button type="button" onClick={() => setActiveTab('settings')} className="font-bold text-emerald-700">Mở cài đặt công ty</button>}</div>;
+    }
     if (activeTab === 'delivery_reports' && !tabPermissions.delivery_reports) {
       return <AccessDeniedView onGoHome={() => setActiveTab(tabPermissions.home ? 'home' : 'more')} />;
     }
@@ -25051,7 +25103,7 @@ function MainAppView({
       case 'executive_dashboard': return renderExecutiveDashboard();
       case 'profile': return <ProfileView employee={employee} currentUser={currentUser} currentCompany={currentCompany} isCompanyAccount={isCompanyAccount} isAccounting={canRoleAction('settings', 'edit_company_profile')} onEditEmployee={onEditEmployee} onUpdateCompanySettings={onUpdateCompanySettings} onGetIdentityToken={onGetIdentityToken} onLogout={onLogout} />;
       case 'messages': return <MessageCenterView onPrimaryReady={onMessagePrimaryReady} primarySourcesReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:MESSAGE_PRIMARY_COLLECTIONS})} backgroundSourcesReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:getMessageWorkspaceReadCollections('',true)})} onAttachmentSourceDemandChange={onMessageAttachmentDemandChange} attachmentSourcesReady={Object.fromEntries(['order','order_request','report'].map(action=>[action,areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:getMessageAttachmentReadCollections(action)})]))} employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} products={products} messages={messages} notificationItems={notificationItems} zaloInboxMessages={zaloInboxMessages} aiReplyRules={aiReplyRules} onAddMessage={onAddMessage} onOpenNotification={handleNotificationClick} onGoBack={handleGoBack} onUpdateCompanySettings={onUpdateCompanySettings} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} canViewSupportMessages={canRoleAction('messages', 'view_support_messages')} canSendSupportMessages={canRoleAction('messages', 'send_support_messages')} canViewInternalMessages={canRoleAction('messages', 'view_internal_messages')} canSendInternalMessages={canRoleAction('messages', 'send_internal_messages')} canViewOwnNotifications={canRoleAction('messages', 'view_own_notifications')} canViewAllNotifications={canRoleAction('messages', 'view_all_notifications')} canViewZaloAiInbox={false} canSendImageAttachment={canRoleAction('messages', 'send_image_attachment')} canSendContactAttachment={canRoleAction('messages', 'send_contact_attachment')} canSendLocationAttachment={canRoleAction('messages', 'send_location_attachment')} canSendBankQrAttachment={canRoleAction('messages', 'send_bank_qr_attachment')} canSendOrderAttachment={canRoleAction('messages', 'send_order_attachment')} canSendOrderRequestAttachment={canRoleAction('messages', 'send_order_request_attachment')} canSendReportAttachment={canRoleAction('messages', 'send_report_attachment')} canCallFromMessage={canRoleAction('messages', 'call_from_message')} />;
-      case 'settings': return <SettingsView currentUser={currentUser} onGetIdentityToken={onGetIdentityToken} onLogout={onLogout} isAccounting={canRoleAction('settings', 'view_settings')} employee={employee} currentCompany={currentCompany} customers={customers} products={products} onUpdateCompanySettings={onUpdateCompanySettings} onResetCompanyDemoData={onResetCompanyDemoData} onCreateCompanyBackup={onCreateCompanyBackup} onRestoreCompanyBackup={onRestoreCompanyBackup} orders={orders} payments={payments} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} onCreateZaloCampaign={onCreateZaloCampaign} onCancelZaloCampaign={onCancelZaloCampaign} onRetryZaloCampaignQueueItem={onRetryZaloCampaignQueueItem} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} onUpdateZaloOrderRequest={onUpdateZaloOrderRequest} onConvertZaloOrderRequest={onConvertZaloOrderRequest} setActiveTab={setActiveTab} canViewBankPayments={tabPermissions.bank_payments} canEditCompanyProfile={canRoleAction('settings', 'edit_company_profile')} canManageBankAccounts={canRoleAction('settings', 'manage_bank_accounts')} canManagePaymentQr={canRoleAction('settings', 'manage_payment_qr')} canManageLoyaltySettings={canRoleAction('settings', 'manage_loyalty_settings')} canManageCustomerCareSettings={canRoleAction('settings', 'manage_customer_care_reminders')} canManageAttendanceWifi={canRoleAction('settings', 'manage_attendance_wifi')} canManageWarehouseSettings={canRoleAction('settings', 'manage_warehouse_dispatch_settings')} canConfigureSalaryAdvanceLimit={canRoleAction('payroll', 'configure_salary_advance_limit')} canBackupData={canRoleAction('settings', 'backup_data') || canRoleAction('settings', 'backup_restore_data')} canRestoreData={canRoleAction('settings', 'restore_data') || canRoleAction('settings', 'backup_restore_data')} canResetCompanyData={canRoleAction('settings', 'reset_company_data')} />;
+      case 'settings': return <SettingsView canManageEmployeeReviewSettings={isOwnerAccount || currentUser?.role === 'super_admin'} currentUser={currentUser} onGetIdentityToken={onGetIdentityToken} onLogout={onLogout} isAccounting={canRoleAction('settings', 'view_settings')} employee={employee} currentCompany={currentCompany} customers={customers} products={products} onUpdateCompanySettings={onUpdateCompanySettings} onResetCompanyDemoData={onResetCompanyDemoData} onCreateCompanyBackup={onCreateCompanyBackup} onRestoreCompanyBackup={onRestoreCompanyBackup} orders={orders} payments={payments} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} onCreateZaloCampaign={onCreateZaloCampaign} onCancelZaloCampaign={onCancelZaloCampaign} onRetryZaloCampaignQueueItem={onRetryZaloCampaignQueueItem} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} onUpdateZaloOrderRequest={onUpdateZaloOrderRequest} onConvertZaloOrderRequest={onConvertZaloOrderRequest} setActiveTab={setActiveTab} canViewBankPayments={tabPermissions.bank_payments} canEditCompanyProfile={canRoleAction('settings', 'edit_company_profile')} canManageBankAccounts={canRoleAction('settings', 'manage_bank_accounts')} canManagePaymentQr={canRoleAction('settings', 'manage_payment_qr')} canManageLoyaltySettings={canRoleAction('settings', 'manage_loyalty_settings')} canManageCustomerCareSettings={canRoleAction('settings', 'manage_customer_care_reminders')} canManageAttendanceWifi={canRoleAction('settings', 'manage_attendance_wifi')} canManageWarehouseSettings={canRoleAction('settings', 'manage_warehouse_dispatch_settings')} canConfigureSalaryAdvanceLimit={canRoleAction('payroll', 'configure_salary_advance_limit')} canBackupData={canRoleAction('settings', 'backup_data') || canRoleAction('settings', 'backup_restore_data')} canRestoreData={canRoleAction('settings', 'restore_data') || canRoleAction('settings', 'backup_restore_data')} canResetCompanyData={canRoleAction('settings', 'reset_company_data')} />;
       case 'role_permissions': return <RolePermissionView isSuperAdmin={canRoleAction('role_permissions', 'manage_role_permissions')} currentCompany={currentCompany} employees={employees} onUpdateCompanySettings={onUpdateCompanySettings} />;
       case 'billing': return <BillingView company={currentCompany} />;
       case 'company_attendance':
@@ -25107,6 +25159,7 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
             canRoleAction('employees', 'view_all_employee_reviews')
           }
           canManageReviewCriteria={isOwnerAccount || canRoleAction('employee_reviews', 'manage_employee_review_criteria')}
+          canManageReviewFeature={isOwnerAccount || currentUser?.role === 'super_admin'}
         />
       );
       case 'employees': return (
@@ -25151,15 +25204,15 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
           canEditEmployeeEarlyOvertimePolicy={canRoleAction('employees', 'edit_employee_early_overtime_policy')}
           canCreateSalesCollaborator={canRoleAction('employees', 'create_sales_collaborator')}
           canAssignSalesLeader={canRoleAction('employees', 'assign_sales_leader')}
-          canViewEmployeeReviews={canRoleAction('employees', 'view_employee_evaluations') || canRoleAction('employees', 'view_employees')}
-          canCreateEmployeeReview={canRoleAction('employees', 'create_employee_review')}
-          canViewAllEmployeeReviews={isSuperAdmin || canRoleAction('employees', 'view_all_employee_reviews')}
+          canViewEmployeeReviews={isEmployeeReviewEnabled(currentCompany) && (canRoleAction('employees', 'view_employee_evaluations') || canRoleAction('employees', 'view_employees'))}
+          canCreateEmployeeReview={isEmployeeReviewEnabled(currentCompany) && canRoleAction('employees', 'create_employee_review')}
+          canViewAllEmployeeReviews={isEmployeeReviewEnabled(currentCompany) && (isSuperAdmin || canRoleAction('employees', 'view_all_employee_reviews'))}
           canManageHolidayConfig={isOwnerAccount || canRoleAction('employees', 'edit_employee_salary_policy') || canRoleAction('payroll', 'configure_salary_advance_limit')}
           canResetEmployeePassword={isOwnerAccount}
           onResetEmployeePassword={onResetEmployeePassword}
         />
       );
-      case 'customers': return <CustomerCRMView localRuntime={localCustomerRuntime} localFirstRequired={localCustomerRequired} localOnline={localCustomerOnline} localSetupError={localCustomerSetupError} localPrincipalId={localCustomerPrincipalId} key={dashboardPrivacyScope} onDirectoryReady={()=>onWorkingModuleReady?.('customers')} lookupDataReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:['products']})} directoryDataReady={serverConfirmedCollectionState?.tenantId===currentUser?.companyId&&serverConfirmedCollectionState?.collections?.customers===true} financialDataReady={mainLedgerReady&&areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:FOREGROUND_REALTIME_COLLECTIONS_BY_TAB.customers})} supplementsRequested={customerSupplementsRequested} onRequestSupplements={onCustomerSupplementsRequested} privacyScope={dashboardPrivacyScope} employee={employee} currentCompany={currentCompany} customers={customers} orders={orders} payments={payments} expenses={expenses} paymentReconciliations={paymentReconciliations} customerPoints={customerPoints} customerLoans={customerLoans} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} onAddCustomer={onAddCustomer} onEditCustomer={onEditCustomer} onDeleteCustomer={onDeleteCustomer} onAddCustomerLoan={onAddCustomerLoan} onEditCustomerLoan={onEditCustomerLoan} onDeleteCustomerLoan={onDeleteCustomerLoan} onOpenCustomerDebt={handleOpenCustomerDebtLedger} onOpenOrder={handleOpenCustomerOrderDetail} canOpenOrderDetails={canAccess('orders')} employees={employees} isSuperAdmin={isSuperAdmin} canViewAllCustomers={isOwnerAccount || canRoleAction('customers', 'view_all_customers')} canViewSupplierImports={Boolean(tabPermissions.warehouse_import && (isOwnerAccount || isSuperAdmin || canRoleAction('warehouse_import', 'view_warehouse_import')))} canViewAssignedCustomers={canRoleAction('customers', 'view_customers') || canRoleAction('customers', 'view_assigned_customers')} canEditCustomer={canRoleAction('customers', 'add_edit_customer')} canDeleteCustomerPermission={canRoleAction('customers', 'delete_customer')} canAddCustomerPermission={canRoleAction('customers', 'add_edit_customer')} canBulkImportCustomersPermission={canRoleAction('customers', 'import_customer_data')} canReassignCustomerManagerPermission={canRoleAction('customers', 'add_edit_customer')} canManageFixedProducts={canRoleAction('customers', 'fixed_products')} canManageCustomerPrices={canRoleAction('customers', 'customer_price_overrides')} canManageDriverDebtPermission={canRoleAction('customers', 'driver_debt_permission')} canViewCustomerLoyalty={canRoleAction('customers', 'customer_loyalty_points')} canViewCustomerLoans={isOwnerAccount || canRoleAction('customers', 'view_customer_loans') || canRoleAction('customers', 'add_edit_customer')} canCreateCustomerLoan={isOwnerAccount || canRoleAction('customers', 'create_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canReturnCustomerLoan={isOwnerAccount || canRoleAction('customers', 'return_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canEditCustomerLoan={isOwnerAccount || canRoleAction('customers', 'edit_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canDeleteCustomerLoan={isOwnerAccount || canRoleAction('customers', 'delete_customer_loan')} canManageCustomerDebtLimit={canRoleAction('customers', 'customer_debt_limit') || canRoleAction('debt', 'manage_debt_limit_followup')} canViewCustomerDebtLimitAlerts={canRoleAction('customers', 'view_customer_debt_limit_alerts') || canRoleAction('debt', 'view_debt_limit_alerts')} canViewCustomerPhone={isOwnerAccount || canRoleAction('customers', 'view_customer_phone')} canCopyCustomerPhone={isOwnerAccount || canRoleAction('customers', 'copy_customer_phone')} canCallCustomerPhone={isOwnerAccount || canRoleAction('customers', 'call_customer_phone')} canViewCustomerLocation={isOwnerAccount || canRoleAction('customers', 'view_customer_location')} canCopyCustomerLocation={isOwnerAccount || canRoleAction('customers', 'copy_customer_location')} canOpenCustomerMaps={isOwnerAccount || canRoleAction('customers', 'open_customer_maps')} canEditCustomerPhoneAddress={isOwnerAccount || canRoleAction('customers', 'edit_customer_phone_address')} canEditCustomerLocation={isOwnerAccount || canRoleAction('customers', 'edit_customer_location')} canViewCustomerDebt={isOwnerAccount || canRoleAction('customers', 'view_customer_debt') || canRoleAction('debt', 'view_debt') || canRoleAction('debt', 'view_all_debt') || canRoleAction('debt', 'view_assigned_debt')} canViewCustomerStats={isOwnerAccount || canRoleAction('customers', 'view_customer_stats')} canViewCustomerOrderHistory={isOwnerAccount || canRoleAction('customers', 'view_customer_order_history')} canViewCustomerPaymentHistory={isOwnerAccount || canRoleAction('customers', 'view_customer_payment_history')} searchStore={customerSearchStore} searchKeyword={customerSearchKeyword} setSearchKeyword={setCustomerSearchKeyword} showSearchBox={customerSearchOpen} setShowSearchBox={setCustomerSearchOpen} showFilterPanel={customerFilterOpen} setShowFilterPanel={setCustomerFilterOpen} quickActionIntent={activeTab === 'customers' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} searchInHeader />;
+      case 'customers': return <CustomerCRMView localRuntime={localCustomerRuntime} localFirstRequired={localCustomerRequired} localOnline={localCustomerOnline} localSetupError={localCustomerSetupError} localPrincipalId={localCustomerPrincipalId} key={dashboardPrivacyScope} onDirectoryReady={()=>onWorkingModuleReady?.('customers')} lookupDataReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:['products']})} directoryDataReady={serverConfirmedCollectionState?.tenantId===currentUser?.companyId&&serverConfirmedCollectionState?.collections?.customers===true} financialDataReady={mainLedgerReady&&areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:FOREGROUND_REALTIME_COLLECTIONS_BY_TAB.customers})} financialReadCache={customerFinancialReadCache} financialReadError={mainLedgerProjection.error} financialReadAllowed={hasRetainedModuleSources({tenantId:currentUser?.companyId,ownerKey:currentReadOwnerKey,state:serverConfirmedCollectionState,collections:FOREGROUND_REALTIME_COLLECTIONS_BY_TAB.customers})} supplementsRequested={customerSupplementsRequested} onRequestSupplements={onCustomerSupplementsRequested} privacyScope={dashboardPrivacyScope} employee={employee} currentCompany={currentCompany} customers={customers} orders={orders} payments={payments} expenses={expenses} paymentReconciliations={paymentReconciliations} customerPoints={customerPoints} customerLoans={customerLoans} products={products} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} onAddCustomer={onAddCustomer} onEditCustomer={onEditCustomer} onDeleteCustomer={onDeleteCustomer} onAddCustomerLoan={onAddCustomerLoan} onEditCustomerLoan={onEditCustomerLoan} onDeleteCustomerLoan={onDeleteCustomerLoan} onOpenCustomerDebt={handleOpenCustomerDebtLedger} onOpenOrder={handleOpenCustomerOrderDetail} canOpenOrderDetails={canAccess('orders')} employees={employees} isSuperAdmin={isSuperAdmin} canViewAllCustomers={isOwnerAccount || canRoleAction('customers', 'view_all_customers')} canViewSupplierImports={Boolean(tabPermissions.warehouse_import && (isOwnerAccount || isSuperAdmin || canRoleAction('warehouse_import', 'view_warehouse_import')))} canViewAssignedCustomers={canRoleAction('customers', 'view_customers') || canRoleAction('customers', 'view_assigned_customers')} canEditCustomer={canRoleAction('customers', 'add_edit_customer')} canDeleteCustomerPermission={canRoleAction('customers', 'delete_customer')} canAddCustomerPermission={canRoleAction('customers', 'add_edit_customer')} canBulkImportCustomersPermission={canRoleAction('customers', 'import_customer_data')} canReassignCustomerManagerPermission={canRoleAction('customers', 'add_edit_customer')} canManageFixedProducts={canRoleAction('customers', 'fixed_products')} canManageCustomerPrices={canRoleAction('customers', 'customer_price_overrides')} canManageDriverDebtPermission={canRoleAction('customers', 'driver_debt_permission')} canViewCustomerLoyalty={canRoleAction('customers', 'customer_loyalty_points')} canViewCustomerLoans={isOwnerAccount || canRoleAction('customers', 'view_customer_loans') || canRoleAction('customers', 'add_edit_customer')} canCreateCustomerLoan={isOwnerAccount || canRoleAction('customers', 'create_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canReturnCustomerLoan={isOwnerAccount || canRoleAction('customers', 'return_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canEditCustomerLoan={isOwnerAccount || canRoleAction('customers', 'edit_customer_loan') || canRoleAction('customers', 'add_edit_customer')} canDeleteCustomerLoan={isOwnerAccount || canRoleAction('customers', 'delete_customer_loan')} canManageCustomerDebtLimit={canRoleAction('customers', 'customer_debt_limit') || canRoleAction('debt', 'manage_debt_limit_followup')} canViewCustomerDebtLimitAlerts={canRoleAction('customers', 'view_customer_debt_limit_alerts') || canRoleAction('debt', 'view_debt_limit_alerts')} canViewCustomerPhone={isOwnerAccount || canRoleAction('customers', 'view_customer_phone')} canCopyCustomerPhone={isOwnerAccount || canRoleAction('customers', 'copy_customer_phone')} canCallCustomerPhone={isOwnerAccount || canRoleAction('customers', 'call_customer_phone')} canViewCustomerLocation={isOwnerAccount || canRoleAction('customers', 'view_customer_location')} canCopyCustomerLocation={isOwnerAccount || canRoleAction('customers', 'copy_customer_location')} canOpenCustomerMaps={isOwnerAccount || canRoleAction('customers', 'open_customer_maps')} canEditCustomerPhoneAddress={isOwnerAccount || canRoleAction('customers', 'edit_customer_phone_address')} canEditCustomerLocation={isOwnerAccount || canRoleAction('customers', 'edit_customer_location')} canViewCustomerDebt={isOwnerAccount || canRoleAction('customers', 'view_customer_debt') || canRoleAction('debt', 'view_debt') || canRoleAction('debt', 'view_all_debt') || canRoleAction('debt', 'view_assigned_debt')} canViewCustomerStats={isOwnerAccount || canRoleAction('customers', 'view_customer_stats')} canViewCustomerOrderHistory={isOwnerAccount || canRoleAction('customers', 'view_customer_order_history')} canViewCustomerPaymentHistory={isOwnerAccount || canRoleAction('customers', 'view_customer_payment_history')} searchStore={customerSearchStore} searchKeyword={customerSearchKeyword} setSearchKeyword={setCustomerSearchKeyword} showSearchBox={customerSearchOpen} setShowSearchBox={setCustomerSearchOpen} showFilterPanel={customerFilterOpen} setShowFilterPanel={setCustomerFilterOpen} quickActionIntent={activeTab === 'customers' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} searchInHeader />;
       case 'order_requests': return shouldShowMissingWorkflowSetup({ canCreate: canRoleAction('order_requests', 'create_order_request'), dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('order_requests', { type: 'create_order_request' }, 'Chuẩn bị dữ liệu để lên đơn đặt', 'Cần có khách hàng và sản phẩm trước khi lên đơn đặt hàng. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderRequestView requestCacheReady={hasRetainedModuleSources({tenantId:currentUser?.companyId,ownerKey:currentReadOwnerKey,state:serverConfirmedCollectionState,collections:['customers','products','orderRequests','employees']})} dispatchCacheReady={hasRetainedModuleSources({tenantId:currentUser?.companyId,ownerKey:currentReadOwnerKey,state:serverConfirmedCollectionState,collections:['warehouseDispatches']})} onDispatchDemandChange={onRequestDispatchDemandChange} requestDataReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:['customers','products','orderRequests','employees']})} dispatchDataReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:['warehouseDispatches']})} employee={employee} employees={employees} customers={customers} products={products} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} onAddOrderRequest={onAddOrderRequest} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} onEditCustomer={onEditCustomer} onGetCustomerProductPreference={onGetCustomerProductPreference} onSaveCustomerProductPreference={onSaveCustomerProductPreference} onSyncCustomerFixedProductDefaults={onSyncCustomerFixedProductDefaults} showFilterPanel={orderRequestFilterOpen} setShowFilterPanel={setOrderRequestFilterOpen} canViewAllOrderRequests={canRoleAction('order_requests', 'view_all_order_requests')} canCreateOrderRequest={canRoleAction('order_requests', 'create_order_request')} canEditOrderRequest={canRoleAction('order_requests', 'edit_order_request')} canEditOrderRequestQuantityUnit={canRoleAction('order_requests', 'edit_order_request_quantity_unit')} canEditOrderRequestSizePrice={canRoleAction('order_requests', 'edit_order_request_size_price')} canDeleteOrderRequest={canRoleAction('order_requests', 'delete_order_request')} canSetOrderRequestDeposit={canRoleAction('order_requests', 'set_order_request_deposit')} canEditOrderRequestDeposit={canRoleAction('order_requests', 'edit_order_request_deposit')} canShareOrderRequestSheet={canRoleAction('order_requests', 'share_order_request_sheet')} canFilterOrderRequests={canRoleAction('order_requests', 'filter_order_requests')} quickActionIntent={activeTab === 'order_requests' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'warehouse_import':
         if (shouldShowMissingWorkflowSetup({ canCreate: isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_warehouse_import'), dataReady: workflowDataReadiness.products, hasProducts: hasWorkflowProductData, requiresCustomers: false })) {
@@ -25186,7 +25239,7 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
 case 'asset_management': return <AssetManagementView employee={employee} employees={employees} assets={assets} assetCostLogs={assetCostLogs} assetExpenses={assetExpenses} onAddAsset={(data) => onAddAsset?.(employee?.id || 'asset', data)} onEditAsset={(id, data) => onEditAsset?.(id, data, employee?.id || 'asset')} onDeleteAsset={onDeleteAsset} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'asset', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'asset')} onDeleteAssetCostLog={onDeleteAssetCostLog} canViewAssets={canRoleAction('asset_management', 'view_assets')} canCreateAsset={canRoleAction('asset_management', 'create_asset')} canEditAsset={canRoleAction('asset_management', 'edit_asset')} canDeleteAsset={canRoleAction('asset_management', 'delete_asset')} canManageAssetHandover={canRoleAction('asset_management', 'manage_asset_handover')} canViewAssetCostLogs={canRoleAction('asset_management', 'view_asset_cost_logs')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} canDeleteAssetCostLog={canRoleAction('asset_management', 'delete_asset_cost_log')} canUploadAssetCostImages={canRoleAction('asset_management', 'upload_asset_cost_images')} canViewAssetDashboard={canRoleAction('asset_management', 'view_asset_dashboard')} canViewAssetWarnings={canRoleAction('asset_management', 'view_asset_warnings')} canViewDriverAssetScore={canRoleAction('asset_management', 'view_driver_asset_score')} />;
       case 'delivery_reports':
         return <DeliveryReportView employee={employee} customers={customers} products={products} orderRequests={orderRequests} orders={orders} payments={payments} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} expenses={expenses} assets={assets} assetCostLogs={assetCostLogs} onAddDeliveryReport={(data) => onAddDeliveryReport?.(employee?.id || 'driver', data)} onUpdateDeliveryReport={onUpdateDeliveryReport} onSaveDeliveryCommand={(command) => onSaveDeliveryCommand(employee?.id || 'driver', command)} onEditOrder={onEditOrder} onAddPayment={onAddPayment} onAddExpense={(data) => onAddExpense(employee?.id || 'driver', data)} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'driver', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'driver')} canViewDeliveryReports={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'view_delivery_reports')} canCreateDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'create_delivery_report')} canEditDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'edit_delivery_report')} canDeleteDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'delete_delivery_report')} canRecordDeliveryIncome={canRoleAction('delivery_reports', 'record_delivery_income') || canRoleAction('finance', 'create_income')} canRecordDeliveryExpense={canRoleAction('delivery_reports', 'record_delivery_expense') || canRoleAction('finance', 'create_expense')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} />;
-      case 'orders': return shouldShowMissingWorkflowSetup({ canCreate: canQuickCreateOrder, dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('orders', { type: 'create_order' }, 'Chuẩn bị dữ liệu để tạo đơn hàng', 'Cần có khách hàng và sản phẩm trước khi tạo hóa đơn. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderManagementView warehouseSourcesReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:['orderRequests','warehouseDispatches','deliveryReports']})} onPrimaryReady={onOrderPrimaryReady} supplementalSourcesReady={orderMutationsReady&&areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:FOREGROUND_REALTIME_COLLECTIONS_BY_TAB.orders})} isAccounting={isAccounting} employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} allCompanyOrders={allCompanyOrders} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} payments={payments} customerLedgerMap={orderLedgerMap} products={products} zaloSendQueue={zaloSendQueue} onAddOrder={(...args)=>runOrderMutation(onAddOrder,args)} onEditOrder={(...args)=>runOrderMutation(onEditOrder,args)} onUpdateOrderInvoiceTemplate={(...args)=>runOrderMutation(onUpdateOrderInvoiceTemplate,args)} onApproveOrderZaloSend={(...args)=>runOrderMutation(onApproveOrderZaloSend,args)} onUpdateOrderZaloMessage={(...args)=>runOrderMutation(onUpdateOrderZaloMessage,args)} onSyncPayosPaymentStatus={(...args)=>runOrderMutation(onSyncPayosPaymentStatus,args)} onEnsureOrderPayosPayment={(...args)=>runOrderMutation(onEnsureOrderPayosPayment,args)} onToggleArchiveOrder={(...args)=>runOrderMutation(onToggleArchiveOrder,args)} onDeleteOrder={(...args)=>runOrderMutation(onDeleteOrder,args)} onAddPayment={(...args)=>runOrderMutation(onAddPayment,args)} onAddCustomer={(...args)=>runOrderMutation(onAddCustomer,args)} onAddExpense={(data) => runOrderMutation(onAddExpense,[employee?.id || 'admin',data])} onResolveDeliveryReportIssue={(...args)=>runOrderMutation(onResolveDeliveryReportIssue,args)} onOpenCustomerZaloLink={handleOpenCustomerZaloLink} canCreateManualOrder={canRoleAction('orders', 'create_manual_order')} canCreateOrderFromImage={canRoleAction('orders', 'create_order_from_image')} canCreateOrderFromWarehouse={canRoleAction('orders', 'create_order_from_warehouse')} canEditOrder={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price') || canRoleAction('orders', 'edit_order_paid_amount') || canRoleAction('orders', 'edit_order_fees')} canEditOrderQuantityPrice={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price')} canManageInvoiceTemplate={canRoleAction('settings', 'edit_company_profile') || canRoleAction('orders', 'edit_order_items')} canDeleteOrder={canRoleAction('orders', 'delete_order')} canSharePaymentQr={canRoleAction('orders', 'share_payment_qr')} canRecordOrderPayment={canRoleAction('finance', 'create_income') || canRoleAction('debt', 'record_payment') || canRoleAction('orders', 'edit_order_paid_amount')} canResolveDeliveryIssues={canRoleAction('delivery_reports', 'resolve_delivery_discrepancies')} canChargeLostDeliveryGoods={canRoleAction('delivery_reports', 'charge_lost_goods_salary')} searchStore={orderSearchStore} searchKeyword={orderSearchKeyword} setSearchKeyword={setOrderSearchKeyword} showSearchBox={orderSearchOpen} setShowSearchBox={setOrderSearchOpen} showFilterPanel={orderFilterOpen} setShowFilterPanel={setOrderFilterOpen} quickActionIntent={activeTab === 'orders' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
+      case 'orders': return shouldShowMissingWorkflowSetup({ canCreate: canQuickCreateOrder, dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('orders', { type: 'create_order' }, 'Chuẩn bị dữ liệu để tạo đơn hàng', 'Cần có khách hàng và sản phẩm trước khi tạo hóa đơn. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderManagementView warehouseSourcesReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:['orderRequests','warehouseDispatches','deliveryReports']})} onPrimaryReady={onOrderPrimaryReady} isAccounting={isAccounting} employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} allCompanyOrders={allCompanyOrders} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} payments={payments} customerLedgerMap={orderReadLedgerMap} readIdentity={orderReadIdentity} products={products} zaloSendQueue={zaloSendQueue} onAddOrder={(...args)=>runOrderMutation(onAddOrder,args)} onEditOrder={(...args)=>runOrderMutation(onEditOrder,args)} onUpdateOrderInvoiceTemplate={(...args)=>runOrderMutation(onUpdateOrderInvoiceTemplate,args)} onApproveOrderZaloSend={(...args)=>runOrderMutation(onApproveOrderZaloSend,args)} onUpdateOrderZaloMessage={(...args)=>runOrderMutation(onUpdateOrderZaloMessage,args)} onSyncPayosPaymentStatus={(...args)=>runOrderMutation(onSyncPayosPaymentStatus,args)} onEnsureOrderPayosPayment={(...args)=>runOrderMutation(onEnsureOrderPayosPayment,args)} onToggleArchiveOrder={(...args)=>runOrderMutation(onToggleArchiveOrder,args)} onDeleteOrder={(...args)=>runOrderMutation(onDeleteOrder,args)} onAddPayment={(...args)=>runOrderMutation(onAddPayment,args)} onAddCustomer={(...args)=>runOrderMutation(onAddCustomer,args)} onAddExpense={(data) => runOrderMutation(onAddExpense,[employee?.id || 'admin',data])} onResolveDeliveryReportIssue={(...args)=>runOrderMutation(onResolveDeliveryReportIssue,args)} onOpenCustomerZaloLink={handleOpenCustomerZaloLink} canCreateManualOrder={canRoleAction('orders', 'create_manual_order')} canCreateOrderFromImage={canRoleAction('orders', 'create_order_from_image')} canCreateOrderFromWarehouse={canRoleAction('orders', 'create_order_from_warehouse')} canEditOrder={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price') || canRoleAction('orders', 'edit_order_paid_amount') || canRoleAction('orders', 'edit_order_fees')} canEditOrderQuantityPrice={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price')} canManageInvoiceTemplate={canRoleAction('settings', 'edit_company_profile') || canRoleAction('orders', 'edit_order_items')} canDeleteOrder={canRoleAction('orders', 'delete_order')} canSharePaymentQr={canRoleAction('orders', 'share_payment_qr')} canRecordOrderPayment={canRoleAction('finance', 'create_income') || canRoleAction('debt', 'record_payment') || canRoleAction('orders', 'edit_order_paid_amount')} canResolveDeliveryIssues={canRoleAction('delivery_reports', 'resolve_delivery_discrepancies')} canChargeLostDeliveryGoods={canRoleAction('delivery_reports', 'charge_lost_goods_salary')} searchStore={orderSearchStore} searchKeyword={orderSearchKeyword} setSearchKeyword={setOrderSearchKeyword} showSearchBox={orderSearchOpen} setShowSearchBox={setOrderSearchOpen} showFilterPanel={orderFilterOpen} setShowFilterPanel={setOrderFilterOpen} quickActionIntent={activeTab === 'orders' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'debt': return <DebtManagementView sourceFresh={mainLedgerReady} searchStore={debtSearchStore} isAccounting={isAccounting} isDriver={isDriver} employee={employee} customers={customers} orders={orders} payments={payments} expenses={expenses} onAddRepayment={(data) => runDebtMutation(onAddExpense,[employee.id,data])} canRecordRepayment={isOwnerAccount || canRoleAction('finance', 'create_expense')} warehouseImports={warehouseImports} employees={employees} onAddPayment={(...args)=>runDebtMutation(onAddPayment,args)} onDeletePayment={(...args)=>runDebtMutation(onDeletePayment,args)} canViewAllDebt={canRoleAction('debt', 'view_all_debt')} canViewAssignedDebt={canRoleAction('debt', 'view_assigned_debt')} canRecordPayment={canRoleAction('debt', 'record_payment')} canEditDebt={canRoleAction('debt', 'edit_debt') || canRoleAction('debt', 'edit_order_payment_from_debt')} canDeleteDebt={canRoleAction('debt', 'delete_debt') || canRoleAction('debt', 'edit_payment_history')} focusCustomerId={debtFocusCustomerId} onFocusCustomerHandled={() => setDebtFocusCustomerId('')} searchKeyword={debtSearchKeyword} setSearchKeyword={setDebtSearchKeyword} showSearchBox={debtSearchOpen} setShowSearchBox={setDebtSearchOpen} showFilterPanel={debtFilterOpen} setShowFilterPanel={setDebtFilterOpen} />;
       case 'bank_payments':
         if (!hasWorkflowSepayConfig) {
@@ -25601,10 +25654,14 @@ case 'asset_management': return <AssetManagementView employee={employee} employe
           <React.Profiler id={`Module:${activeTab}`} onRender={recordReactRender}>
             <React.Suspense fallback={<div data-hd-module-loading role="status" aria-busy="true" className="flex min-h-24 items-center justify-center gap-2 text-sm text-slate-600"><Loader2 size={18} className="animate-spin" />Đang mở...</div>}>
               <ReconciledLedgerContext.Provider value={reconciledLedgerMap}>
-                {['orders', 'debt'].includes(activeTab) ? (
+                {activeTab === 'orders' ? (
+                  <OrderReadBoundary projection={orderLedgerProjection} identity={orderReadIdentity} enabled={orderLedgerSourcesAvailable} onRetry={retryOrderSalesLedger}>
+                    {ledger => <ReconciledLedgerContext.Provider value={ledger}>{renderContent(ledger)}</ReconciledLedgerContext.Provider>}
+                  </OrderReadBoundary>
+                ) : activeTab === 'debt' ? (
                   <React.Suspense fallback={<LedgerPreparationNotice />}>
-                    <CompletedProjectionGate key={ledgerActorScope} retainWhilePending={activeTab==='debt'} retainIdentity={dashboardPrivacyScope} disableRetainedInteraction projection={activeTab==='orders'?orderLedgerProjection:mainLedgerProjection} onRetry={activeTab==='orders'?retryOrderSalesLedger:retryMainCustomerLedgers}>
-                      <ReconciledLedgerContext.Provider value={activeTab==='debt'?debtReadLedgerMap:reconciledLedgerMap}>{renderContent()}</ReconciledLedgerContext.Provider>
+                    <CompletedProjectionGate key={ledgerActorScope} retainWhilePending={activeTab==='debt'} retainIdentity={dashboardPrivacyScope} disableRetainedInteraction projection={mainLedgerProjection} onRetry={retryMainCustomerLedgers}>
+                      <ReconciledLedgerContext.Provider value={debtReadLedgerMap}>{renderContent()}</ReconciledLedgerContext.Provider>
                     </CompletedProjectionGate>
                   </React.Suspense>
                 ) : renderContent()}
@@ -40183,6 +40240,7 @@ const handleCreatePayrollPdf = async () => {
     }
   };
 const handleOpenReviewSection = () => {
+    if (!isEmployeeReviewEnabled(currentCompany)) return;
     setActiveTab?.('employee_reviews');
   };
  return (
@@ -40195,7 +40253,7 @@ const handleOpenReviewSection = () => {
             </button>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-sm font-semibold text-emerald-50">
               <span>{positionLabel} • {formatMonthYearLabel(monthKey)}</span>
-              <button
+              {isEmployeeReviewEnabled(currentCompany) && <button
                 type="button"
                 onClick={handleOpenReviewSection}
                 className="inline-flex items-center gap-1 rounded-full bg-white/18 px-2.5 py-1 text-xs font-black text-white ring-1 ring-white/25"
@@ -40203,7 +40261,7 @@ const handleOpenReviewSection = () => {
               >
                 <Star size={13} fill="currentColor" className="text-amber-200" />
                 {reviewSummary ? `${reviewSummary.stars} sao` : 'Chưa có đánh giá'}
-              </button>
+              </button>}
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -44771,68 +44829,9 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       driverNameSnapshot: item.driverNameSnapshot || assignedDriverName
     };
   }), [todayDispatchRows, customerLookup, productLookup, employeeLookup, deliveryReportByDispatchId]);
-  const compactEditableDispatchRows = useMemo(() => {
-    const groups = new Map();
-    editableDispatchRows.forEach((row, rowIndex) => {
-      const customerName = row.customerName || row.customerNameSnapshot || 'Khách hàng';
-      const productName = row.productName || row.productNameSnapshot || 'Hàng hóa';
-      const quantityUnit = getDispatchRowQuantityUnit(row);
-      const customerKey = row.customerId || normalizeLookupText(customerName) || `customer_${rowIndex}`;
-      const branchKey = row.branchId || row.customerBranchId || normalizeLookupText(row.branchName || row.customerBranchName || '');
-      const productKey = row.productId || normalizeLookupText(productName) || `product_${rowIndex}`;
-      const driverKey = row.assignedDriverId || row.driverId || normalizeLookupText(row.assignedDriverName || row.assignedDriverNameSnapshot || row.driverNameSnapshot || '');
-      const mergeKey = [
-        row.dispatchPresentationGroupId || getWarehouseDispatchPresentationGroupId(row),
-        customerKey,
-        branchKey,
-        productKey,
-        normalizeLookupText(quantityUnit || ''),
-        driverKey,
-        row.deliveryStatusKey || 'pending',
-      ].join('__');
-      const weightKg = getDispatchRowWeight(row);
-      const quantity = getDispatchRowQuantity(row);
-      const existing = groups.get(mergeKey);
-
-      if (existing) {
-        existing.sourceRows.push(row);
-        existing.sourceIds.push(row.id);
-        existing.weightKg = Number((existing.weightKg + weightKg).toFixed(3));
-        existing.pieceCount = Number((existing.pieceCount + quantity).toFixed(3));
-        existing.quantity = existing.pieceCount;
-        existing.quantityCount = existing.pieceCount;
-        existing.note = [
-          ...new Set([
-            ...(existing.note ? [`${existing.note}`] : []),
-            ...(row.note ? [`${row.note}`] : [])
-          ])
-        ].join(' • ');
-        existing.updatedAt = getEntityTimestamp(row) > getEntityTimestamp(existing) ? row.updatedAt : existing.updatedAt;
-        existing.createdAt = getEntityTimestamp(row) > getEntityTimestamp(existing) ? row.createdAt : existing.createdAt;
-        return;
-      }
-
-      groups.set(mergeKey, {
-        ...row,
-        id: row.id || `dispatch_${rowIndex}`,
-        sourceRows: [row],
-        sourceIds: row.id ? [row.id] : [],
-        weightKg,
-        pieceCount: quantity,
-        quantity,
-        quantityCount: quantity,
-        quantityUnit,
-        mergeKey,
-        isMergedDispatchRow: false
-      });
-    });
-
-    return Array.from(groups.values()).map((row) => ({
-      ...row,
-      id: row.sourceRows.length > 1 ? `merged_${row.mergeKey}` : row.id,
-      isMergedDispatchRow: row.sourceRows.length > 1
-    }));
-  }, [editableDispatchRows]);
+  const compactEditableDispatchRows = useMemo(() => buildDispatchEditableRows(editableDispatchRows, {
+    weight: getDispatchRowWeight, quantity: getDispatchRowQuantity, unit: getDispatchRowQuantityUnit,
+  }), [editableDispatchRows]);
   const getDispatchListSearchFields = useCallback(row => buildDispatchListSearchFields(row, {
     customers: customerLookup, products: productLookup, employees: employeeLookup,
     customerName: getCustomerDisplayName, driverId: getDispatchDriverId, driverName: getDispatchDriverName,
@@ -44877,7 +44876,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
           const driverName = getDispatchDriverName(item);
           const driverKey = driverId || normalizeLookupText(driverName || '');
           const mergeKey = `${item.customerId || customerName}__${item.productId || productName}__${normalizeLookupText(quantityUnit)}__${driverKey}`;
-          const weightKg = parseFloat(item.weightKg) || 0;
+          const weightKg = getDispatchRowWeight(item);
           const pieceCount = getDispatchRowQuantity(item);
           const current = mergedRows.get(mergeKey);
           if (current) {
@@ -45047,7 +45046,9 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   const openDispatchListWeightEditor = useCurrentCallback((row, event) => {
     event?.stopPropagation?.();
     if (!row || !canEdit) return;
-    const sourceRow = Array.isArray(row.sourceRows) && row.sourceRows.length > 0 ? row.sourceRows[0] : row;
+    let sourceRow;
+    try { sourceRow = requireSingleDispatchSource(row); }
+    catch (error) { setDispatchError(error.message); return; }
     if (!sourceRow?.id) {
       setDispatchError('Không tìm thấy phiếu gốc để cập nhật số kg.');
       return;
@@ -45064,6 +45065,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       displayBaseWeightKg: sourceBaseWeightKg,
       sourceBaseWeightKg,
       sourceWeightEntries,
+      sourceUpdatedAt: sourceRow.updatedAt || sourceRow.createdAt || '',
       sourceDate: sourceRow.date || workingDate,
       initialEntries: ensureWarehouseWeightEntryRows(editableWeightEntries.map(entry => formatDispatchNumberInput(entry)))
     });
@@ -45075,7 +45077,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   const saveDispatchListWeightEntries = async ({ entries = [] } = {}) => {
     if (!dispatchListWeightEditor?.rowId || !canEdit || !employee?.id || dispatchListWeightSaveLockRef.current) return;
     const normalizedEntries = normalizeWarehouseWeightEntries(entries);
-    const nextSourceWeight = normalizedEntries.reduce((sum, value) => sum + value, 0);
+    const nextSourceWeight = getWarehouseWeightEntryTotal(normalizedEntries);
     if (nextSourceWeight <= 0) {
       setDispatchError('Vui lòng nhập ít nhất một số cân hợp lệ.');
       return;
@@ -45083,6 +45085,12 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     dispatchListWeightSaveLockRef.current = true;
     setIsSavingDispatchListWeight(true);
     try {
+      const latest = editableDispatchRows.find(row => row.id === dispatchListWeightEditor.rowId);
+      if (!latest || getDispatchRowWeight(latest) !== dispatchListWeightEditor.sourceBaseWeightKg
+        || JSON.stringify(normalizeWarehouseWeightEntries(latest.weightEntries || [])) !== JSON.stringify(dispatchListWeightEditor.sourceWeightEntries)
+        || (latest.updatedAt || latest.createdAt || '') !== dispatchListWeightEditor.sourceUpdatedAt) {
+        throw new Error('Phiếu xuất đã thay đổi trong lúc nhập. Đóng và mở lại các lần cân để đối chiếu; chưa ghi đè dữ liệu mới.');
+      }
       await onEditWarehouseDispatch(dispatchListWeightEditor.rowId, {
         weightKg: formatDispatchNumberInput(nextSourceWeight),
         weightEntries: normalizedEntries,
@@ -45316,9 +45324,9 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   const openDispatchCellEditor = useCurrentCallback((displayRow, field, event) => {
     event?.stopPropagation?.();
     if (!displayRow || (!canEditDispatchCellField(field) && !canDelete)) return;
-    const sourceRow = displayRow.isMergedDispatchRow && Array.isArray(displayRow.sourceRows) && displayRow.sourceRows.length > 0
-      ? displayRow.sourceRows[0]
-      : displayRow;
+    let sourceRow;
+    try { sourceRow = requireSingleDispatchSource(displayRow); }
+    catch (error) { setDispatchError(error.message); return; }
     if (!sourceRow?.id) {
       setDispatchError('Không tìm thấy phiếu gốc để chỉnh sửa.');
       return;
@@ -45424,6 +45432,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
           initialEntries={dispatchListWeightEditor.initialEntries}
           customerName={dispatchListWeightEditor.customerName}
           productName={dispatchListWeightEditor.productName}
+          documentId={dispatchListWeightEditor.rowId}
           previousWeightKg={dispatchListWeightEditor.displayBaseWeightKg}
           isSaving={isSavingDispatchListWeight}
           onCancel={() => {
@@ -46292,6 +46301,8 @@ const createEmployeeFormState = (position = 'Kế toán & nhân sự', overrides
     experienceSalary: '',
     experienceSalaryPeriod: 'months',
     commissionRate: '',
+    commissionTiers: [],
+    commissionPolicyForm: null,
     commissionBaseMode: isSalesCollaboratorPosition(position) ? 'total_revenue' : 'above_target',
     targetRevenue: '',
     salesLeaderId: '',
@@ -47061,6 +47072,8 @@ function EmployeeReviewRadarChart({
   );
 }
 
+const LazyEmployeeReviewFeatureSettings = React.lazy(() => import('./features/settings/EmployeeReviewSettings.jsx'));
+
 function EmployeeReviewModuleView({
   currentEmployee = null,
   currentCompany = {},
@@ -47078,7 +47091,8 @@ function EmployeeReviewModuleView({
   canViewEmployeeReviews = false,
   canCreateEmployeeReview = false,
   canViewAllEmployeeReviews = false,
-  canManageReviewCriteria = false
+  canManageReviewCriteria = false,
+  canManageReviewFeature = false
 }) {
   const activeEmployees = useMemo(() => (employees || []).filter(emp => emp && !emp.isArchived), [employees]);
   const visibleEmployees = useMemo(() => {
@@ -47113,7 +47127,7 @@ function EmployeeReviewModuleView({
     }, {}));
   }, [criteriaList]);
 
-  if (!canViewEmployeeReviews && !canCreateEmployeeReview) {
+  if (!isEmployeeReviewEnabled(currentCompany) || (!canViewEmployeeReviews && !canCreateEmployeeReview)) {
     return <AccessDeniedView onGoHome={() => {}} />;
   }
 
@@ -47293,6 +47307,7 @@ function EmployeeReviewModuleView({
 
   return (
     <div className="space-y-5 pb-24">
+      {canManageReviewFeature && <details className="rounded-2xl bg-white p-4 ring-1 ring-slate-100"><summary className="cursor-pointer text-sm font-bold text-slate-800">Bật/tắt Đánh giá cho công ty</summary><React.Suspense fallback={<p className="p-4 text-sm text-slate-500">Đang mở cài đặt…</p>}><LazyEmployeeReviewFeatureSettings key={currentCompany?.id || currentCompany?.companyId || ''} company={currentCompany} canManage={canManageReviewFeature} onSave={onUpdateCompanySettings} /></React.Suspense></details>}
       <section className="rounded-[2rem] bg-white p-3 shadow-sm ring-1 ring-slate-100">
         <div className="grid grid-cols-2 items-end gap-3">
           <label className="min-w-0 space-y-1 text-center">

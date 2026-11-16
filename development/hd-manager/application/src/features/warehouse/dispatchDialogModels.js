@@ -1,3 +1,5 @@
+import { parseWarehouseWeightEntryNumber } from '../../utils/warehouseWeightEntries.js';
+
 /**
  * @typedef {{requestId?: string, productId?: string, rowKey?: string, itemIndex?: number,
  * requestDate?: string, productShortName?: string, productName?: string, quantity?: number,
@@ -40,7 +42,7 @@ export function buildDispatchHistoryRows(items, context) {
       productName: item.productNameSnapshot || product?.name || 'Hang hoa',
       productShortName: context.productShortName(product) || `${item.productShortName || item.productShortNameSnapshot || item.shortName || ''}`.trim().toUpperCase(),
       pieceCount: context.quantity(item), quantityUnit: context.unit(item),
-      weightKg: parseFloat(String(item.weightKg)) || 0, note: item.note || '',
+      weightKg: parseWarehouseWeightEntryNumber(item.weightKg), note: item.note || '',
       createdAt: context.timestamp(item) || 0,
     };
   });

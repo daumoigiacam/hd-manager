@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 2,
+  "scope": "HD Manager / existing employee salary policy / monthly Development",
+  "storage": {
+    "active": "employees/{employeeId}.commissionPolicy",
+    "draft": "employees/{employeeId}.commissionPolicyDraft",
+    "versions": "employees/{employeeId}.payrollPolicies and salaryPolicyHistory",
+    "locked": "payrollSnapshots.salaryDetails.commissionCalculation + employee + policySnapshot"
+  },
+  "authorization": {
+    "action": "employees.edit_employee_salary_policy",
+    "tenant": "authenticated companyId must match the target employee",
+    "approval": "active status requires the existing salary-policy permission; actual actor/date are retained in the salary-policy history",
+    "concurrency": "existing salaryPolicyVersion is checked inside the Firestore transaction before merge"
+  },
+  "methods": {
+    "fixed": "eligible actual revenue × fixed rate",
+    "above_kpi": "MAX(0, eligible revenue - target) × fixed rate",
+    "progressive": "sum of the disjoint occupied tier amounts × their rates",
+    "retrospective": "the rate of the occupied attained tier applies to all excess revenue"
+  },
+  "tierContract": {
+    "max": 5,
+    "bounds": "(from, to], first from=0, final to=null, contiguous and nonoverlapping",
+    "zeroExcess": "no commission or bonus",
+    "fixedBonus": "once per occupied enabled tier; retrospective uses only the attained tier",
+    "disabled": "no commission or fixed bonus for this range",
+    "rounding": "sum exact integer rate units, round final total to 2 decimals; expose any row-display rounding adjustment",
+    "deletion": "a tier referenced by prior active policy history cannot be removed from the same policy identity; a new policy version can use new tier IDs"
+  },
+  "dates": {
+    "cycle": "months",
+    "starts": "first day of month",
+    "ends": "optional, final day of month",
+    "backdating": "cannot precede newer stored policies",
+    "quarterAndYear": "deferred by Owner until monthly payroll allocation rules are supplied"
+  },
+  "revenue": {
+    "recognized_net": {
+      "collection": "orders",
+      "amountField": "amount",
+      "discount": "already deducted by OrderManagementView; do not deduct twice",
+      "eligibleReviewStatuses": [
+        "confirmed",
+        "completed",
+        "approved",
+        "approved_for_zalo"
+      ],
+      "excluded": "archived, canceled, reversed, draft or unconfirmed orders"
+    },
+    "collected": {
+      "collections": [
+        "orders",
+        "customers",
+        "payments"
+      ],
+      "allocation": "existing buildCustomerReconciledLedger official allocator",
+      "time": "payment date in the selected month",
+      "excluded": "opening debt, unallocated overpayment, duplicate/reversed/unofficial receipts",
+      "incomplete": "untraceable prepayment credits or missing matched source orders block reconciliation"
+    },
+    "returns": "BUSINESS_RULE_REQUIRED or unconfirmed return financial evidence blocks payroll closing; Owner deferred the return valuation rule to a separate task"
+  },
+  "migration": {
+    "type": "additive / read-through",
+    "legacyFields": "commissionRate, targetRevenue and commissionTiers are preserved",
+    "default": "no automatic activation or application of the HD sample",
+    "draft": "stored separately; does not replace the live policy",
+    "activation": "explicit salary-authorized save adds a dated history version",
+    "oldLockedPeriods": "never recalculated or rewritten"
+  },
+  "rollback": {
+    "factory": "buildCommissionRollbackPatch(employee, {effectiveFrom, changedByEmployeeId, changedAt})",
+    "effect": "adds a new dated version with commissionPolicy=null and retains legacy inputs and all old history",
+    "execution": "apply via the existing optimistic employee transaction after authorized review",
+    "productionExecuted": false
+  },
+  "sample": {
+    "target": 500000000,
+    "method": "progressive",
+    "tiers": [
+      {
+        "from": 0,
+        "to": 500000000,
+        "rate": 0.02
+      },
+      {
+        "from": 500000000,
+        "to": 1000000000,
+        "rate": 0.025
+      },
+      {
+        "from": 1000000000,
+        "to": null,
+        "rate": 0.025
+      }
+    ],
+    "revenue": 1200000000,
+    "excess": 700000000,
+    "commission": 15000000
+  },
+  "safety": {
+    "newModule": false,
+    "newLedger": false,
+    "databaseMigration": false,
+    "productionDataModified": false,
+    "productionRulesDeployed": false
+  }
+}

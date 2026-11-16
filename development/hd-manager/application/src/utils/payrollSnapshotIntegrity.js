@@ -38,6 +38,7 @@ const getSnapshotMissingFields = (snapshot = {}) => {
 export const inspectPayrollSnapshot = (snapshot = {}) => {
   const missingFields = getSnapshotMissingFields(snapshot);
   const invalidFields = [];
+  if(snapshot?.salaryDetails?.commissionCalculation?.ready===false)invalidFields.push('commission.reconciliation_required');
   const policySnapshot = snapshot?.policySnapshot;
   const calculationSnapshot = snapshot?.calculationSnapshot;
   if (isRecord(policySnapshot)) {

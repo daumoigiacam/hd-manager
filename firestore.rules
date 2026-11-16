@@ -70,6 +70,122 @@ service cloud.firestore {
       return ['rolePermissions', 'rolePermissionActions', 'employeeRolePermissions', 'employeeRolePermissionActions'];
     }
 
+    function companyEmployeeReviewKeys() {
+      return ['employeeReviewsEnabled', 'employeeReviewsUpdatedByEmpId', 'employeeReviewsUpdatedAt'];
+    }
+
+    function employeeCommissionPolicyKeys() {
+      return ['commissionTiers','commissionPolicy','commissionPolicyDraft','commissionRate','commissionBaseMode','targetRevenue',
+        'payrollPolicies','salaryPolicyHistory','salaryPolicyVersion','salaryPolicyEffectiveFrom'];
+    }
+
+    function employeeCommissionActionEnabled(appId) {
+      let employee = get(dispatchEmployeePath(appId)).data;
+      let company = get(dispatchCompanyPath(appId)).data;
+      let roleKey = dispatchRoleKey(employee);
+      let overridden = request.auth.token.appUserId in company.get('employeeRolePermissions', {});
+      let permissions = overridden
+        ? company.get('employeeRolePermissions', {}).get(request.auth.token.appUserId, {})
+        : company.get('rolePermissions', {}).get(roleKey, {});
+      let actions = overridden
+        ? company.get('employeeRolePermissionActions', {}).get(request.auth.token.appUserId, {})
+        : company.get('rolePermissionActions', {}).get(roleKey, {});
+      return employee.companyId == request.auth.token.companyId
+        && employee.get('isArchived', false) != true
+        && (roleKey == 'owner' || actions.get('employees', {}).get('edit_employee_salary_policy', permissions.get('employees', roleKey == 'accounting')) == true);
+    }
+
+    function canManageEmployeeCommissionPolicy(appId) {
+      // Called only by the employee branch after hasIdentitySession and tenant checks.
+      return request.auth.token.role in ['super_admin','admin']
+        || employeeCommissionActionEnabled(appId);
+    }
+
+    function validCommissionTierAt(tiers, index, baseRate) {
+      let tier = tiers[index];
+      let threshold = tier.minExcessRevenue;
+      let rate = tier.rate;
+      let previousThreshold = index == 0 ? 0 : tiers[index-1].minExcessRevenue;
+      let previousRate = index == 0 ? baseRate : tiers[index-1].rate;
+      // Accessing both fields rejects missing keys; size rejects extra keys.
+      return tier is map && tier.keys().size() == 2
+        && threshold is int && threshold > previousThreshold
+        && threshold <= 9007199254740991
+        && rate is number && rate >= previousRate && rate <= 1;
+    }
+
+    function validEmployeeCommissionTiers(data) {
+      let tiers = data.get('commissionTiers', []);
+      let baseRate = data.get('commissionRate', 0);
+      return tiers is list && tiers.size() <= 5
+        && (tiers.size() == 0 || (baseRate is number && baseRate >= 0 && baseRate <= 1
+          && validCommissionTierAt(tiers,0,baseRate)
+          && (tiers.size() <= 1 || validCommissionTierAt(tiers,1,baseRate))
+          && (tiers.size() <= 2 || validCommissionTierAt(tiers,2,baseRate))
+          && (tiers.size() <= 3 || validCommissionTierAt(tiers,3,baseRate))
+          && (tiers.size() <= 4 || validCommissionTierAt(tiers,4,baseRate))));
+    }
+
+    function validCommissionRange(tier, start, last) {
+      let rate = tier.rate;
+      let end = tier.to;
+      let bonus = tier.fixedBonus;
+      return tier.from == start && tier.enabled is bool
+        && (last ? end == null : end is int && end > start && end <= 9007199254740991)
+        && rate >= 0 && rate <= 1
+        && bonus is int && bonus >= 0 && bonus <= 9007199254740991;
+    }
+
+    function validCommissionPolicy(policy, draft) {
+      let tiers = policy == null ? [] : policy.tiers;
+      let count = tiers.size();
+      return policy == null || (policy.schemaVersion == 2 && policy.cycle == 'months'
+        && policy.policyId is string && policy.policyId.size() > 0
+        && policy.method in ['fixed','above_kpi','progressive','retrospective']
+        && policy.revenueBasis in ['recognized_net','collected']
+        && (draft ? policy.status == 'draft' : policy.status in ['active','paused'])
+        && policy.targetRevenue is int && policy.targetRevenue >= 0 && policy.targetRevenue <= 9007199254740991
+        && policy.rate is number && policy.rate >= 0 && policy.rate <= 1
+        && policy.effectiveFrom is string && policy.effectiveFrom.matches('^[0-9]{4}-(0[1-9]|1[0-2])-01$')
+        && policy.effectiveTo is string && (policy.effectiveTo == '' || policy.effectiveTo >= policy.effectiveFrom)
+        && tiers is list && count <= 5
+        && (policy.method in ['fixed','above_kpi'] ? count == 0 : count > 0
+          && validCommissionRange(tiers[0], 0, count == 1)
+          && (count < 2 || validCommissionRange(tiers[1], tiers[0].to, count == 2))
+          && (count < 3 || validCommissionRange(tiers[2], tiers[1].to, count == 3))
+          && (count < 4 || validCommissionRange(tiers[3], tiers[2].to, count == 4))
+          && (count < 5 || validCommissionRange(tiers[4], tiers[3].to, true))));
+    }
+
+    // A bounded employee-only branch avoids evaluating unrelated payroll,
+    // customer, warehouse and messaging rules for each salary-policy write.
+    function canWriteEmployeeDocument(appId, oldData, newData, creating) {
+      let changed = creating ? newData.keys() : newData.diff(oldData).affectedKeys();
+      return request.auth.token.accountType != 'employee' ? false
+        : newData.companyId != request.auth.token.companyId ? false
+        : (!creating && oldData.companyId != request.auth.token.companyId) ? false
+        : ((creating || changed.hasAny(employeeAttendanceSecurityKeys())) && !isPayrollManager(appId)) ? false
+        : !changed.hasAny(employeeCommissionPolicyKeys()) ? true
+        : !canManageEmployeeCommissionPolicy(appId) ? false
+        : (changed.hasAny(['commissionTiers','commissionRate']) && !validEmployeeCommissionTiers(newData)) ? false
+        : (changed.hasAny(['commissionPolicy']) && !validCommissionPolicy(newData.get('commissionPolicy', null), false)) ? false
+        : !changed.hasAny(['commissionPolicyDraft']) || validCommissionPolicy(newData.get('commissionPolicyDraft', null), true);
+    }
+
+    function canChangeCompanyEmployeeReviews(appId) {
+      return canManageCompanyPermissions(appId)
+        && request.resource.data.get('employeeReviewsEnabled', true) is bool
+        && request.resource.data.get('employeeReviewsUpdatedByEmpId', '') == request.auth.token.appUserId
+        && request.resource.data.get('employeeReviewsUpdatedAt', null) == request.time;
+    }
+
+    // History stays readable for payroll and audit. Only review mutations stop.
+    function employeeReviewWritesEnabled(appId, collectionId) {
+      return collectionId != 'employeeReviews'
+        || (exists(dispatchCompanyPath(appId))
+          && get(dispatchCompanyPath(appId)).data.get('employeeReviewsEnabled', true) != false);
+    }
+
     function dispatchEmployeePath(appId) {
       return /databases/$(database)/documents/artifacts/$(appId)/public/data/employees/$(request.auth.token.appUserId);
     }
@@ -709,6 +825,7 @@ service cloud.firestore {
         && data.id == docId
         && data.companyId == request.auth.token.companyId
         && hasCompletePayrollSnapshot(data)
+        && data.salaryDetails.get('commissionCalculation', {}).get('ready', true) == true
         && existsAfter(payrollPeriodPath(appId, data.periodId))
         && period.companyId == data.companyId
         && period.monthKey == data.monthKey
@@ -1028,12 +1145,14 @@ service cloud.firestore {
         && canReadPayrollDocument(collectionId, resource.data);
 
       allow create: if hasIdentitySession()
-        && !isServerManagedSalaryVoucher(collectionId, request.resource.data)
         && !isServerManagedCustomerPaymentCollection(collectionId)
+        && (collectionId == 'employees' ? canWriteEmployeeDocument(appId, {}, request.resource.data, true) : (
+          employeeReviewWritesEnabled(appId, collectionId)
+        && !isServerManagedSalaryVoucher(collectionId, request.resource.data)
         && (collectionId != 'attendance' || isPayrollManager(appId))
-        && (collectionId != 'employees' || isPayrollManager(appId))
         && (collectionId != 'companies' || !request.resource.data.keys().hasAny(companyWifiKeys()) || canManageCompanyWifi())
         && (collectionId != 'companies' || !request.resource.data.keys().hasAny(companyPermissionKeys()) || canManageCompanyPermissions(appId))
+        && (collectionId != 'companies' || !request.resource.data.keys().hasAny(companyEmployeeReviewKeys()) || canChangeCompanyEmployeeReviews(appId))
         && belongsToSignedInCompany(collectionId, docId, request.resource.data)
         && (collectionId != 'warehouseDispatches' || canCreateWarehouseDispatch(appId, docId, request.resource.data))
         && (
@@ -1053,19 +1172,21 @@ service cloud.firestore {
           || (collectionId == 'payrollAutoLockPlanSnapshots' && isValidPayrollAutoLockSnapshotWrite(appId, docId))
           || (collectionId == 'activityLogs' && isImmutablePayrollAudit(collectionId, request.resource.data) && isValidPayrollAuditCreate(appId))
           || (!isProtectedPayrollCollection(collectionId) && !isImmutablePayrollAudit(collectionId, request.resource.data))
-        );
+        )));
 
       allow update: if hasIdentitySession()
+        && !isServerManagedCustomerPaymentCollection(collectionId)
+        && (collectionId == 'employees' ? canWriteEmployeeDocument(appId, resource.data, request.resource.data, false) : (
+          employeeReviewWritesEnabled(appId, collectionId)
         && !isServerManagedSalaryVoucher(collectionId, resource.data)
         && !isServerManagedSalaryVoucher(collectionId, request.resource.data)
-        && !isServerManagedCustomerPaymentCollection(collectionId)
         && (collectionId != 'customers'
           || !request.resource.data.diff(resource.data).affectedKeys().hasAny(customerProductKeys())
           || canManageCustomerProductConfig(appId, resource.data))
         && (collectionId != 'attendance' || isPayrollManager(appId))
-        && (collectionId != 'employees' || !request.resource.data.diff(resource.data).affectedKeys().hasAny(employeeAttendanceSecurityKeys()) || isPayrollManager(appId))
         && (collectionId != 'companies' || !request.resource.data.diff(resource.data).affectedKeys().hasAny(companyWifiKeys()) || canManageCompanyWifi())
         && (collectionId != 'companies' || !request.resource.data.diff(resource.data).affectedKeys().hasAny(companyPermissionKeys()) || canManageCompanyPermissions(appId))
+        && (collectionId != 'companies' || !request.resource.data.diff(resource.data).affectedKeys().hasAny(companyEmployeeReviewKeys()) || canChangeCompanyEmployeeReviews(appId))
         && belongsToSignedInCompany(collectionId, docId, resource.data)
         && belongsToSignedInCompany(collectionId, docId, request.resource.data)
         && (collectionId != 'warehouseDispatches' || canUpdateWarehouseDispatch(appId, docId, resource.data, request.resource.data))
@@ -1098,9 +1219,10 @@ service cloud.firestore {
             collectionId == 'payrollAutoLockPlanSnapshots'
             && isValidPayrollAutoLockSnapshotWrite(appId, docId)
           )
-        );
+        )));
 
       allow delete: if hasIdentitySession()
+        && employeeReviewWritesEnabled(appId, collectionId)
         && !isServerManagedSalaryVoucher(collectionId, resource.data)
         && !isServerManagedCustomerPaymentCollection(collectionId)
         && (collectionId != 'attendance' || isPayrollManager(appId))

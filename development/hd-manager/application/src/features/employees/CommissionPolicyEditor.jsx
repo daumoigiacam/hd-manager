@@ -1,0 +1,41 @@
+import {MAX_COMMISSION_TIERS} from '../../utils/salesCommissionTiers.js';
+import {COMMISSION_METHODS,COMMISSION_BASES,hdSampleCommissionPolicy} from '../../utils/commissionPolicy.js';
+
+const money=value=>Number(value||0).toLocaleString('vi-VN',{maximumFractionDigits:2});
+export default function CommissionPolicyEditor({value,onChange,onReset,disabled=false,usedTierIds=[]}) {
+  const change=patch=>onChange({...value,...patch});
+  const tierChange=(index,patch)=>change({tiers:value.tiers.map((tier,i)=>i===index?{...tier,...patch}:tier)});
+  const moneyInput=(label,number,onInput,optional=false)=> <label className="block min-w-0 text-xs font-semibold">{label}<input aria-label={label} inputMode="numeric" disabled={disabled} type="text" value={number===''||number===null?'':money(number)} onChange={event=>onInput(event.target.value.replace(/\D/g,''))} placeholder={optional?'Không giới hạn':'0'} className="mt-1 w-full rounded-lg border border-emerald-200 bg-white p-2 disabled:opacity-60"/></label>;
+  if(!value)return null;
+  const tiered=['progressive','retrospective'].includes(value.method);
+  const hasReferencedTiers=value.tiers.some(tier=>usedTierIds.includes(tier.id));
+  return <section aria-label="Chính sách hoa hồng nâng cao" className="space-y-3 border-t border-emerald-200 pt-3 text-emerald-950">
+    <div className="flex flex-wrap items-center justify-between gap-2"><h5 className="font-bold">Chính sách hoa hồng kinh doanh</h5>{onReset&&<button type="button" onClick={onReset} className="min-h-9 rounded border px-2 text-xs">Hủy chỉnh sửa chính sách</button>}</div>
+    <p className="text-xs leading-5">KPI và các bậc xét trên doanh thu vượt KPI. Lương đã khóa giữ nguyên. Cấu hình mẫu chỉ điền bản nháp này, không áp dụng cho nhân viên khác.</p>
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      {moneyInput('KPI doanh thu của chính sách (đ)',value.targetRevenue,targetRevenue=>change({targetRevenue}))}
+      <label className="text-xs font-semibold">Chu kỳ tính<select aria-label="Chu kỳ hoa hồng" disabled={disabled} value={value.cycle} onChange={event=>change({cycle:event.target.value})} className="mt-1 w-full rounded-lg border p-2"><option value="months">Hằng tháng</option><option value="quarters" disabled>Hằng quý – chờ quy tắc phân bổ lương</option><option value="years" disabled>Hằng năm – chờ quy tắc phân bổ lương</option></select></label>
+      <label className="text-xs font-semibold">Phương pháp tính<select aria-label="Phương pháp hoa hồng" disabled={disabled} value={value.method} onChange={event=>change({method:event.target.value,tiers:value.tiers.length?value.tiers:[{id:crypto.randomUUID(),from:0,to:null,ratePercent:value.ratePercent,fixedBonus:0,enabled:true}]})} className="mt-1 w-full rounded-lg border p-2">{Object.entries(COMMISSION_METHODS).map(([id,label])=><option key={id} value={id}>{label}</option>)}</select></label>
+      <label className="text-xs font-semibold">Căn cứ doanh thu<select aria-label="Căn cứ doanh thu hoa hồng" disabled={disabled} value={value.revenueBasis} onChange={event=>change({revenueBasis:event.target.value})} className="mt-1 w-full rounded-lg border p-2">{Object.entries(COMMISSION_BASES).map(([id,label])=><option key={id} value={id}>{label}</option>)}</select></label>
+      <label className="text-xs font-semibold">Ngày bắt đầu<input aria-label="Ngày bắt đầu hoa hồng" disabled={disabled} type="date" value={value.effectiveFrom} onChange={event=>change({effectiveFrom:event.target.value})} className="mt-1 w-full rounded-lg border p-2"/></label>
+      <label className="text-xs font-semibold">Ngày kết thúc (không bắt buộc)<input aria-label="Ngày kết thúc hoa hồng" disabled={disabled} type="date" value={value.effectiveTo} onChange={event=>change({effectiveTo:event.target.value})} className="mt-1 w-full rounded-lg border p-2"/></label>
+      <label className="text-xs font-semibold">Trạng thái<select aria-label="Trạng thái chính sách hoa hồng" disabled={disabled} value={value.status} onChange={event=>change({status:event.target.value})} className="mt-1 w-full rounded-lg border p-2"><option value="draft">Nháp – giữ chính sách đang dùng</option><option value="active">Phê duyệt và áp dụng</option><option value="paused">Tạm dừng – không tính hoa hồng chính sách này</option></select></label>
+      {!tiered&&<label className="text-xs font-semibold">Tỷ lệ hoa hồng (%)<input aria-label="Tỷ lệ chính sách hoa hồng" disabled={disabled} type="text" inputMode="decimal" value={value.ratePercent} onChange={event=>change({ratePercent:event.target.value})} placeholder="2% hoặc 2,5%" className="mt-1 w-full rounded-lg border p-2"/></label>}
+    </div>
+    <p className="text-xs leading-5">Theo kỳ lương tháng: bắt đầu ngày 01, kết thúc ngày cuối tháng. Nháp không thay chính sách đang áp dụng; chỉ người có quyền sửa chính sách lương mới được phê duyệt. Doanh thu sau giảm giá dùng tiền cuối trên đơn; không trừ giảm giá lần hai. Hàng trả chưa xác nhận giá trị sẽ chặn chốt lương.</p>
+    {tiered&&<>
+      <p className="text-xs leading-5">Khoảng bậc là (Từ, Đến]; đúng ranh giới thuộc bậc trước. Bậc cuối để trống “Đến”. Thưởng cố định được cộng một lần khi có doanh thu trong bậc; bậc tắt không phát sinh hoa hồng/thưởng.</p>
+      <div className="overflow-x-auto rounded-xl border border-emerald-200"><table className="w-full min-w-[660px] text-left text-xs"><caption className="sr-only">Các bậc doanh thu vượt KPI</caption><thead className="bg-emerald-100"><tr>{['Bậc','Từ mức vượt (đ)','Đến mức vượt (đ)','Tỷ lệ (%)','Thưởng cố định (đ)','Bật',''].map((label,index)=><th key={index} className="p-2">{label}</th>)}</tr></thead><tbody>{value.tiers.map((tier,index)=><tr key={tier.id} className="border-t border-emerald-100">
+        <td className="p-2">{index+1}</td>
+        <td className="p-2">{moneyInput(`Từ bậc ${index+1}`,tier.from,from=>tierChange(index,{from}))}</td>
+        <td className="p-2">{moneyInput(`Đến bậc ${index+1}`,tier.to,to=>tierChange(index,{to:to===''?null:to}),true)}</td>
+        <td className="p-2"><input aria-label={`Tỷ lệ bậc ${index+1}`} disabled={disabled} type="text" inputMode="decimal" value={tier.ratePercent} onChange={event=>tierChange(index,{ratePercent:event.target.value})} className="w-24 rounded-lg border p-2"/></td>
+        <td className="p-2">{moneyInput(`Thưởng bậc ${index+1}`,tier.fixedBonus,fixedBonus=>tierChange(index,{fixedBonus}))}</td>
+        <td className="p-2"><input aria-label={`Bật bậc ${index+1}`} disabled={disabled} type="checkbox" checked={tier.enabled} onChange={event=>tierChange(index,{enabled:event.target.checked})}/></td>
+        <td className="p-2"><button type="button" aria-label={`Xóa bậc ${index+1}`} disabled={disabled||usedTierIds.includes(tier.id)} title={usedTierIds.includes(tier.id)?'Bậc đã có trong lịch sử: chỉ được tắt, không xóa':''} onClick={()=>change({tiers:value.tiers.filter((_,i)=>i!==index)})} className="p-2 text-rose-700 disabled:opacity-40">Xóa</button></td>
+      </tr>)}</tbody></table></div>
+      <div className="flex flex-wrap gap-2"><button type="button" disabled={disabled||value.tiers.length>=MAX_COMMISSION_TIERS} onClick={()=>change({tiers:[...value.tiers,{id:crypto.randomUUID(),from:value.tiers.at(-1)?.to??'',to:null,ratePercent:value.tiers.at(-1)?.ratePercent||value.ratePercent,fixedBonus:0,enabled:true}]})} className="rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-40">Thêm bậc</button><button type="button" disabled={disabled} onClick={()=>change({tiers:[...value.tiers].sort((a,b)=>Number(a.from)-Number(b.from))})} className="rounded-lg border px-3 py-2 text-xs">Sắp xếp theo mức vượt</button></div>
+    </>}
+    <div className="flex flex-wrap gap-2"><button type="button" disabled={disabled||hasReferencedTiers} onClick={()=>onChange({...hdSampleCommissionPolicy(value.effectiveFrom),policyId:value.policyId})} className="rounded-lg border border-emerald-300 px-3 py-2 text-xs font-bold disabled:opacity-40">Điền chính sách mẫu HD vào bản nháp</button><button type="button" disabled={disabled} onClick={()=>onChange({...value,policyId:crypto.randomUUID(),status:'draft',tiers:value.tiers.map(tier=>({...tier,id:crypto.randomUUID()}))})} className="rounded-lg border px-3 py-2 text-xs">Tạo phiên bản mới</button></div>
+  </section>;
+}

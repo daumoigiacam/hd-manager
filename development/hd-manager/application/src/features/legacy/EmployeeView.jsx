@@ -5,6 +5,10 @@ import { normalizeCompanyDepartments, removeCompanyDepartment, upsertCompanyDepa
 import { buildEmployeePayrollPolicyUpdate } from "../../utils/payrollPolicyHistory.js";
 import { Plus, X, ChevronRight, ChevronLeft, ChevronDown, Edit3, Trash2, CalendarDays, Building, Percent, Save, Eye, EyeOff } from "lucide-react";
 import EmployeeBankQr from "../employees/EmployeeBankQr.jsx";
+import CommissionTierEditor from '../employees/CommissionTierEditor.jsx';
+import CommissionPolicyEditor from '../employees/CommissionPolicyEditor.jsx';
+import {commissionPolicyToDraft,commissionPolicySavePatch} from '../../utils/commissionPolicy.js';
+import {commissionTiersToDraft,commissionTiersFromDraft,preserveCommissionPolicyFields} from '../../utils/salesCommissionTiers.js';
 import { createPortal } from "react-dom";
 // Transitional bundle boundary. Only stable local module bindings are injected;
 // all actor/company/business data continues to arrive through current props.
@@ -538,7 +542,8 @@ export function createEmployeeView(runtime) {
       basicSalary: emp.basicSalary,
       salaryMonthDays: emp.salaryMonthDays ?? '',
       salaryPolicyEffectiveFrom: getTodayString(),
-      supportSalary: emp.supportSalary || 0, responsibilitySalary: emp.responsibilitySalary || 0, experienceSalary: emp.experienceSalary || 0, experienceSalaryPeriod: emp.experienceSalaryPeriod || 'months', commissionRate: formatCommissionPercentInput(emp.commissionRate), commissionBaseMode: emp.commissionBaseMode || (isSalesCollaboratorPosition(emp.position) ? 'total_revenue' : 'above_target'), targetRevenue: emp.targetRevenue || 0, salesLeaderId: getSalesLeaderId(emp), salesLeaderCommissionPercent: emp.salesLeaderCommissionPercent ?? emp.leaderCommissionPercent ?? emp.managerCommissionPercent ?? '', overtimeRate: emp.overtimeRate || 0, latePenaltyRate: emp.latePenaltyRate || 0, latePenaltyTiers: getEmployeeLatePenaltyTiers(emp), autoEarlyOvertimeEnabled: emp.autoEarlyOvertimeEnabled !== false, autoLateCheckoutOvertimeEnabled: emp.autoLateCheckoutOvertimeEnabled !== false,
+      commissionPolicyForm: commissionPolicyToDraft(emp.commissionPolicyDraft||emp.commissionPolicy),
+      supportSalary: emp.supportSalary || 0, responsibilitySalary: emp.responsibilitySalary || 0, experienceSalary: emp.experienceSalary || 0, experienceSalaryPeriod: emp.experienceSalaryPeriod || 'months', commissionRate: formatCommissionPercentInput(emp.commissionRate), commissionTiers: commissionTiersToDraft(emp.commissionTiers), commissionBaseMode: emp.commissionBaseMode || (isSalesCollaboratorPosition(emp.position) ? 'total_revenue' : 'above_target'), targetRevenue: emp.targetRevenue || 0, salesLeaderId: getSalesLeaderId(emp), salesLeaderCommissionPercent: emp.salesLeaderCommissionPercent ?? emp.leaderCommissionPercent ?? emp.managerCommissionPercent ?? '', overtimeRate: emp.overtimeRate || 0, latePenaltyRate: emp.latePenaltyRate || 0, latePenaltyTiers: getEmployeeLatePenaltyTiers(emp), autoEarlyOvertimeEnabled: emp.autoEarlyOvertimeEnabled !== false, autoLateCheckoutOvertimeEnabled: emp.autoLateCheckoutOvertimeEnabled !== false,
       shiftName: shiftPolicy.shiftName,
       shiftStart: shiftPolicy.shiftStart,
       shiftEnd: shiftPolicy.shiftEnd,
@@ -568,6 +573,16 @@ export function createEmployeeView(runtime) {
     const positionSet = normalizeEmployeePositionList([normalizedPosition, ...secondaryPositions]);
     const isSalesPayload = positionSet.some(isSalesPosition);
     const isCollaboratorPayload = isSalesCollaboratorPosition(normalizedPosition);
+    let commissionTiers=empData.commissionPolicyForm?(editingEmp?.commissionTiers||[]):[];
+    let commissionPolicyPatch={};
+    if (canEditEmployeeSalaryPolicy && isSalesPayload && !isCollaboratorPayload && empData.commissionPolicyForm) {
+      try {commissionPolicyPatch=commissionPolicySavePatch(editingEmp,empData.commissionPolicyForm);}
+      catch(error){setEmployeeStatus(error.message);return;}
+    }
+    if (canEditEmployeeSalaryPolicy && isSalesPayload && !isCollaboratorPayload && !empData.commissionPolicyForm) {
+      try {commissionTiers=commissionTiersFromDraft(empData.commissionTiers||[],parseCommissionPercentInput(empData.commissionRate));}
+      catch(error){setEmployeeStatus(error.message);return;}
+    }
     const roleSalaryComponents = isCollaboratorPayload ? [] : normalizeEmployeeRoleSalaryComponents(empData.roleSalaryComponents, { keepEmpty: true })
       .filter(row => secondaryPositions.includes(row.position) && row.amount > 0);
     const salesLeaderId = isSalesPayload ? `${empData.salesLeaderId || ''}`.trim() : '';
@@ -624,6 +639,7 @@ export function createEmployeeView(runtime) {
       experienceSalary: isCollaboratorPayload ? 0 : (parseInt(empData.experienceSalary)||0), 
       commissionBaseMode: isCollaboratorPayload ? 'total_revenue' : (empData.commissionBaseMode || 'above_target'),
       commissionRate: isSalesPayload ? parseCommissionPercentInput(empData.commissionRate) : 0, 
+      ...(commissionTiers.length || Object.hasOwn(editingEmp||{},'commissionTiers') ? {commissionTiers} : {}),
       targetRevenue: isCollaboratorPayload ? 0 : (parseInt(empData.targetRevenue)||0), 
       salesLeaderId,
       salesManagerId: salesLeaderId,
@@ -651,6 +667,9 @@ export function createEmployeeView(runtime) {
       attendanceLocationRadiusMeters: Math.max(1, parseInt(empData.attendanceLocationRadiusMeters, 10) || DEFAULT_ATTENDANCE_LOCATION_RADIUS_METERS),
       employeeDocuments: normalizeEmployeeDocuments(empData.employeeDocuments)
     };
+    delete pData.commissionPolicyForm;
+    Object.assign(pData,commissionPolicyPatch);
+    if (editingEmp && canEditEmployeeSalaryPolicy) pData.commissionExpectedPolicyVersion=editingEmp.salaryPolicyVersion||'';
     if (isVpsMode && empData.createLogin) {
       pData.account = { password: empData.loginPassword };
     }
@@ -710,11 +729,12 @@ export function createEmployeeView(runtime) {
         pData.autoLateCheckoutOvertimeEnabled = editingEmp.autoLateCheckoutOvertimeEnabled !== false;
       }
     }
+    if (!commissionTiers.length && !Object.hasOwn(editingEmp||{},'commissionTiers')) delete pData.commissionTiers;
     if (canEditEmployeeSalaryPolicy || !editingEmp) {
       Object.assign(pData, buildEmployeePayrollPolicyUpdate({
         employee: editingEmp,
         nextEmployee: pData,
-        effectiveFrom: empData.salaryPolicyEffectiveFrom,
+        effectiveFrom: pData.salaryPolicyEffectiveFrom,
         changedAt: new Date().toISOString(),
         changedByEmployeeId: currentEmployee?.id || '',
         changedByName: currentEmployee?.name || currentEmployee?.displayName || ''
@@ -726,6 +746,7 @@ export function createEmployeeView(runtime) {
         salaryPolicyVersion: editingEmp.salaryPolicyVersion || '',
         salaryPolicyEffectiveFrom: editingEmp.salaryPolicyEffectiveFrom || editingEmp.startDate || ''
       });
+      preserveCommissionPolicyFields(pData,editingEmp);
     }
     if (employeeSaveInFlightRef.current) return;
     try {
@@ -1158,7 +1179,7 @@ export function createEmployeeView(runtime) {
       </div>
       )}
 
-      {reviewTargetEmp && (
+      {reviewTargetEmp && canCreateEmployeeReview && (
         <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/60 p-4">
           <form onSubmit={handleSubmitEmployeeReview} className="my-auto w-full max-w-md animate-in zoom-in-95 rounded-3xl bg-white p-5 shadow-2xl">
             <div className="mb-4 flex items-start justify-between gap-3">
@@ -1676,15 +1697,16 @@ export function createEmployeeView(runtime) {
               {isSalesAccountDraft && (
                 <div className="bg-emerald-50 p-3 rounded-xl border border-emerald-100 space-y-3 mt-2">
                   <h4 className="text-xs font-bold text-emerald-800 border-b border-emerald-200 pb-1">Hoa hồng kinh doanh</h4>
+                  {!empData.commissionPolicyForm && <>
                   <div className={`grid ${isSalesCollaboratorDraft ? 'grid-cols-1' : 'grid-cols-2'} gap-2`}>
                     <div>
                       <label className="block text-[10px] font-bold text-emerald-700 uppercase mb-1">% Hoa hồng</label>
-                      <input type="number" step="0.01" placeholder="Ví dụ: 0.3 = 0.3%" value={empData.commissionRate} disabled={!canManageSalaryPolicy} onChange={e=>setEmpData({...empData, commissionRate: e.target.value})} className="w-full border border-emerald-200 p-2.5 rounded-lg text-sm disabled:bg-emerald-50/60 disabled:text-gray-500"/>
+                      <input type="number" step="0.01" placeholder="Ví dụ: 0.3 = 0.3%" value={empData.commissionRate} disabled={!canManageSalaryPolicy || Boolean(empData.commissionPolicyForm)} onChange={e=>setEmpData({...empData, commissionRate: e.target.value})} className="w-full border border-emerald-200 p-2.5 rounded-lg text-sm disabled:bg-emerald-50/60 disabled:text-gray-500"/>
                     </div>
                     {!isSalesCollaboratorDraft && (
                       <div>
                         <label className="block text-[10px] font-bold text-emerald-700 uppercase mb-1">Chỉ tiêu doanh số</label>
-                        <input type="tel" placeholder="Ví dụ: 50.000.000" value={formatInputCurrency(empData.targetRevenue)} disabled={!canManageSalaryPolicy} onChange={e=>setEmpData({...empData, targetRevenue: parseInputCurrency(e.target.value)})} className="w-full border border-emerald-200 p-2.5 rounded-lg text-sm disabled:bg-emerald-50/60 disabled:text-gray-500"/>
+                        <input type="tel" placeholder="Ví dụ: 50.000.000" value={formatInputCurrency(empData.targetRevenue)} disabled={!canManageSalaryPolicy || Boolean(empData.commissionPolicyForm)} onChange={e=>setEmpData({...empData, targetRevenue: parseInputCurrency(e.target.value)})} className="w-full border border-emerald-200 p-2.5 rounded-lg text-sm disabled:bg-emerald-50/60 disabled:text-gray-500"/>
                       </div>
                     )}
                   </div>
@@ -1693,6 +1715,9 @@ export function createEmployeeView(runtime) {
                       ? 'Công thức CTV: Hoa hồng = tổng doanh thu khách hàng phụ trách x % hoa hồng. Nhập 0.3 nghĩa là 0.3%.'
                       : 'Công thức: Hoa hồng = (Doanh thu thực tế - Chỉ tiêu doanh số) x % hoa hồng. Nhập 1.55 nghĩa là 1.55%.'}
                   </p>
+                  </>}
+                  {!isSalesCollaboratorDraft && !empData.commissionPolicyForm && <CommissionTierEditor rows={empData.commissionTiers||[]} onChange={commissionTiers=>setEmpData(previous=>({...previous,commissionTiers}))} basePercent={empData.commissionRate} targetRevenue={empData.targetRevenue} disabled={!canManageSalaryPolicy}/>}
+                  {!isSalesCollaboratorDraft && <CommissionPolicyEditor value={empData.commissionPolicyForm} onReset={()=>setEmpData(previous=>({...previous,commissionPolicyForm:commissionPolicyToDraft(editingEmp?.commissionPolicyDraft||editingEmp?.commissionPolicy)}))} onChange={commissionPolicyForm=>setEmpData(previous=>({...previous,commissionPolicyForm}))} targetRevenue={empData.targetRevenue} baseRate={parseCommissionPercentInput(empData.commissionRate)} effectiveFrom={empData.salaryPolicyEffectiveFrom||getTodayString()} disabled={!canManageSalaryPolicy} usedTierIds={[...new Set((editingEmp?.payrollPolicies||editingEmp?.salaryPolicyHistory||[]).flatMap(policy=>policy.values?.commissionPolicy?.tiers?.map(tier=>tier.id)||[]))]}/>}
                 </div>
               )}
               

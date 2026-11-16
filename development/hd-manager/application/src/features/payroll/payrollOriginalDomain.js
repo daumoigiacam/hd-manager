@@ -1,3 +1,5 @@
+import {buildCommissionCalculation} from '../../utils/commissionRevenue.js';
+import {salesCommissionBreakdown} from '../../utils/salesCommissionTiers.js';
 // Exact original App declarations and transitive pure dependencies; generated without formula changes.
 import {isOwnerAccountUser} from "./payrollOriginalShared.js";
 
@@ -1043,6 +1045,9 @@ const calculateCommission = (revenue, target, rate) => {
 
 const calculateDirectSalesCommission = (employee = {}, revenue = 0) => {
   const commissionRate = parseFloat(employee?.commissionRate) || 0;
+  if (Array.isArray(employee?.commissionTiers) && employee.commissionTiers.length) {
+    return roundMoneyValue(salesCommissionBreakdown(revenue||0,employee?.targetRevenue||0,commissionRate,employee.commissionTiers).amount);
+  }
   if (!commissionRate) return 0;
   return roundMoneyValue(calculateCommission(revenue || 0, employee?.targetRevenue || 0, commissionRate));
 };
@@ -1215,10 +1220,11 @@ const buildSalaryDetails = (empId, employees, attendance, financials, performanc
   const experienceCycles = experienceDetails.experienceCycles;
   const experienceCycleLabel = experienceDetails.experienceCycleLabel;
 
-  const effectiveRevenue = isEmployeeSalesPosition(emp)
+  const commissionCalculation = buildCommissionCalculation({employee:emp,orders:options.commissionOrders||allOrders,customers:allCustomers,payments:allPayments,monthKey});
+  const effectiveRevenue = commissionCalculation && Number.isFinite(commissionCalculation.actualRevenue) ? commissionCalculation.actualRevenue : (isEmployeeSalesPosition(emp)
     ? calculateRevenueForMonth(empId, allOrders, allCustomers, monthKey)
-    : (perf.revenue || 0);
-  const directCommission = calculateDirectSalesCommission(emp, effectiveRevenue || 0);
+    : (perf.revenue || 0));
+  const directCommission = commissionCalculation ? commissionCalculation.commission : calculateDirectSalesCommission(emp, effectiveRevenue || 0);
   const downlineCommissionRows = isEmployeeSalesPosition(emp)
     ? buildSalesDownlineCommissionRows(empId, employees, allOrders, allCustomers, monthKey)
     : [];
@@ -1299,6 +1305,7 @@ const buildSalaryDetails = (empId, employees, attendance, financials, performanc
     experienceCycleLabel,
     perf: { ...perf, revenue: effectiveRevenue, overtime: approvedOvertimeHours, earlyOvertimeHours, afterShiftOvertimeHours, automaticOvertimeHours },
     salesRevenue: roundMoneyValue(effectiveRevenue || 0),
+    ...(commissionCalculation ? {commissionCalculation} : {}),
     baseSalaryCalc,
     supportSalary: supportSalaryCalc,
     responsibilitySalary: responsibilitySalaryCalc,

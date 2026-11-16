@@ -5,6 +5,7 @@ import { createOrderSearchState } from "../../services/orderSearchState.js";
 import { hasSearchQuery as hasTokenSearchQuery, getOrderSearchFields, searchCustomers as searchCustomerRecords } from "../../services/searchEngine.js";
 import { collectUsedWarehouseDispatchIds, findDuplicateWarehouseDispatchIds, getWarehouseDispatchIds, isWarehouseDispatchAlreadyLinked, selectWarehouseDispatchOrderPriceCandidate, resolveOrderCreationDateKey } from "../../utils/warehouseDispatchOrders.js";
 import { useCooperativeProjection } from "../../hooks/useCooperativeProjection.js";
+import {useRetainedReadProjection} from '../../hooks/useRetainedReadProjection.js';
 import {getReadOnlyModuleProjectionEntry,getLocalProjectionClockScope,readCompletedModuleProjection,EMPTY_MODULE_PROJECTION_SOURCE} from '../../services/moduleProjectionCaches.js';
 import {readOrderDirectoryProjection} from '../../services/orderDirectoryProjection.js';
 import { sortOrdersByNewest, compareOrdersByNewest } from "../../utils/orderRecency.js";
@@ -22,7 +23,7 @@ import { HDHeader } from "../../layout/index.js";
 // Generated binding contract is checked against the real source AST.
 export function createOrderManagementView(runtime) {
   const {EMPTY_ORDER_VIEW_PROJECTION,GEMINI_PROXY_ENABLED,PAYMENT_QR_IMAGE_FETCH_TIMEOUT_MS,PremiumStatusBadge,RETURN_GOODS_STATUS_LABELS,areLooseQuantityValuesClose,buildCustomerLedger,buildCustomerLedgerMap,buildLineItemProductSearchText,buildOrderTransferMemo,buildOrderViewModel,buildOrderViewProjectionSteps,buildPayosPaymentQrImageSource,buildSalesOrderShareFilename,capitalizeFirst,collapseLookupText,debugShareImageCache,findBestEntityMatch,formatCompactDateLabel,formatCurrency,formatDateLabel,formatDateTimeLabel,formatInputCurrency,formatNumber,formatOrderCode,formatReturnGoodsQty,getCachedOrderShareAsset,getCustomerBranchProductConfigSource,getDeliveryReportWeightStatus,getEntityTimestamp,getFriendlyFirebaseErrorMessage,getOrderLineQuantityValue,getOrderLineSizeLabel,getOrderLineUnitPriceValue,getOrderLineWeightKgValue,getOrderOutstandingBalance,getOrderPayosPaymentSource,getOrderReturnGoodsRecords,getOrderReturnProductSummary,getOrderSalesEmpId,getPaymentDateKey,getPaymentMethodLabel,getProductShortName,getShareChannelLabel,getTodayString,getTransactionBillingPresentation,isEmployeeSalesPosition,isTimeoutLikeError,normalizeAiOrderDate,normalizeLookupText,normalizeOrderPaymentSnapshot,parseDateInputValue,parseInputCurrency,parseLooseMoneyValue,parseLooseQuantityValue,requestNotebookOrderDraftsFromGemini,resolveCustomerProductBillingConfiguration,resolveEntityDateKey,scheduleOrderShareWarmup,shareBlobFile,summarizeOrderReturnGoods,toDateInputString,toTitleCase,toTitleCasePreservingSpacing,useAutoDismissMessage,useDismissSearchOnOutsideClick,warmLocalPaymentQrDataUrlCache,warmOrderShareAssetCache,warmPaymentQrImageDataUrlCache} = runtime;
-  function OrderManagementView({ warehouseSourcesReady=true,onPrimaryReady,supplementalSourcesReady=true,isAccounting, employee, currentCompany, employees, customers, orders, allCompanyOrders = null, orderRequests = [], payments, customerLedgerMap: prefetchedCustomerLedgerMap = null, products, warehouseDispatches = [], deliveryReports = [], zaloSendQueue = [], onAddOrder, onEditOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onToggleArchiveOrder, onDeleteOrder, onAddPayment, onAddCustomer, onAddExpense, onResolveDeliveryReportIssue, onOpenCustomerZaloLink, canCreateManualOrder = false, canCreateOrderFromImage = false, canCreateOrderFromWarehouse = false, canEditOrder = false, canEditOrderQuantityPrice = false, canDeleteOrder = false, canSharePaymentQr = false, canRecordOrderPayment = false, canResolveDeliveryIssues = false, canChargeLostDeliveryGoods = false, searchStore = null, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showSearchBox: externalShowSearchBox, setShowSearchBox: setExternalShowSearchBox, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel, quickActionIntent = null, onQuickActionHandled = () => {} }) {
+  function OrderManagementView({ warehouseSourcesReady=true,onPrimaryReady,readIdentity='',isAccounting, employee, currentCompany, employees, customers, orders, allCompanyOrders = null, orderRequests = [], payments, customerLedgerMap: prefetchedCustomerLedgerMap = null, products, warehouseDispatches = [], deliveryReports = [], zaloSendQueue = [], onAddOrder, onEditOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onToggleArchiveOrder, onDeleteOrder, onAddPayment, onAddCustomer, onAddExpense, onResolveDeliveryReportIssue, onOpenCustomerZaloLink, canCreateManualOrder = false, canCreateOrderFromImage = false, canCreateOrderFromWarehouse = false, canEditOrder = false, canEditOrderQuantityPrice = false, canDeleteOrder = false, canSharePaymentQr = false, canRecordOrderPayment = false, canResolveDeliveryIssues = false, canChargeLostDeliveryGoods = false, searchStore = null, searchKeyword: externalSearchKeyword, setSearchKeyword: setExternalSearchKeyword, showSearchBox: externalShowSearchBox, setShowSearchBox: setExternalShowSearchBox, showFilterPanel: externalShowFilterPanel, setShowFilterPanel: setExternalShowFilterPanel, quickActionIntent = null, onQuickActionHandled = () => {} }) {
   const [showAddOrder, setShowAddOrder] = useState(false); 
   const [showOrderSourcePicker, setShowOrderSourcePicker] = useState(false);
   const [orderCreationSource, setOrderCreationSource] = useState('');
@@ -297,8 +298,10 @@ export function createOrderManagementView(runtime) {
     orderProjectionScope);
   const orderViewProjection = useCooperativeProjection(prepareOrderViews,orderProjectionEntry);
   const orderViewsReady = !orderViewProjection.pending && !orderViewProjection.error;
+  const presentationIdentity=JSON.stringify([readIdentity,orderProjectionScope]);
+  const orderViewPresentation=useRetainedReadProjection(orderViewProjection,presentationIdentity);
   useEffect(()=>{if(orderViewsReady)onPrimaryReady?.();},[orderViewsReady,onPrimaryReady]);
-  const normalizedOrderSnapshots = (orderViewProjection.value || EMPTY_ORDER_VIEW_PROJECTION).snapshots || EMPTY_ORDER_VIEW_PROJECTION.snapshots;
+  const normalizedOrderSnapshots = (orderViewPresentation.value || EMPTY_ORDER_VIEW_PROJECTION).snapshots || EMPTY_ORDER_VIEW_PROJECTION.snapshots;
   const getLiveOrderViewModel = useCallback(id=>{
     const order=activeOrderById.get(String(id));return order?buildOrderViewModel(order,orderViewContext):null;
   },[activeOrderById,orderViewContext]);
@@ -357,7 +360,6 @@ export function createOrderManagementView(runtime) {
   }, [orderedFilteredOrders, deferredOrderSearchKeyword]);
   const preparedOrderSearch = usePreparedSearch(normalizedOrderSnapshots, getPreparedOrderSearchFields,
     deferredOrderSearchKeyword, orderedFilteredOrders, filteredOrderMembership, tiedOrderRanks);
-  const displayOrders = hasTokenSearchQuery(deferredOrderSearchKeyword) ? preparedOrderSearch.results : orderedFilteredOrders;
   const displayOrderRenderKey = [
     tab,
     orderDateFilter,
@@ -366,6 +368,8 @@ export function createOrderManagementView(runtime) {
     orderSalesEmpFilter,
     normalizeLookupText(deferredOrderSearchKeyword)
   ].join('|');
+  const searchPresentation=useRetainedReadProjection({...preparedOrderSearch,value:preparedOrderSearch.results},JSON.stringify([presentationIdentity,displayOrderRenderKey]),{enabled:orderViewPresentation.available});
+  const displayOrders = hasTokenSearchQuery(deferredOrderSearchKeyword) ? searchPresentation.value || [] : orderedFilteredOrders;
   const [orderPageSize] = useState(() => Math.min(20, getDefaultListPageSize()));
   const orderPage = usePagedList(displayOrders, displayOrderRenderKey, orderPageSize);
   const hasOrderListFilters = Boolean(
@@ -2450,8 +2454,7 @@ export function createOrderManagementView(runtime) {
   ]);
 
   return (
-    <div className="premium-data-module premium-orders-module space-y-4 animate-in fade-in pb-16" data-hd-essential-data-ready={orderViewsReady&&!preparedOrderSearch.pending?'true':undefined} aria-busy={!orderViewsReady || preparedOrderSearch.pending}>
-      {!supplementalSourcesReady&&<p role="status" className="px-4 py-2 text-xs text-slate-600">Đang cập nhật phiếu xuất, trạng thái giao hàng và đối chiếu công nợ ở nền. Chức năng đọc và tìm kiếm vẫn sử dụng được.</p>}
+    <div className="premium-data-module premium-orders-module space-y-4 pb-16" data-hd-essential-data-ready={orderViewsReady&&!preparedOrderSearch.pending?'true':undefined} aria-busy={!orderViewsReady || preparedOrderSearch.pending}>
       {showFilterPanel && (
         <div className="premium-data-toolbar bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
           <div className="space-y-3">
@@ -2544,16 +2547,16 @@ export function createOrderManagementView(runtime) {
               />
             </div>
           </div>
-          <h2 className="mt-1 text-center text-[14px] font-black tracking-tight">{orderViewsReady ? `${formatCurrency(dailyOrderRevenueSummary.totalRevenue)} đ` : '—'}</h2>
+          <h2 className="mt-1 text-center text-[14px] font-black tracking-tight">{orderViewPresentation.available ? `${formatCurrency(dailyOrderRevenueSummary.totalRevenue)} đ` : '—'}</h2>
         </div>
         <div className="mt-1 grid grid-cols-2 gap-2 text-center">
           <div className="rounded-2xl bg-white/14 px-3 py-1.5 backdrop-blur">
             <p className="text-[10px] font-black uppercase tracking-wide text-white/70">Đã thu</p>
-            <p className="mt-1 text-sm font-black">{orderViewsReady ? `${formatCurrency(dailyOrderRevenueSummary.paidRevenue)} đ` : '—'}</p>
+            <p className="mt-1 text-sm font-black">{orderViewPresentation.available ? `${formatCurrency(dailyOrderRevenueSummary.paidRevenue)} đ` : '—'}</p>
           </div>
           <div className="rounded-2xl bg-white/14 px-3 py-1.5 backdrop-blur">
             <p className="text-[10px] font-black uppercase tracking-wide text-white/70">Còn nợ</p>
-            <p className="mt-1 text-sm font-black">{orderViewsReady ? `${formatCurrency(dailyOrderRevenueSummary.outstandingRevenue)} đ` : '—'}</p>
+            <p className="mt-1 text-sm font-black">{orderViewPresentation.available ? `${formatCurrency(dailyOrderRevenueSummary.outstandingRevenue)} đ` : '—'}</p>
           </div>
         </div>
       </div>
@@ -2571,9 +2574,9 @@ export function createOrderManagementView(runtime) {
       )}
       
       <div className="premium-data-list space-y-3" aria-busy={orderViewProjection.pending || Boolean(orderViewProjection.error) || preparedOrderSearch.pending}>
-        {orderViewProjection.pending && <p role="status" className="px-4 py-3 text-sm text-gray-500">Đang tổng hợp danh sách đơn…</p>}
+        {orderViewProjection.pending && !orderViewPresentation.available && <p role="status" className="px-4 py-3 text-sm text-gray-500">Đang tổng hợp danh sách đơn…</p>}
         {orderViewProjection.error && <p role="alert" className="px-4 py-3 text-sm text-red-600">Chưa tổng hợp được danh sách đơn. Hãy mở lại màn hình.</p>}
-        {preparedOrderSearch.pending && <p role="status" className="px-4 py-3 text-sm text-gray-500">Đang tìm kiếm...</p>}
+        {preparedOrderSearch.pending && !searchPresentation.available && <p role="status" className="px-4 py-3 text-sm text-gray-500">Đang tìm kiếm...</p>}
         {preparedOrderSearch.error && <p role="alert" className="px-4 py-3 text-sm text-red-600">Chưa tìm kiếm được. Hãy mở lại danh sách.</p>}
         {displayOrders.length === 0 && !orderViewProjection.pending && !orderViewProjection.error && !preparedOrderSearch.pending && !preparedOrderSearch.error && (
           <HDEmptyState

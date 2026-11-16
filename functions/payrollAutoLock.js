@@ -42,6 +42,7 @@ const sameMoney = (left, right) => Math.round(Number(left) || 0) === Math.round(
 
 const inspectFinalPayrollSnapshot = (snapshot = {}) => {
   const issues = [];
+  if(snapshot?.salaryDetails?.commissionCalculation?.ready===false)issues.push('commission.reconciliation_required');
   ['companyId', 'periodId', 'monthKey', 'employeeId', 'formulaVersion', 'policyVersion', 'lockedAt'].forEach(field => {
     if (!hasText(snapshot?.[field])) issues.push(field);
   });
