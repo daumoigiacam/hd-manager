@@ -1,16 +1,12 @@
-import {useState} from 'react';
 import {MAX_COMMISSION_TIERS} from '../../utils/salesCommissionTiers.js';
-import {COMMISSION_METHODS,COMMISSION_BASES,commissionPolicyFromDraft,createCommissionPolicyDraft,hdSampleCommissionPolicy,calculateCommissionPolicy} from '../../utils/commissionPolicy.js';
+import {COMMISSION_METHODS,COMMISSION_BASES,hdSampleCommissionPolicy} from '../../utils/commissionPolicy.js';
 
 const money=value=>Number(value||0).toLocaleString('vi-VN',{maximumFractionDigits:2});
-export default function CommissionPolicyEditor({value,onChange,onReset,targetRevenue=0,baseRate=0,effectiveFrom='',disabled=false,usedTierIds=[]}) {
-  const [revenue,setRevenue]=useState(''),[preview,setPreview]=useState(null),[error,setError]=useState('');
-  const signature=JSON.stringify([value,revenue]);
-  const change=patch=>{onChange({...value,...patch});setError('');};
+export default function CommissionPolicyEditor({value,onChange,onReset,disabled=false,usedTierIds=[]}) {
+  const change=patch=>onChange({...value,...patch});
   const tierChange=(index,patch)=>change({tiers:value.tiers.map((tier,i)=>i===index?{...tier,...patch}:tier)});
   const moneyInput=(label,number,onInput,optional=false)=> <label className="block min-w-0 text-xs font-semibold">{label}<input aria-label={label} inputMode="numeric" disabled={disabled} type="text" value={number===''||number===null?'':money(number)} onChange={event=>onInput(event.target.value.replace(/\D/g,''))} placeholder={optional?'Không giới hạn':'0'} className="mt-1 w-full rounded-lg border border-emerald-200 bg-white p-2 disabled:opacity-60"/></label>;
-  const calculate=()=>{try{const policy=commissionPolicyFromDraft(value);if(revenue==='')throw Error('Nhập doanh thu để xem trước.');setPreview({signature,...calculateCommissionPolicy(policy,Number(revenue),{preview:true})});setError('');}catch(failure){setPreview(null);setError(failure.message);}};
-  if(!value)return <button type="button" disabled={disabled} onClick={()=>onChange(createCommissionPolicyDraft(targetRevenue,baseRate,effectiveFrom))} className="min-h-11 rounded-lg border border-emerald-300 px-3 text-sm font-bold text-emerald-800 disabled:opacity-50">Cấu hình chính sách hoa hồng nâng cao</button>;
+  if(!value)return null;
   const tiered=['progressive','retrospective'].includes(value.method);
   const hasReferencedTiers=value.tiers.some(tier=>usedTierIds.includes(tier.id));
   return <section aria-label="Chính sách hoa hồng nâng cao" className="space-y-3 border-t border-emerald-200 pt-3 text-emerald-950">
@@ -41,9 +37,5 @@ export default function CommissionPolicyEditor({value,onChange,onReset,targetRev
       <div className="flex flex-wrap gap-2"><button type="button" disabled={disabled||value.tiers.length>=MAX_COMMISSION_TIERS} onClick={()=>change({tiers:[...value.tiers,{id:crypto.randomUUID(),from:value.tiers.at(-1)?.to??'',to:null,ratePercent:value.tiers.at(-1)?.ratePercent||value.ratePercent,fixedBonus:0,enabled:true}]})} className="rounded-lg border px-3 py-2 text-xs font-bold disabled:opacity-40">Thêm bậc</button><button type="button" disabled={disabled} onClick={()=>change({tiers:[...value.tiers].sort((a,b)=>Number(a.from)-Number(b.from))})} className="rounded-lg border px-3 py-2 text-xs">Sắp xếp theo mức vượt</button></div>
     </>}
     <div className="flex flex-wrap gap-2"><button type="button" disabled={disabled||hasReferencedTiers} onClick={()=>onChange({...hdSampleCommissionPolicy(value.effectiveFrom),policyId:value.policyId})} className="rounded-lg border border-emerald-300 px-3 py-2 text-xs font-bold disabled:opacity-40">Điền chính sách mẫu HD vào bản nháp</button><button type="button" disabled={disabled} onClick={()=>onChange({...value,policyId:crypto.randomUUID(),status:'draft',tiers:value.tiers.map(tier=>({...tier,id:crypto.randomUUID()}))})} className="rounded-lg border px-3 py-2 text-xs">Tạo phiên bản mới</button></div>
-    <div className="space-y-2 rounded-xl bg-white p-3"><label className="block text-xs font-semibold">Doanh thu tính thử (đ)<input aria-label="Doanh thu xem trước chính sách" inputMode="numeric" value={revenue===''?'':money(revenue)} onChange={event=>{setRevenue(event.target.value.replace(/\D/g,''));setError('');}} className="mt-1 w-full rounded-lg border p-2"/></label><button type="button" onClick={calculate} className="text-xs font-bold underline">Xem trước hoa hồng</button><p className="text-xs text-slate-500">Chỉ tính thử với số nhập, không xác nhận doanh thu hoặc tạo bảng lương.</p>
-      {preview?.signature===signature&&<div role="status" className="space-y-1 text-xs"><p className="font-bold">Vượt KPI: {money(preview.revenueExcess)} đ · Hoa hồng: {money(preview.commission)} đ</p>{preview.rows.map(row=><p key={row.id}>Bậc {row.id==='flat'?'cố định':value.tiers.findIndex(tier=>tier.id===row.id)+1}{row.enabled===false?' (đang tắt)':''}: {money(row.amountWithinTier)} đ × {money(row.enabled===false?0:row.rate*100)}%{row.fixedBonus?` + ${money(row.fixedBonus)} đ`:''} = {money(row.commission)} đ</p>)}{!!preview.roundingAdjustment&&<p>Điều chỉnh làm tròn sau cộng: {money(preview.roundingAdjustment)} đ</p>}</div>}
-      {error&&<p role="alert" className="text-xs text-rose-700">{error}</p>}
-    </div>
   </section>;
 }
