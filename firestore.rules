@@ -159,11 +159,20 @@ service cloud.firestore {
 
     // A bounded employee-only branch avoids evaluating unrelated payroll,
     // customer, warehouse and messaging rules for each salary-policy write.
+    function canChangeEmployeeCompanyAuthority(appId, oldData, newData, creating) {
+      let changed = creating ? newData.keys() : newData.diff(oldData).affectedKeys();
+      return !changed.hasAny(['role', 'position', 'isOwner', 'isCompanyOwner'])
+        || ((!creating && dispatchRoleKey(oldData) != 'owner') && dispatchRoleKey(newData) != 'owner')
+        || (creating && dispatchRoleKey(newData) != 'owner')
+        || canManageCompanyPermissions(appId);
+    }
+
     function canWriteEmployeeDocument(appId, oldData, newData, creating) {
       let changed = creating ? newData.keys() : newData.diff(oldData).affectedKeys();
       return request.auth.token.accountType != 'employee' ? false
         : newData.companyId != request.auth.token.companyId ? false
         : (!creating && oldData.companyId != request.auth.token.companyId) ? false
+        : !canChangeEmployeeCompanyAuthority(appId, oldData, newData, creating) ? false
         : ((creating || changed.hasAny(employeeAttendanceSecurityKeys())) && !isPayrollManager(appId)) ? false
         : !changed.hasAny(employeeCommissionPolicyKeys()) ? true
         : !canManageEmployeeCommissionPolicy(appId) ? false

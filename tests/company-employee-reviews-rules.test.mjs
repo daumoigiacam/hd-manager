@@ -34,6 +34,12 @@ try{
   await assertFails(updateDoc(doc(staff,path('companies','a')),patch(false,'owner-a')));
   await assertFails(updateDoc(doc(staff,path('companies','b')),patch(false,'staff-a')));
  });
+ await check('delegated setting action cannot self-promote an employee to company owner',async()=>{
+  for(const change of [{isOwner:true},{isCompanyOwner:true},{role:'owner'},{role:'super_admin'},{position:'Chủ doanh nghiệp'}])await assertFails(updateDoc(doc(staff,path('employees','staff-a')),change));
+  await assertFails(setDoc(doc(staff,path('employees','forged-owner')),{companyId:'a',role:'owner'}));
+  await assertFails(deleteDoc(doc(staff,path('companies','a'))));
+  assert.equal((await getDoc(doc(a,path('employees','staff-a')))).data().position,'Kinh doanh');
+ });
  await check('role revocation denies the next direct write with the same authenticated session',async()=>{
   await assertSucceeds(updateDoc(doc(a,path('companies','a')),{rolePermissionActions:{sales:{settings:{manage_employee_review_settings:false}}}}));
   await assertFails(updateDoc(doc(staff,path('companies','a')),patch(false,'staff-a')));
