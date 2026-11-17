@@ -27,6 +27,35 @@ export function getDispatchOrderSourceRowKeys(row, productId = '') {
 }
 
 /**
+ * Shortage summaries are projections, not complete billing/source records.
+ * Resolve their stable line identity back to the current order before using
+ * one as a form default. In particular, the projection can omit the branch.
+ * @param {import('./dispatchWorkflowContracts.js').OrderRow} shortageLine
+ * @param {import('./dispatchWorkflowContracts.js').OrderRow} requestLine
+ * @param {readonly import('./dispatchWorkflowContracts.js').OrderRow[]} rows
+ */
+export function resolveDispatchShortageOrderRow(shortageLine = {}, requestLine = {}, rows = []) {
+  const customerId = shortageLine.customerId || requestLine.customerId || '';
+  const productId = shortageLine.productId || requestLine.productId || '';
+  const requestId = requestLine.requestId || '';
+  if (!customerId || !productId || !requestId) return null;
+  const candidates = rows.filter(row => row.customerId === customerId
+    && row.productId === productId && row.requestId === requestId);
+  const rowKey = `${requestLine.rowKey || ''}`.trim();
+  const keyed = rowKey
+    ? candidates.filter(row => getDispatchOrderSourceRowKeys(row, productId).includes(rowKey))
+    : Number.isInteger(requestLine.itemIndex)
+      ? candidates.filter(row => row.itemIndex === requestLine.itemIndex)
+      : candidates;
+  if (keyed.length === 1) return keyed[0];
+  if (keyed.length > 1 && Number.isInteger(requestLine.itemIndex)) {
+    const indexed = keyed.filter(row => row.itemIndex === requestLine.itemIndex);
+    if (indexed.length === 1) return indexed[0];
+  }
+  return null;
+}
+
+/**
  * @param {string} customerId
  * @param {string} productId
  * @param {import('./dispatchWorkflowContracts.js').OrderRow} dispatchLike
@@ -45,15 +74,7 @@ export function matchDispatchOrder(customerId = '', productId = '', dispatchLike
       ))
       .forEach((line) => {
         line.requestLines.forEach((requestLine) => {
-          const matchedOpenRow = dispatchOrderRows.find(row => (
-            row.customerId === customerId
-            && row.productId === productId
-            && (
-              (requestLine.requestId && row.requestId === requestLine.requestId
-                && (requestLine.itemIndex === undefined || row.itemIndex === requestLine.itemIndex))
-              || (!requestLine.requestId && requestLine.rowKey && (row.rowKey === requestLine.rowKey || row.item?.rowKey === requestLine.rowKey))
-            )
-          ));
+          const matchedOpenRow = resolveDispatchShortageOrderRow(line, requestLine, dispatchOrderRows);
           candidateRows.push(matchedOpenRow || buildDispatchOrderRowFromShortageLine(line, requestLine));
         });
       });

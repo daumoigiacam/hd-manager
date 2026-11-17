@@ -191,7 +191,7 @@ import DispatchQuantityFields from './features/warehouse/DispatchQuantityFields.
 import DispatchHistoryDialog from './features/warehouse/DispatchHistoryDialog.jsx';
 import DispatchHistoryCalendar from './features/warehouse/DispatchHistoryCalendar.jsx';
 import DispatchShortageList from './features/warehouse/DispatchShortageList.jsx';
-import { matchDispatchOrder, selectPreferredDispatchOrderRow } from './features/warehouse/matchDispatchOrder.js';
+import { matchDispatchOrder, selectPreferredDispatchOrderRow, resolveDispatchShortageOrderRow } from './features/warehouse/matchDispatchOrder.js';
 import { buildDispatchOrderDefaults } from './features/warehouse/buildDispatchOrderDefaults.js';
 import { coordinateDispatchBilling } from './features/warehouse/coordinateDispatchBilling.js';
 import { submitDispatchForm } from './features/warehouse/submitDispatchForm.js';
@@ -44501,6 +44501,8 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
   );
   const buildDispatchOrderRowFromShortageLine = (shortageLine = {}, shortageRequestLine = null) => {
     const requestLine = shortageRequestLine || (Array.isArray(shortageLine.requestLines) ? shortageLine.requestLines[0] : null) || {};
+    const sourceRow = resolveDispatchShortageOrderRow(shortageLine, requestLine, dispatchOrderRows);
+    if (sourceRow) return sourceRow;
     const productId = shortageLine.productId || requestLine.productId || '';
     const product = productLookup.get(productId) || null;
     const requestCustomer = customerLookup.get(shortageLine.customerId || requestLine.customerId) || null;
