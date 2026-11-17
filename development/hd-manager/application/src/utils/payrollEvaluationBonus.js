@@ -3,6 +3,7 @@ import {
   getEvaluationStarsFromAverage,
   normalizeEvaluationStars,
 } from './employeeEvaluationAutomation.js';
+import {isEmployeeReviewEnabled} from './companyEmployeeReviews.js';
 
 const normalizeMonthKey = (value = '') => {
   const raw = `${value || ''}`.trim();
@@ -42,12 +43,16 @@ export const createEmptyPayrollEvaluationResult = ({ employeeId = '', monthKey =
 });
 
 // Read-only adapter: the evaluation module owns the star/reward formula.
-export const projectEvaluationSummaryToPayroll = (summary, { employeeId = '', monthKey = '' } = {}) => {
+export const projectEvaluationSummaryToPayroll = (summary, { employeeId = '', monthKey = '', company } = {}) => {
   const expectedEmployeeId = `${employeeId || ''}`;
   const expectedMonthKey = normalizeMonthKey(monthKey);
   const summaryEmployeeId = `${summary?.employee?.id || summary?.employeeId || ''}`;
   const summaryMonthKey = normalizeMonthKey(summary?.monthKey);
   const emptyResult = createEmptyPayrollEvaluationResult({ employeeId: expectedEmployeeId, monthKey: expectedMonthKey });
+
+  // Applies only to live projections. Locked periods are read from their saved
+  // salary snapshots and must never be recomputed with today's company flag.
+  if (!isEmployeeReviewEnabled(company)) return {...emptyResult, status: 'disabled', note: 'Công ty đã tắt Đánh giá.'};
 
   if (!summary || !expectedEmployeeId || !expectedMonthKey) return emptyResult;
   if (summaryEmployeeId !== expectedEmployeeId || summaryMonthKey !== expectedMonthKey) return emptyResult;

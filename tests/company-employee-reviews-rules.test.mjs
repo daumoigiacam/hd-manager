@@ -23,5 +23,43 @@ try{
  await check('unrelated settings do not reset the flag',async()=>{await assertSucceeds(updateDoc(doc(a,path('companies','a')),{displayName:'A local test'}));assert.equal((await getDoc(doc(a,path('companies','a')))).data().employeeReviewsEnabled,false);});
  await check('a fresh authenticated session restores the persisted company preference',async()=>{const restored=env.authenticatedContext('owner-a-new-session',{identityId:'identity-owner-a',companyId:'a',accountType:'employee',appUserId:'owner-a',role:'owner'}).firestore();assert.equal((await assertSucceeds(getDocFromServer(doc(restored,path('companies','a'))))).data().employeeReviewsEnabled,false);assert.equal((await getDocFromServer(doc(restored,path('payrollSnapshots','locked-a')))).data().netSalary,420000);});
  await check('owner reenables own feature and employee review creation resumes',async()=>{await assertSucceeds(updateDoc(doc(a,path('companies','a')),patch(true,'owner-a')));await assertSucceeds(setDoc(doc(staff,path('employeeReviews','after-on')),{companyId:'a',rating:4}));assert.equal((await getDoc(doc(a,path('payrollSnapshots','locked-a')))).data().netSalary,420000);});
+ await check('an explicit role action grants only the company review switch',async()=>{
+  await assertSucceeds(updateDoc(doc(a,path('companies','a')),{rolePermissionActions:{sales:{settings:{manage_employee_review_settings:true}}}}));
+  await assertSucceeds(runTransaction(staff,async tx=>{const r=doc(staff,path('companies','a'));await tx.get(r);tx.update(r,patch(false,'staff-a'));}));
+  assert.equal((await getDocFromServer(doc(a,path('companies','a')))).data().employeeReviewsEnabled,false);
+  await assertSucceeds(updateDoc(doc(staff,path('companies','a')),patch(true,'staff-a')));
+ });
+ await check('delegated user cannot grant permissions, forge actor, or change another tenant',async()=>{
+  await assertFails(updateDoc(doc(staff,path('companies','a')),{...patch(false,'staff-a'),rolePermissions:{sales:{role_permissions:true}}}));
+  await assertFails(updateDoc(doc(staff,path('companies','a')),patch(false,'owner-a')));
+  await assertFails(updateDoc(doc(staff,path('companies','b')),patch(false,'staff-a')));
+ });
+ await check('role revocation denies the next direct write with the same authenticated session',async()=>{
+  await assertSucceeds(updateDoc(doc(a,path('companies','a')),{rolePermissionActions:{sales:{settings:{manage_employee_review_settings:false}}}}));
+  await assertFails(updateDoc(doc(staff,path('companies','a')),patch(false,'staff-a')));
+ });
+ await check('individual grant works independently and a personal deny replaces role permission',async()=>{
+  await assertSucceeds(updateDoc(doc(a,path('companies','a')),{rolePermissionActions:{sales:{settings:{manage_employee_review_settings:true}}},employeeRolePermissions:{'staff-a':{settings:false}},employeeRolePermissionActions:{'staff-a':{settings:{manage_employee_review_settings:false}}}}));
+  await assertFails(updateDoc(doc(staff,path('companies','a')),patch(false,'staff-a')));
+  await assertSucceeds(updateDoc(doc(a,path('companies','a')),{employeeRolePermissionActions:{'staff-a':{settings:{manage_employee_review_settings:true}}}}));
+  await assertSucceeds(updateDoc(doc(staff,path('companies','a')),patch(false,'staff-a')));
+ });
+ await check('archived employee is rejected even with an explicit permission',async()=>{
+  await env.withSecurityRulesDisabled(c=>updateDoc(doc(c.firestore(),path('employees','staff-a')),{isArchived:true}));
+  await assertFails(updateDoc(doc(staff,path('companies','a')),patch(true,'staff-a')));
+  await env.withSecurityRulesDisabled(c=>updateDoc(doc(c.firestore(),path('employees','staff-a')),{isArchived:false}));
+ });
+ await check('individual revoke and non-boolean grant do not permit a write',async()=>{
+  for(const grant of [false,'true']){
+   await assertSucceeds(updateDoc(doc(a,path('companies','a')),{employeeRolePermissionActions:{'staff-a':{settings:{manage_employee_review_settings:grant}}}}));
+   await assertFails(updateDoc(doc(staff,path('companies','a')),patch(true,'staff-a')));
+  }
+ });
+ await check('customer claims cannot toggle reviews and history remains unchanged after delegation',async()=>{
+  const customer=env.authenticatedContext('customer-a',{identityId:'identity-customer',companyId:'a',accountType:'customer',appUserId:'staff-a',role:'owner'}).firestore();
+  await assertFails(updateDoc(doc(customer,path('companies','a')),patch(true,'staff-a')));
+  await assertSucceeds(updateDoc(doc(a,path('companies','a')),patch(true,'owner-a')));
+  assert.equal((await getDoc(doc(a,path('payrollSnapshots','locked-a')))).data().netSalary,420000);
+ });
  console.log(JSON.stringify({status:'PASS_LOCAL_FIRESTORE_EMULATOR_ONLY',tests:passed,projectId,host:endpoint.host,productionTouched:false}));
 }finally{await env.cleanup();}
