@@ -1,4 +1,4 @@
-name: Read frontend capacity for order date picker fix
+name: Owner authorized frontend backup before date and badge update
 on:
   push:
     branches:
@@ -7,15 +7,14 @@ permissions:
   contents: read
   actions: read
 concurrency:
-  group: owner-frontend-readonly-preflight
+  group: production
   cancel-in-progress: false
 jobs:
-  capacity:
+  frontend_backup:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Read only current frontend version, hash and capacity; encrypt report
-        shell: bash
+      - name: Back up exact current frontend with minimum 2.75 GiB; no activation or business writes
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -34,15 +33,42 @@ jobs:
             wOCqgEh4n/8tZa/8zW9kAYQul9xVxWQaSsuZwxE8ioe9AgMBAAE=
             -----END PUBLIC KEY-----
           REMOTE_PROBE: |
-            import os,json,pathlib,hashlib,datetime
-            base=pathlib.Path('/var/www/hd-manager')
-            current=(base/'current').resolve(strict=True)
-            assert str(current).startswith(str(base/'releases')+'/')
-            s=os.statvfs(base)
-            version=json.loads((current/'version.json').read_text())
-            print(json.dumps({'at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'currentRelease':str(current),'version':version,'indexSha256':hashlib.sha256((current/'index.html').read_bytes()).hexdigest(),'currentReleaseBytes':sum(p.stat().st_size for p in current.rglob('*') if p.is_file() and not p.is_symlink()),'physicalFreeBytes':s.f_bfree*s.f_frsize,'productionChanged':False}))
+            import os,json,pathlib,hashlib,tarfile,datetime
+            BASE=pathlib.Path('/var/www/hd-manager')
+            SOURCE='06e806680ac000a73d8fa943430a09c353dba970'
+            TARGET='885671ae5082e5dbd77ed4be93e6b29a679cd41e'
+            MINIMUM=2.75*1024**3
+            old=(BASE/'current').resolve(strict=True)
+            assert str(old).startswith(str(BASE/'releases')+'/'),'CURRENT_OUTSIDE_RELEASES'
+            assert json.loads((old/'version.json').read_text()).get('buildId')==SOURCE,'CURRENT_SOURCE_CHANGED'
+            files=[p for p in old.rglob('*') if p.is_file() and not p.is_symlink()]
+            old_bytes=sum(p.stat().st_size for p in files)
+            s=os.statvfs(BASE)
+            before=s.f_bfree*s.f_frsize
+            assert before-old_bytes-16*1024**2>=MINIMUM,'BACKUP_RESERVE_UNAVAILABLE'
+            assert not (s.f_flag&os.ST_RDONLY) and s.f_favail>10000,'BACKUP_FILESYSTEM_UNAVAILABLE'
+            stamp=datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+            folder=pathlib.Path('/var/backups/hd-manager-frontend')/stamp
+            folder.mkdir(mode=0o700);os.chmod(folder,0o700)
+            archive=folder/'frontend-original.tar.gz'
+            sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+            index_sha=sha(old/'index.html')
+            with tarfile.open(archive,'w:gz',dereference=False) as tar:tar.add(old,arcname='.')
+            os.chmod(archive,0o600)
+            with tarfile.open(archive,'r:gz') as tar:
+                assert hashlib.sha256(tar.extractfile('./index.html').read()).hexdigest()==index_sha,'BACKUP_INDEX_MISMATCH'
+                assert json.load(tar.extractfile('./version.json')).get('buildId')==SOURCE,'BACKUP_SOURCE_MISMATCH'
+            assert (BASE/'current').resolve(strict=True)==old and sha(old/'index.html')==index_sha,'CONCURRENT_FRONTEND_CHANGE'
+            after=os.statvfs(BASE).f_bfree*os.statvfs(BASE).f_frsize
+            assert after>=MINIMUM,'BACKUP_RESERVE_FAILED'
+            result={'at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'status':'FRONTEND_BACKUP_PREPARED','preparedFor':TARGET,'currentSource':SOURCE,'currentRelease':str(old),'oldIndexSha256':index_sha,'backupPath':str(archive),'backupSha256':sha(archive),'backupBytes':archive.stat().st_size,'physicalFreeBytesBefore':before,'physicalFreeBytesAfter':after,'minimumPhysicalFreeBytes':MINIMUM,'frontendActivated':False,'databaseChanged':False,'RulesChanged':False,'backendChanged':False}
+            manifest=folder/'prepared-backup.json'
+            result['preparedBackupManifest']=str(manifest)
+            manifest.write_text(json.dumps(result,indent=2));os.chmod(manifest,0o600)
+            print(json.dumps(result))
+        shell: bash
         run: |-
-          node --input-type=module <<'HD_ORDER_DATE_READONLY'
+          node --input-type=module <<'HD_APPROVED_FRONTEND_BACKUP'
           import fs from 'node:fs';
           import os from 'node:os';
           import path from 'node:path';
@@ -72,7 +98,7 @@ jobs:
            if(pinned)fs.writeFileSync(known,pinned,{mode:0o600});
            const args=['-i',keyFile,'-o','IdentitiesOnly=yes','-o','BatchMode=yes','-o','ConnectTimeout=10','-o','ConnectionAttempts=1','-o','LogLevel=ERROR','-o','RequestTTY=no','-o','StrictHostKeyChecking='+(pinned?'yes':'accept-new'),'-o','UserKnownHostsFile='+known,user+'@'+host,'python3 -'];
            const stdout=execFileSync('ssh',args,{input:process.env.REMOTE_PROBE,encoding:'utf8',timeout:150000,maxBuffer:2*1024*1024,stdio:['pipe','pipe','pipe']});
-           result={status:'SSH_READ_COMPLETED',keyFormat,hostTrust:pinned?'EXISTING_KNOWN_HOSTS':'EXISTING_CI_HOST_MATCHED_PRODUCTION_DNS_FIRST_USE_HOSTKEY',payload:JSON.parse(stdout)};
+           result={status:'SSH_SCOPE_COMPLETED',keyFormat,hostTrust:pinned?'EXISTING_KNOWN_HOSTS':'EXISTING_CI_HOST_MATCHED_PRODUCTION_DNS_FIRST_USE_HOSTKEY',payload:JSON.parse(stdout)};
           } catch(error) {
            result={status:'READ_DIAGNOSTIC_FAILED',keyFormat,code:/^[A-Z_]+$/.test(error.message)?error.message:'SSH_OR_PROBE_FAILURE',exitStatus:error.status,stdout:String(error.stdout||'').slice(-20000),stderr:String(error.stderr||'').slice(-12000)};
           } finally {
@@ -86,6 +112,6 @@ jobs:
           const encoded=ciphertext.toString('base64'),parts=Math.ceil(encoded.length/6000);
           for(let i=0;i<parts;i++)console.log('HD502_PART '+i+' '+parts+' '+encoded.slice(i*6000,(i+1)*6000));
           console.log('HD502_STATUS '+result.status);
-          if(result.status!=='SSH_READ_COMPLETED')process.exitCode=1;
+          if(result.status!=='SSH_SCOPE_COMPLETED')process.exitCode=1;
 
-          HD_ORDER_DATE_READONLY
+          HD_APPROVED_FRONTEND_BACKUP

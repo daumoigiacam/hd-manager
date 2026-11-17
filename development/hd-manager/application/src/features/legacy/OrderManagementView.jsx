@@ -2654,7 +2654,9 @@ export function createOrderManagementView(runtime) {
                   </div>
                   <div className="flex shrink-0 flex-col items-end gap-1">
                     <PremiumStatusBadge status={statusMeta.label} label={statusMeta.label} />
-                    <span className={`text-[10px] px-2.5 py-1 rounded-full font-bold ${reviewMeta.chipClasses}`}>{reviewMeta.label}</span>
+                    {reviewMeta.label !== 'Chờ kiểm tra' && (
+                      <span className={`text-[10px] px-2.5 py-1 rounded-full font-bold ${reviewMeta.chipClasses}`}>{reviewMeta.label}</span>
+                    )}
                     {order.zaloSendStatus && order.zaloSendStatus !== 'not_queued' && (
                       <span className={`text-[10px] px-2.5 py-1 rounded-full font-bold ${zaloMeta.chipClasses}`}>{zaloMeta.label}</span>
                     )}
