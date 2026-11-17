@@ -7,7 +7,9 @@ export default [
     rules: {'no-unused-vars':'error','no-unreachable':'error','no-dupe-keys':'error'}
   },
   {
-    files: ['development/hd-manager/application/src/features/legacy/EmployeeView.jsx','development/hd-manager/application/src/features/legacy/SalaryView.jsx'],
+    files: ['development/hd-manager/application/src/features/legacy/EmployeeView.jsx','development/hd-manager/application/src/features/legacy/SalaryView.jsx',
+      'development/hd-manager/application/src/features/payroll/PayrollWorkspace.jsx',
+      'development/hd-manager/application/src/features/settings/EmployeeReviewSettings.jsx'],
     languageOptions: {ecmaVersion:'latest',sourceType:'module',parserOptions:{ecmaFeatures:{jsx:true}}},
     rules: {'no-unreachable':'error','no-dupe-keys':'error'}
   },

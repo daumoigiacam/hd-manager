@@ -62,7 +62,7 @@ function Metric({ icon: Icon, label, value, tone = 'blue' }) {
 export default function PayrollWorkspace({
   screen, onScreenChange, rows, monthKey, onMonthChange, isLocked, lockedPeriod,
   periods, carryovers, employees, companyId, canManage, canViewCompany, canClose, closeDateLabel, onCloseRequest,
-  onEmployeeOpen, selectedEmployeeId, onOpenAdvance, searchText = '', filterOpen = false
+  onEmployeeOpen, selectedEmployeeId, onOpenAdvance, searchText = '', filterOpen = false, evaluationEnabled = true
 }) {
   const [listTab, setListTab] = useState('all');
   const [department, setDepartment] = useState('all');
@@ -141,9 +141,10 @@ export default function PayrollWorkspace({
     const details = selectedRow.details || {};
     const state = getPayrollEmployeeState(selectedRow);
     const debt = Number(details.endingDebt || 0);
+    const showEvaluation = isLocked || evaluationEnabled;
     const incomeRows = [
       ['Lương cơ bản', details.baseSalaryCalc], ['Phụ cấp', Number(details.supportSalary || 0) + Number(details.responsibilitySalary || 0) + Number(details.roleSalary || 0) + Number(details.experienceSalary || 0)],
-      ['Hoa hồng', details.commission], ['Thưởng', details.totalBonus], ['Lương đánh giá', details.evaluationBonus], ['Tăng ca', details.overtimePay]
+      ['Hoa hồng', details.commission], ['Thưởng', details.totalBonus], ...(showEvaluation ? [['Lương đánh giá', details.evaluationBonus]] : []), ['Tăng ca', details.overtimePay]
     ];
     const deductionRows = [
       ['Tạm ứng', details.totalAdvance], ['Phạt', details.totalPenalty], ['Mua hàng công ty', details.totalEmployeePurchase],
@@ -163,7 +164,7 @@ export default function PayrollWorkspace({
       </>}
       {detailTab === 'attendance' && <div className="rounded-xl bg-white p-4 shadow-sm"><h3 className="font-bold text-slate-900">Ngày công</h3><p className="mt-1 text-2xl font-bold text-blue-700">{Number(details.workDays || 0).toLocaleString('vi-VN')}</p><p className="mt-3 text-sm text-slate-600">Chính thức: {details.workDaysOfficial || 0} · Thử việc: {details.workDaysProbation || 0}</p><p className="mt-2 text-sm text-slate-600">Tăng ca: {Number(details.approvedOvertimeHours || 0) + Number(details.automaticOvertimeHours || 0)} giờ · {money(details.overtimePay)}</p><p className="mt-2 text-xs text-slate-500">{(details.attendanceEntries || []).length} bản ghi từ module Chấm công.</p></div>}
       {detailTab === 'allowance' && <div className="rounded-xl bg-white p-4 shadow-sm"><h3 className="mb-2 font-bold text-slate-900">Phụ cấp và lương bổ sung</h3>{[['Hỗ trợ', details.supportSalary], ['Trách nhiệm', details.responsibilitySalary], ['Kiêm nhiệm', details.roleSalary], ['Kinh nghiệm', details.experienceSalary]].map(([label, value]) => <div key={label} className="flex justify-between border-b border-slate-50 py-2 text-sm"><span>{label}</span><strong>{money(value)}</strong></div>)}{(details.roleSalaryRows || []).map(row => <div key={row.id || row.position} className="flex justify-between gap-2 border-b border-slate-50 py-2 text-sm"><span>{row.position}{row.workDays != null && ` · ${row.workDays} ngày công`}</span><strong>{money(row.calculatedAmount)}</strong></div>)}</div>}
-      {detailTab === 'adjustments' && <div className="rounded-xl bg-white p-4 shadow-sm"><h3 className="mb-2 font-bold text-slate-900">Thưởng, phạt và tạm ứng</h3>{[['Thưởng', details.totalBonus], ['Thưởng đánh giá', details.evaluationBonus], ['Phạt', details.totalPenalty], ['Tạm ứng', details.totalAdvance], ['Công nợ chuyển kỳ', details.endingDebt]].map(([label, value]) => <div key={label} className="flex justify-between border-b border-slate-50 py-2 text-sm"><span>{label}</span><strong>{money(value)}</strong></div>)}{onOpenAdvance && !isLocked && <button type="button" onClick={() => onOpenAdvance(selectedRow.emp.id)} className="mt-3 min-h-10 w-full rounded-lg bg-blue-600 px-3 text-sm font-semibold text-white">Tạo lệnh ứng</button>}</div>}
+      {detailTab === 'adjustments' && <div className="rounded-xl bg-white p-4 shadow-sm"><h3 className="mb-2 font-bold text-slate-900">Thưởng, phạt và tạm ứng</h3>{[['Thưởng', details.totalBonus], ...(showEvaluation ? [['Thưởng đánh giá', details.evaluationBonus]] : []), ['Phạt', details.totalPenalty], ['Tạm ứng', details.totalAdvance], ['Công nợ chuyển kỳ', details.endingDebt]].map(([label, value]) => <div key={label} className="flex justify-between border-b border-slate-50 py-2 text-sm"><span>{label}</span><strong>{money(value)}</strong></div>)}{onOpenAdvance && !isLocked && <button type="button" onClick={() => onOpenAdvance(selectedRow.emp.id)} className="mt-3 min-h-10 w-full rounded-lg bg-blue-600 px-3 text-sm font-semibold text-white">Tạo lệnh ứng</button>}</div>}
     </section>;
   }
 

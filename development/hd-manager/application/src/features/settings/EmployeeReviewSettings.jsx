@@ -29,9 +29,9 @@ export default function EmployeeReviewSettings({company, canManage = false, onSa
         return;
       }
       setDraft(null);
-      setStatus(enabled ? 'Đã bật Đánh giá cho công ty.' : 'Đã tắt Đánh giá cho công ty. Lương và lịch sử được giữ nguyên.');
+      setStatus(enabled ? 'Đã bật Đánh giá cho công ty.' : 'Đã tắt Đánh giá cho công ty. Kỳ lương chưa chốt không cộng lương đánh giá; lịch sử và kỳ đã chốt được giữ nguyên.');
     } catch {
-      if (session === lifetime.current) setStatus('Chưa nhận được xác nhận lưu. Vui lòng kiểm tra kết nối và quyền Chủ doanh nghiệp.');
+      if (session === lifetime.current) setStatus('Chưa nhận được xác nhận lưu. Vui lòng kiểm tra kết nối và quyền bật/tắt Đánh giá nhân sự.');
     } finally {
       if (session === lifetime.current) { inFlight.current = false; setBusy(false); }
     }
@@ -39,7 +39,7 @@ export default function EmployeeReviewSettings({company, canManage = false, onSa
   return <section className="bg-white p-4" aria-labelledby="employee-review-settings-title">
     <h2 id="employee-review-settings-title" className="text-base font-black text-slate-900">Đánh giá nhân sự</h2>
     <p className="mt-2 text-sm text-slate-600">Bật hoặc tắt riêng cho công ty này. Khi tắt, chức năng Đánh giá được ẩn và không nhận đánh giá mới.</p>
-    <p className="mt-2 text-sm text-slate-600">Giữ nguyên dữ liệu lịch sử, cách tính lương và các bảng lương đã chốt.</p>
+    <p className="mt-2 text-sm text-slate-600">Khi tắt, kỳ lương chưa chốt không cộng lương đánh giá. Dữ liệu lịch sử và các bảng lương đã chốt được giữ nguyên.</p>
     <form onSubmit={save} className="mt-5 space-y-4">
       <div className="flex items-center justify-between gap-4">
         <label id="employee-review-enabled-label" className="text-sm font-bold text-slate-900">Sử dụng Đánh giá</label>
@@ -47,8 +47,8 @@ export default function EmployeeReviewSettings({company, canManage = false, onSa
           <span className="loyalty-power-switch__label" aria-hidden="true">{enabled ? 'Bật' : 'Tắt'}</span><span className="loyalty-power-switch__thumb" />
         </button>
       </div>
-      <p className="text-xs text-slate-500">{changed ? 'Thay đổi chưa lưu.' : confirmed ? 'Công ty đang sử dụng Đánh giá.' : 'Công ty đã tắt Đánh giá.'} Cần kết nối mạng để lưu cấu hình dùng chung.</p>
-      {!canManage && <p className="text-sm text-slate-600">Chỉ Chủ doanh nghiệp được bật/tắt tính năng này.</p>}
+      <p className="text-xs text-slate-500">{changed ? 'Thay đổi chưa lưu. Bấm Lưu cài đặt Đánh giá để áp dụng cho công ty.' : confirmed ? 'Đã lưu: công ty đang sử dụng Đánh giá.' : 'Đã lưu: công ty đã tắt Đánh giá.'}</p>
+      {!canManage && <p className="text-sm text-slate-600">Bạn cần được cấp quyền “Bật/tắt Đánh giá nhân sự” trong Vai trò → Cài đặt.</p>}
       <button type="submit" disabled={!canManage || busy || !changed || !companyId} aria-busy={busy} className="w-full rounded-xl bg-emerald-600 py-3 text-sm font-bold text-white disabled:opacity-50">{busy ? 'Đang lưu…' : 'Lưu cài đặt Đánh giá'}</button>
       {status && <p role="status" className="text-sm text-slate-700">{status}</p>}
     </form>

@@ -603,6 +603,7 @@ const ROLE_PERMISSION_MODULES = [
       { id: 'manage_bank_accounts', label: 'Cài tài khoản nhận chuyển khoản' },
       { id: 'manage_payment_qr', label: 'Cài QR thanh toán' },
       { id: 'manage_loyalty_settings', label: 'Cài tích điểm khách hàng' },
+      { id: 'manage_employee_review_settings', label: 'Bật/tắt Đánh giá nhân sự' },
       { id: 'manage_customer_care_reminders', label: 'Cài nhắc chăm sóc khách lâu chưa mua' },
       { id: 'manage_attendance_wifi', label: 'Cài WiFi chấm công' },
       { id: 'manage_warehouse_dispatch_settings', label: 'Cài tự hủy đơn đặt trong xuất kho' },
@@ -683,6 +684,7 @@ const buildPermissionActionSet = (enabledModuleIds = []) => ROLE_PERMISSION_MODU
 const DEFAULT_ROLE_PERMISSION_ACTIONS = Object.entries(DEFAULT_ROLE_PERMISSIONS).reduce((acc, [departmentKey, permissionSet]) => {
   const enabledModuleIds = ROLE_PERMISSION_MODULES.filter(module => permissionSet?.[module.id]).map(module => module.id);
   acc[departmentKey] = buildPermissionActionSet(enabledModuleIds);
+  acc[departmentKey].settings.manage_employee_review_settings = departmentKey === 'owner';
   return acc;
 }, {});
 
@@ -1842,7 +1844,7 @@ const buildPayrollViewProjectionSteps = function* ({
   const evaluations=new Map();
   for (const emp of employees || []) {
     if (emp?.id && !emp.isArchived) evaluations.set(emp.id,projectEvaluationSummaryToPayroll(
-      buildEmployeeReviewSummary(emp,context),{employeeId:emp.id,monthKey:currentMonth}
+      buildEmployeeReviewSummary(emp,context),{employeeId:emp.id,monthKey:currentMonth,company:currentCompany}
     ));
     yield;
   }

@@ -2571,6 +2571,9 @@ var buildEvaluationSummary13 = ({
   };
 };
 
+// development/hd-manager/application/src/utils/companyEmployeeReviews.js
+var isEmployeeReviewEnabled = (company) => company?.employeeReviewsEnabled !== false;
+
 // development/hd-manager/application/src/utils/payrollEvaluationBonus.js
 var normalizeMonthKey2 = (value = "") => {
   const raw = `${value || ""}`.trim();
@@ -2601,12 +2604,13 @@ var createEmptyPayrollEvaluationResult = ({ employeeId = "", monthKey: monthKey2
   missingData: [],
   criteria: []
 });
-var projectEvaluationSummaryToPayroll = (summary, { employeeId = "", monthKey: monthKey2 = "" } = {}) => {
+var projectEvaluationSummaryToPayroll = (summary, { employeeId = "", monthKey: monthKey2 = "", company } = {}) => {
   const expectedEmployeeId = `${employeeId || ""}`;
   const expectedMonthKey = normalizeMonthKey2(monthKey2);
   const summaryEmployeeId = `${summary?.employee?.id || summary?.employeeId || ""}`;
   const summaryMonthKey = normalizeMonthKey2(summary?.monthKey);
   const emptyResult = createEmptyPayrollEvaluationResult({ employeeId: expectedEmployeeId, monthKey: expectedMonthKey });
+  if (!isEmployeeReviewEnabled(company)) return { ...emptyResult, status: "disabled", note: "C\xF4ng ty \u0111\xE3 t\u1EAFt \u0110\xE1nh gi\xE1." };
   if (!summary || !expectedEmployeeId || !expectedMonthKey) return emptyResult;
   if (summaryEmployeeId !== expectedEmployeeId || summaryMonthKey !== expectedMonthKey) return emptyResult;
   const evaluationSummary13 = summary?.evaluationSummary13;
@@ -3214,6 +3218,7 @@ var ROLE_PERMISSION_MODULES = [
       { id: "manage_bank_accounts", label: "C\xE0i t\xE0i kho\u1EA3n nh\u1EADn chuy\u1EC3n kho\u1EA3n" },
       { id: "manage_payment_qr", label: "C\xE0i QR thanh to\xE1n" },
       { id: "manage_loyalty_settings", label: "C\xE0i t\xEDch \u0111i\u1EC3m kh\xE1ch h\xE0ng" },
+      { id: "manage_employee_review_settings", label: "B\u1EADt/t\u1EAFt \u0110\xE1nh gi\xE1 nh\xE2n s\u1EF1" },
       { id: "manage_customer_care_reminders", label: "C\xE0i nh\u1EAFc ch\u0103m s\xF3c kh\xE1ch l\xE2u ch\u01B0a mua" },
       { id: "manage_attendance_wifi", label: "C\xE0i WiFi ch\u1EA5m c\xF4ng" },
       { id: "manage_warehouse_dispatch_settings", label: "C\xE0i t\u1EF1 h\u1EE7y \u0111\u01A1n \u0111\u1EB7t trong xu\u1EA5t kho" },
@@ -3287,6 +3292,7 @@ var buildPermissionActionSet = (enabledModuleIds = []) => ROLE_PERMISSION_MODULE
 var DEFAULT_ROLE_PERMISSION_ACTIONS = Object.entries(DEFAULT_ROLE_PERMISSIONS).reduce((acc, [departmentKey, permissionSet]) => {
   const enabledModuleIds = ROLE_PERMISSION_MODULES.filter((module2) => permissionSet?.[module2.id]).map((module2) => module2.id);
   acc[departmentKey] = buildPermissionActionSet(enabledModuleIds);
+  acc[departmentKey].settings.manage_employee_review_settings = departmentKey === "owner";
   return acc;
 }, {});
 var getEmployeeRolePermissionKey = (employee = null, currentUser = null) => {
@@ -3713,7 +3719,7 @@ var buildDashboardPayrollCostSteps = function* ({
     for (const emp of salaryEmployees.filter((emp2) => emp2?.id && !emp2.isArchived && emp2.role !== "super_admin" && !isOwnerPosition(emp2.position))) {
       const details = locked ? snapshotRows.find((snapshot) => snapshot.employeeId === emp.id)?.salaryDetails : applyEvaluationBonusToSalaryDetails(
         buildSalaryDetails(emp.id, policyEmployees, monthAttendance, monthFinancials, performance2, customers, monthOrders, payments, holidays, monthKey2, { skipDebt: true, commissionOrders: orders }),
-        projectEvaluationSummaryToPayroll(buildEmployeeReviewSummary(emp, evaluationContext), { employeeId: emp.id, monthKey: monthKey2 })
+        projectEvaluationSummaryToPayroll(buildEmployeeReviewSummary(emp, evaluationContext), { employeeId: emp.id, monthKey: monthKey2, company })
       );
       assertCommissionCalculationReady(details, emp.id);
       const amount2 = Math.max(0, roundMoneyValue((details?.grossSalary || 0) - (details?.totalPenalty || 0)));

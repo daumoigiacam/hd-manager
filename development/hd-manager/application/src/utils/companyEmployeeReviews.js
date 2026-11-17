@@ -1,4 +1,5 @@
-// A company feature preference, never a payroll policy or historical rewrite.
+// A company feature preference for new reviews and evaluation bonus in open payroll.
+// Locked payroll and review history always retain their saved values.
 // Existing companies keep their behavior until the owner explicitly opts out.
 export const isEmployeeReviewEnabled = company => company?.employeeReviewsEnabled !== false;
 

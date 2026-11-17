@@ -159,11 +159,20 @@ service cloud.firestore {
 
     // A bounded employee-only branch avoids evaluating unrelated payroll,
     // customer, warehouse and messaging rules for each salary-policy write.
+    function canChangeEmployeeCompanyAuthority(appId, oldData, newData, creating) {
+      let changed = creating ? newData.keys() : newData.diff(oldData).affectedKeys();
+      return !changed.hasAny(['role', 'position', 'isOwner', 'isCompanyOwner'])
+        || ((!creating && dispatchRoleKey(oldData) != 'owner') && dispatchRoleKey(newData) != 'owner')
+        || (creating && dispatchRoleKey(newData) != 'owner')
+        || canManageCompanyPermissions(appId);
+    }
+
     function canWriteEmployeeDocument(appId, oldData, newData, creating) {
       let changed = creating ? newData.keys() : newData.diff(oldData).affectedKeys();
       return request.auth.token.accountType != 'employee' ? false
         : newData.companyId != request.auth.token.companyId ? false
         : (!creating && oldData.companyId != request.auth.token.companyId) ? false
+        : !canChangeEmployeeCompanyAuthority(appId, oldData, newData, creating) ? false
         : ((creating || changed.hasAny(employeeAttendanceSecurityKeys())) && !isPayrollManager(appId)) ? false
         : !changed.hasAny(employeeCommissionPolicyKeys()) ? true
         : !canManageEmployeeCommissionPolicy(appId) ? false
@@ -172,11 +181,34 @@ service cloud.firestore {
         : !changed.hasAny(['commissionPolicyDraft']) || validCommissionPolicy(newData.get('commissionPolicyDraft', null), true);
     }
 
+    function employeeReviewSettingsActionEnabled(appId) {
+      let employee = get(dispatchEmployeePath(appId)).data;
+      let company = get(dispatchCompanyPath(appId)).data;
+      let roleKey = dispatchRoleKey(employee);
+      let overridden = request.auth.token.appUserId in company.get('employeeRolePermissions', {});
+      let actions = overridden
+        ? company.get('employeeRolePermissionActions', {}).get(request.auth.token.appUserId, {})
+        : company.get('rolePermissionActions', {}).get(roleKey, {});
+      return employee.companyId == request.auth.token.companyId
+        && employee.get('isArchived', false) != true
+        && actions.get('settings', {}).get('manage_employee_review_settings', false) == true;
+    }
+
     function canChangeCompanyEmployeeReviews(appId) {
-      return canManageCompanyPermissions(appId)
+      return isEmployeeIdentity()
+        && (canManageCompanyPermissions(appId)
+          || (exists(dispatchEmployeePath(appId)) && employeeReviewSettingsActionEnabled(appId)))
         && request.resource.data.get('employeeReviewsEnabled', true) is bool
         && request.resource.data.get('employeeReviewsUpdatedByEmpId', '') == request.auth.token.appUserId
         && request.resource.data.get('employeeReviewsUpdatedAt', null) == request.time;
+    }
+
+    function canWriteCompanyEmployeeReviewSettings(appId, companyId) {
+      // Bounded branch: this small switch must not evaluate unrelated payroll,
+      // warehouse or finance write policies when a grant is denied/revoked.
+      return companyId == request.auth.token.companyId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(companyEmployeeReviewKeys())
+        && canChangeCompanyEmployeeReviews(appId);
     }
 
     // History stays readable for payroll and audit. Only review mutations stop.
@@ -1176,7 +1208,9 @@ service cloud.firestore {
 
       allow update: if hasIdentitySession()
         && !isServerManagedCustomerPaymentCollection(collectionId)
-        && (collectionId == 'employees' ? canWriteEmployeeDocument(appId, resource.data, request.resource.data, false) : (
+        && (collectionId == 'companies' && request.resource.data.diff(resource.data).affectedKeys().hasAny(companyEmployeeReviewKeys())
+          ? canWriteCompanyEmployeeReviewSettings(appId, docId)
+          : collectionId == 'employees' ? canWriteEmployeeDocument(appId, resource.data, request.resource.data, false) : (
           employeeReviewWritesEnabled(appId, collectionId)
         && !isServerManagedSalaryVoucher(collectionId, resource.data)
         && !isServerManagedSalaryVoucher(collectionId, request.resource.data)

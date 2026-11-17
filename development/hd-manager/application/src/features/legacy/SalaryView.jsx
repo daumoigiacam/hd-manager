@@ -8,6 +8,7 @@ import { useCooperativeProjection } from "../../hooks/useCooperativeProjection.j
 import { useCallback } from "react";
 import CommissionCalculationDetails from '../employees/CommissionCalculationDetails.jsx';
 import { projectEvaluationSummaryToPayroll } from "../../utils/payrollEvaluationBonus.js";
+import {isEmployeeReviewEnabled} from '../../utils/companyEmployeeReviews.js';
 import payrollAutomationConfig from "../../../functions/payrollAutomationConfig.json";
 import { getSalaryAdvanceMonth, isSalaryAdvanceInMonth, normalizeSalaryAdvanceMonth } from "../../utils/salaryAdvancePeriod.js";
 import { Clock, Plus, X, ChevronDown, ChevronUp, Edit3, Lock, Trash2 } from "lucide-react";
@@ -1156,6 +1157,7 @@ export function createSalaryView(runtime) {
         monthKey={currentMonth}
         onMonthChange={setSalaryMonth}
         isLocked={isPayrollLocked}
+        evaluationEnabled={isEmployeeReviewEnabled(currentCompany)}
         lockedPeriod={lockedPayrollPeriod}
         periods={canViewCompanyPayroll ? payrollPeriods : []}
         carryovers={canViewCompanyPayroll ? payrollDebtCarryovers : payrollDebtCarryovers.filter(item => item.employeeId === currentEmployee?.id)}
@@ -1449,7 +1451,7 @@ export function createSalaryView(runtime) {
                       {!isSalesCollaborator && details.roleSalary > 0 && <div className="flex justify-between text-sky-600"><span>Lương kiêm nhiệm</span><strong>{formatCurrency(details.roleSalary)} đ</strong></div>}
                       <div className="flex justify-between"><span>Lương hoa hồng</span><strong>{details.commissionCalculation?.ready===false?'Chưa đối soát':`${formatCurrency(details.commission)} đ`}</strong></div>
                       <CommissionCalculationDetails calculation={details.commissionCalculation}/>
-                      <button
+                      {(isPayrollLocked || isEmployeeReviewEnabled(currentCompany)) && <button
                         type="button"
                         onClick={(event) => {
                           event.stopPropagation();
@@ -1466,7 +1468,7 @@ export function createSalaryView(runtime) {
                           </span>
                         </span>
                         <strong className="shrink-0 text-amber-800">{formatCurrency(details.evaluationBonus || 0)} đ</strong>
-                      </button>
+                      </button>}
                       {!isSalesCollaborator && <div className="flex justify-between"><span>Tăng ca</span><strong>{formatCurrency(details.overtimePay)} đ</strong></div>}
                       {!isSalesCollaborator && details.earlyOvertimeHours > 0 && <div className="flex justify-between text-blue-600"><span>Đi sớm tính tăng ca</span><strong>+{details.earlyOvertimeHours} giờ</strong></div>}
                       {!isSalesCollaborator && details.afterShiftOvertimeHours > 0 && <div className="flex justify-between text-blue-600"><span>Ra sau ca tính tăng ca</span><strong>+{details.afterShiftOvertimeHours} giờ</strong></div>}
@@ -1836,11 +1838,11 @@ export function createSalaryView(runtime) {
       )}
 
       </>}
-      <PayrollEvaluationDetailDialog
+      {(isPayrollLocked || isEmployeeReviewEnabled(currentCompany)) && <PayrollEvaluationDetailDialog
         detail={selectedEvaluationDetail}
         monthLabel={currentMonthLabel}
         onClose={closeEvaluationDetail}
-      />
+      />}
 
       {payrollAdjustmentRow && isPayrollLocked && canManagePayrollByRole && (
         <div className="fixed inset-0 z-[72] flex items-center justify-center bg-slate-950/65 p-4 backdrop-blur-sm">
