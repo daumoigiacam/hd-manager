@@ -40,7 +40,7 @@ jobs:
             assert str(current).startswith(str(base/'releases')+'/')
             s=os.statvfs(base)
             version=json.loads((current/'version.json').read_text())
-            print(json.dumps({'at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'currentRelease':str(current),'version':version,'indexSha256':hashlib.sha256((current/'index.html').read_bytes()).hexdigest(),'physicalFreeBytes':s.f_bfree*s.f_frsize,'productionChanged':False}))
+            print(json.dumps({'at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'currentRelease':str(current),'version':version,'indexSha256':hashlib.sha256((current/'index.html').read_bytes()).hexdigest(),'currentReleaseBytes':sum(p.stat().st_size for p in current.rglob('*') if p.is_file() and not p.is_symlink()),'physicalFreeBytes':s.f_bfree*s.f_frsize,'productionChanged':False}))
         run: |-
           node --input-type=module <<'HD_DISPATCH_READONLY'
           import fs from 'node:fs';
