@@ -1,4 +1,4 @@
-name: HD Manager evaluation role release readonly capacity
+name: Owner approved evaluation role and payroll frontend release
 on:
   push:
     branches:
@@ -10,11 +10,41 @@ concurrency:
   group: production
   cancel-in-progress: false
 jobs:
-  readonly:
+  frontend:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 12
     steps:
-      - name: Read current static release metadata and capacity only
+      - name: Checkout exact accepted source
+        uses: actions/checkout@v5
+        with:
+          ref: a04e9ebf95742d9db5394d74f111ef2d33f54fd1
+          fetch-depth: 1
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Download same-source successful CI frontend
+        uses: actions/download-artifact@v5
+        with:
+          name: hd-manager-dist-a04e9ebf95742d9db5394d74f111ef2d33f54fd1
+          run-id: 44110926083
+          github-token: ${{ github.token }}
+          path: .ci-approved-dist
+      - name: Verify all 91 artifact hashes and Firebase architecture
+        env:
+          HD_ARTIFACT_MANIFEST: '{"sourceCommit":"a04e9ebf95742d9db5394d74f111ef2d33f54fd1","files":91,"entries":[{"path":"assets/_commonjsHelpers-D6Ya60D-.js","bytes":272,"sha256":"2520fe4710515d12257d6b2c7e467333748fa50b6bfc5c7fc44f70ee2c0f7a8a"},{"path":"assets/AssetManagementWorkspace-CmLpLZRS.js","bytes":38408,"sha256":"25e63c62bc4938799572c5ed279692f6828e57e25889c4b2fff6d09b45a052cb"},{"path":"assets/attendance-campus.png","bytes":1996366,"sha256":"03c53cb955b40d3998dc058937a2bb2b743d314afe225b5e6f22f11e1ec8aa46"},{"path":"assets/AttendancePeriodRoute-Dqin0W1z.js","bytes":11648,"sha256":"fc9373b3f39ac6a05ca2bc32c4851c36abb2e1fdd6d0a24a118ec4767557b2d2"},{"path":"assets/AttendanceRequestRoute-D6enHhlR.js","bytes":353,"sha256":"1bc35a359360d2076aff0313b931cb0d032b44ea95211e6e4c9468346f094d3a"},{"path":"assets/AttendanceRequestsWorkspace-B1ph_Ek5.js","bytes":8163,"sha256":"db856354f4568a37274e0a093070a5322b29b9c95f5b069c740c674ca97a8deb"},{"path":"assets/AttendanceWorkspace-BGfZkF5G.js","bytes":20385,"sha256":"ee20898907f20b91c51321342850ff2b923cc0ad22d95040d648e5f947a1653d"},{"path":"assets/AttendanceWorkspace-DIxtXjWl.css","bytes":15017,"sha256":"7799401e9c67ed78257859ecd0e5bf55c1322fb340f65f04d4823c137e00bacc"},{"path":"assets/companyHomeWorker-DYfFzzBJ.js","bytes":242342,"sha256":"ca4c1edc2040ab64df9b8f972ad47e2e52f293026d2b163e1f8dce415b074edd"},{"path":"assets/crmSearchTrace-BkaP8AG8.js","bytes":100,"sha256":"25671b3f69a25b4fcedfaea0425262372d9528fc697bbfc22ac7c07a87883b62"},{"path":"assets/custom-error-CRxTNroI.js","bytes":19960,"sha256":"dc90956b972ba8c2c9c227a7058a0fb9272c0fd1b8700bfc77dd9125e3243506"},{"path":"assets/CustomerCreateRender-B1H-GXEy.js","bytes":10449,"sha256":"bdfa2763cb85d720a85e37c6593a8aab1066f714fa90b89d5cb36aaea86a2a79"},{"path":"assets/CustomerCRMController-Bnlr_LRA.js","bytes":86761,"sha256":"e6a46b319c10fa6a94cee311867786ae7a9a21fb72292e5da771519687b61751"},{"path":"assets/CustomerCRMView-B0h1XcvU.js","bytes":30875,"sha256":"028a37168a97508e635683432fc9423c1c209ef85c42298fd373697637625480"},{"path":"assets/CustomerDetailRender-DIxlbPTI.js","bytes":79613,"sha256":"bd9f694a72f24fa4be4c3524b58b38715e1f77405c016096e67dba210606197b"},{"path":"assets/CustomerImportRender-8kzrQI4-.js","bytes":3813,"sha256":"b13e0fc9df717a48dd3e55124aa955ad003a68e243a3966f6558239f1a2541d8"},{"path":"assets/CustomerPortalView-BwvoMsQH.js","bytes":124194,"sha256":"7371e3b3c6852275e59c48dad5e0d9f6ae24fc6f82f8ed081b8a6d3e38881776"},{"path":"assets/DeliveryReportView-CvwIaCCE.js","bytes":85546,"sha256":"f12bfc5384ccca5703f6afb58f0f9ac2652f3ddb0eed2d3fe9b66142428d1213"},{"path":"assets/dijkstra-mpduHnFy.js","bytes":1215,"sha256":"b547bc9af99e0a7eb5c2de79fd60d9d3ddbcfd2d85e03a96f79b35bba2eb4a68"},{"path":"assets/DispatchPickerOptions-CRv61c-s.js","bytes":38577,"sha256":"4d3451e938b95cbcb6bae1c0e02c2849fe05877813067a0c4502c3b58fa4caaa"},{"path":"assets/EmployeeProfilePanel-DmavBrMn.js","bytes":5619,"sha256":"8279b213873ecfa718de7c9088068831614d756716dfd564766e7231402864d4"},{"path":"assets/EmployeeReviewSettings-D9yG_pYQ.js","bytes":3438,"sha256":"8e0b757e00e76e55b25f634ce73afe0fffff818f32aa45e33b589221e181ca2e"},{"path":"assets/EmployeeView-BZu3hj_5.js","bytes":76885,"sha256":"4ed436f46cd34db1592cd7dddb9c1509bb3a125872376a6a4b9f1fb272cb4544"},{"path":"assets/firestoreReadWorker-Ck1gkWXO.js","bytes":602942,"sha256":"eedb294c1de940883e2abe6d263a181baa226697c93671fca08dd345b4ac1132"},{"path":"assets/focusWorkspacePanel-pVJM89lB.js","bytes":376,"sha256":"c9b05aa8076de32dc89f3c8f39e443e4dd5c1243845ab8d8519d2ae6b3a4aad8"},{"path":"assets/IdentitySecurityCenter-CO41Z2ah.js","bytes":22614,"sha256":"312b23f64d94d1ddc8afa98ed986612f96476290cdf32ee8de9ec33be230bb00"},{"path":"assets/index-CS9fonPH.js","bytes":9212,"sha256":"0b0627c27833c97ded61546b6b3408e1fc6fb085cad63a161a41830be8e88432"},{"path":"assets/index-Du2-2fR8.css","bytes":366000,"sha256":"10a4213de0f555bb1f2da61672a44f3040d46a4c065078533770813a83646dcb"},{"path":"assets/index-QCS_QQWZ.js","bytes":2045177,"sha256":"097f47866a2adfe9db12c97d106f65a92988bcf9e661f8057c4d61de36d629fd"},{"path":"assets/index.es-CSvZD-bI.js","bytes":433781,"sha256":"cf3361ca3e91b09d27b8cf953944073df08544109a824f0b0d2b7e3bb0946338"},{"path":"assets/jsonParseWorker-193c0-5e.js","bytes":1757,"sha256":"d86e549b483cc3e231d2ff5d3989b93ba507dc4b6e83e22c3eea6106ddea88ca"},{"path":"assets/LocalIntentQueueDisclosure-C8O8z9Ku.js","bytes":690,"sha256":"d24ce3053b6b7b7c15c1bed7edadb59e549df7ea3029fd13671ba73a8309a1e8"},{"path":"assets/MessageCenterView-BUmD60ga.js","bytes":69365,"sha256":"e51aca3d91d273f394affe570b376048bd7432d3e84d2894ccc99b5bf010953f"},{"path":"assets/OfflineCustomerRuntimeContext-BXEqN8Za.js","bytes":18185,"sha256":"ce346a5a2845007fdbb2674e9f6b7772acbcd1b30d775a5ab81b1e0d970a8091"},{"path":"assets/OfflineDeliveryEditor-CyFONeFI.js","bytes":9371,"sha256":"89dd6b2432d7e6044c44d7b29aad23e3047d4277e2a4307b9994223975fafc63"},{"path":"assets/OfflineDeliveryWorkspace-BdhD0mPW.js","bytes":26533,"sha256":"d6e280e126aa59710410ab18a7f8a10cee94f721c0eadb70c6bfdbfc465e038e"},{"path":"assets/OfflineFinanceWorkspace-_NNqhe7-.js","bytes":38990,"sha256":"ab4481e27a94321b86ce1caf4bd4b5293926ae3f97ac8cd57269a673115affc9"},{"path":"assets/OfflineHome-DnADx5w4.js","bytes":3673,"sha256":"c51829297da61ce0d6e55e98e1f94caf3b9710411cdab640821babda32497cb2"},{"path":"assets/OfflineHomeReport-BcJzCE0F.js","bytes":4604,"sha256":"ed525ce5b4f57d051d4543f74c32a9387cf45ccf38d190636f55331a8214dbec"},{"path":"assets/OfflineHRWorkspace-BhBB89eA.js","bytes":40714,"sha256":"701dd3f7addee766aa19095d0f80638e13ecf3162c426622b38bc2ef40e5969f"},{"path":"assets/OfflineNativeHome-B0DDSl3c.js","bytes":2542,"sha256":"f3249f7da9713800cc12dde854195d0694d93603e5e42aa8949fc001312f97de"},{"path":"assets/OfflinePayrollWorkspace-CBhpvcNH.js","bytes":70764,"sha256":"5692db7022155a09cf566519da46c04fdb95725887455fefc86f14af6e7aae8b"},{"path":"assets/OfflineSalaryAdvanceWorkspace-OhRJe9-N.js","bytes":8131,"sha256":"f38c500b21ad632450784fe76c4f8b4a1ec99c8db6c772a439755aeca7d06903"},{"path":"assets/OfflineWarehouseDispatchEditor-BuZlYbsN.js","bytes":12391,"sha256":"e0ba3b374679d48014e31a1c308101eb7ca4ca024ae26b78fc0585e1195bde9e"},{"path":"assets/OfflineWarehouseDispatchQueue-D9BxMiCC.js","bytes":2114,"sha256":"b10d1c05a61e6957389fc59060946346de69276fc828efbc868894efdd3d86d6"},{"path":"assets/OfflineWarehouseWorkspace-DbCMvDQA.js","bytes":65346,"sha256":"88844c5e72066d2fa461ce5b5b47c9dc300a488a1e2f09c8d9e50752ab193ce9"},{"path":"assets/onlineHomeProjectionWorker-gyXCO7UV.js","bytes":200086,"sha256":"09260ad87fc1e70943a4a2ea1cb95e89e727ee16610bcf50fc38ba7405cc174f"},{"path":"assets/OrderManagementView-DF2dNJ1F.js","bytes":126838,"sha256":"9bd9e146bcb6c9ba08564f3a240ae59d6946e24b57de315abc09402bd2620ea0"},{"path":"assets/OrderRequestView-DfN7-Ar0.js","bytes":124869,"sha256":"1f1295effe493f4b8157edf9576c6f699f4b79185d0dfc71f3994d22397d50e1"},{"path":"assets/PayrollCloseDialog-fzdYYSV7.js","bytes":4423,"sha256":"50d83c7ba7bbff49bd4661281e259250662e5f7242682860d46b7fe047ea0947"},{"path":"assets/PayrollWorkspace-PrnFtuaa.js","bytes":20600,"sha256":"0bbbd098b60f4716e26564272550759f98a3df1321d7a5f7aa1fea273bb81d94"},{"path":"assets/payrollWorkspaceModel-Dc5isPWp.js","bytes":2311,"sha256":"1f4c20f8a291ce0acfb88f2702b15cbe9218d1d76e0330372836d2b35d528957"},{"path":"assets/ProductManagementView-DF1iHBn1.js","bytes":37259,"sha256":"b6766428bf9a79538448cd12c46f806d0d03c74db9e929ba7cc67d6069a41150"},{"path":"assets/recordCalculationCache-BfgULwis.js","bytes":276,"sha256":"a315e5b639c7f1bab11fecacefd9c1a321aeb0c921f8d7437a35ac29cc305c25"},{"path":"assets/retainedScopedPage-DiWkGQFN.js","bytes":339,"sha256":"7d72a1f2591545dacd13106f6a60d569b094de0fae2ecb1424c3946a64581a36"},{"path":"assets/SalarySettlementRoute-CnGP660R.js","bytes":9370,"sha256":"a0b5b2ee43e84ac528c965b8a71d26aad8a308dace23fe18814f305551bed52b"},{"path":"assets/SalaryView-cWiH1YvY.js","bytes":70320,"sha256":"d8b91603dc980fe07c8841952f3a4012e7d2dc9b983a88875417b8453a7b3e68"},{"path":"assets/SettingsView-WlelHk4f.js","bytes":46579,"sha256":"9e38a1d379d0c2c2251dd481c3fa296c84de2be6c369792a5643ff74d45a5568"},{"path":"assets/shareCanvas.worker-DUfY9W-U.js","bytes":527,"sha256":"ea3b13baf38dfa8005d049c40796127a44463a93886e565ce0f7617e6f498fe9"},{"path":"assets/sql-wasm-B-9ndiyM.wasm","bytes":685235,"sha256":"0dfeecda2070b36da0cd4f6afa250af9453de528a983770f85b13d5d6b667572"},{"path":"assets/SQLiteProductCRM-83DbOw2k.js","bytes":851,"sha256":"213687e40040880786acf399e2415ce9e2c82681f76140e5e4b9693e1006d40c"},{"path":"assets/SQLiteProductOrders-BZLT8tIi.js","bytes":32257,"sha256":"18241080535d9145342fe1c58cc3fcc19e647d11c8c5d30b1a84366c8d855a97"},{"path":"assets/vendor-export-BOYhLTSp.js","bytes":352045,"sha256":"e44975807a2c227cd4df5ed8be3498a3416170203dcd4162cd755b0449671dbe"},{"path":"assets/vendor-firebase-BKtu-_WX.js","bytes":545305,"sha256":"1da4f415239ccb1368ecf35456700cbb84f3aa2332b888fc2ff03a9db54929bb"},{"path":"assets/vendor-icons-CzGjEmsb.js","bytes":28655,"sha256":"3730199a546deeeceed3b4ec30088bfa66e90081656f901aba98773e0e6b2be0"},{"path":"assets/vendor-qrcode-CrMwhmgJ.js","bytes":24742,"sha256":"18240dd067ee30c0d6a76c862d880818acffc001534028f2293475ab713924c3"},{"path":"assets/vendor-react-Da1h0zHZ.js","bytes":192603,"sha256":"2db126673f53ff457420d59f47cfba60ca9e14a40b519b92a3961f80ea2dcbf4"},{"path":"assets/vendor-tools-BP7_juvS.js","bytes":491307,"sha256":"b660f9f193a186660c85b912590ea2fa1bed128b0739c7c3fe87ee99f3af8c0c"},{"path":"assets/WarehouseImportView-DWfnmZJp.js","bytes":104012,"sha256":"331fc6cd115499129be346054152e50ea09016d5422b8b0d23c4718b11c0c860"},{"path":"assets/web-b5815Mbu.js","bytes":990,"sha256":"77a8d3f311ee464aafb5a6551053261199cb9eeb7a207d20e87ac0633da4768a"},{"path":"assets/web-BD29Wkjm.js","bytes":8878,"sha256":"3a7c68ea2ea404bc714f0d6358860b4f43643ab0ce356f3252b01586365eeff0"},{"path":"assets/web-BxstNOO5.js","bytes":2494,"sha256":"c03efaa2cff1a7d510e2d86ebd132a25e4292b55b8fd4bf050de325f9e543fc8"},{"path":"assets/web-D5T3eC2E.js","bytes":3604,"sha256":"f092bac0b66c9d37a47abf331f5e2485b6f2e77c7c402cc23fcc59a9a6814f62"},{"path":"assets/web-DlG_XtRa.js","bytes":527,"sha256":"c9452833c77f76003ab7a65eab332a8ac3833de4afbda925666e3a42c19829fb"},{"path":"assets/web-w_PPgGTS.js","bytes":2532,"sha256":"2bde015df9ecc3d2944afe3abd334cb6b57e1b7eecdb1dd1e9ebe4fd95a1c458"},{"path":"assets/webOfflineSqlWorker-BrfUt5VI.js","bytes":47623,"sha256":"99e0bfa694a48e8a919750bc5c9341bd01e9136502682ef9c2c024099ad671ee"},{"path":"brand/hd-manager-icon-180.png","bytes":48978,"sha256":"a6c3d2387d85987c462a7d30fa30348c9cb68b058aa556602d3062bf0491bdc6"},{"path":"brand/hd-manager-icon-192.png","bytes":55668,"sha256":"5efb1bd45fdb3d66944b3c24ad422bd523f8cafacdfa0dd94cffcbcb72f098f5"},{"path":"brand/hd-manager-icon-32.png","bytes":3002,"sha256":"788de39c88034d1667616db469976518b83e0b4da90d584cce08f88773d6950e"},{"path":"brand/hd-manager-icon-512.png","bytes":320038,"sha256":"0b0b347a7408d8b6a36f33525cdb47ee0bd4edfc04bdcc825c8aa6bee66c382e"},{"path":"brand/hd-manager-logo-compact.png","bytes":915149,"sha256":"ff8d533896410cd4a6c7043f7e9a4c8f19127308fbffd076d3b3ca3b6664838a"},{"path":"brand/hd-manager-logo.png","bytes":879213,"sha256":"cdb42b7c9a1fd6acc776805f51c340abf8c83c730c5b1258e2acb854ec84cdae"},{"path":"index.html","bytes":1948,"sha256":"9947cb253300e4e98a3f845b468a3723ad19669d6e939f2367380e5428ab68ce"},{"path":"invoice/white-chicken-farm.webp","bytes":213472,"sha256":"0e36235a2e05bb1ed8b03ba08ccfd553f0181970bf3a1531f70a990160c7230b"},{"path":"manifest.webmanifest","bytes":543,"sha256":"50ac9c6556b84ca6d09e5b81d4b867167e6e1b2e7c31e23dcad4f6d001c7d375"},{"path":"messaging/delivery-truck.png","bytes":2653721,"sha256":"773a7e6e530d1ad2cc05ed27c25caec11b80a19dcb32f78b967f2b4d176720fe"},{"path":"messaging/duck-farm.png","bytes":2609113,"sha256":"d95a277f869793abe7390db367e60d813475df4b813a271c5b8d95a75f0ab13a"},{"path":"open-expo.html","bytes":3121,"sha256":"3ac85f13a8b7d3063885a9358d23a3761b94fc1464bbe4ab7b58f47e8a638fe5"},{"path":"privacy.html","bytes":2718,"sha256":"7a6aeaf2adc1c8ebbcf26d5713bb9b5286ef63935e9ce392f227a830f243db1b"},{"path":"terms.html","bytes":1865,"sha256":"f9f8ebd0e224054f7ebece68f46402f4fd62dd7e2b2059b6071e24ccf54bfdd1"},{"path":"version.json","bytes":92,"sha256":"c66f114dcd22de08e239016b6184083108e53332b604dd9cf7fb01b7938c0d64"}]}'
+        run: |-
+          node --input-type=module <<'HD_VERIFY_CI_FRONTEND'
+          import fs from 'node:fs';import path from 'node:path';import {createHash} from 'node:crypto';const m=JSON.parse(process.env.HD_ARTIFACT_MANIFEST);let count=0;const visit=d=>{for(const x of fs.readdirSync(d,{withFileTypes:true})){if(x.isSymbolicLink())throw Error('SYMLINK');if(x.isDirectory())visit(path.join(d,x.name));else count++;}};visit('.ci-approved-dist');if(count!==m.files)throw Error('FILE_COUNT');for(const f of m.entries){const b=fs.readFileSync(path.join('.ci-approved-dist',f.path));if(createHash('sha256').update(b).digest('hex')!==f.sha256)throw Error('ASSET_HASH');}if(JSON.parse(fs.readFileSync('.ci-approved-dist/version.json','utf8')).buildId!==m.sourceCommit)throw Error('VERSION');console.log('Exact CI assets verified: '+count);
+          HD_VERIFY_CI_FRONTEND
+          VITE_DATA_MODE=cloud VITE_FIREBASE_PROJECT_ID=hd-manager-c5839 node scripts/verify-firebase-production-bundle.mjs .ci-approved-dist
+      - name: Package only verified static frontend
+        run: |-
+          set -euo pipefail
+          cd .ci-approved-dist
+          zip -qr "$RUNNER_TEMP/hd-manager-evaluation-frontend.zip" .
+      - name: Capacity recheck, full backup, atomic frontend activation and rollback
+        shell: bash
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -33,26 +63,164 @@ jobs:
             wOCqgEh4n/8tZa/8zW9kAYQul9xVxWQaSsuZwxE8ioe9AgMBAAE=
             -----END PUBLIC KEY-----
           REMOTE_PROBE: |
-            import json,os,pathlib,hashlib,datetime
-            base=pathlib.Path('/var/www/hd-manager')
-            current=(base/'current').resolve(strict=True)
-            assert str(current).startswith(str(base/'releases')+'/')
-            version=json.loads((current/'version.json').read_text())
-            filesystems={}
-            for directory in ['/var/www/hd-manager','/var/backups','/var/tmp']:
-                s=os.statvfs(directory)
-                filesystems[directory]={'physicalFreeBytes':s.f_bfree*s.f_frsize,'ordinaryUserFreeBytes':s.f_bavail*s.f_frsize}
-            print(json.dumps({'at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'status':'READ_ONLY_PREFLIGHT_COMPLETE','currentSource':version['buildId'],'currentRelease':str(current),'indexSha256':hashlib.sha256((current/'index.html').read_bytes()).hexdigest(),'currentReleaseBytes':sum(f.stat().st_size for f in current.rglob('*') if f.is_file() and not f.is_symlink()),'filesystems':filesystems,'productionChanged':False}))
-        shell: bash
+            import os,sys,json,pathlib,hashlib,tarfile,zipfile,stat,datetime,urllib.request,urllib.error,ssl,tempfile,shutil
+            SOURCE='a04e9ebf95742d9db5394d74f111ef2d33f54fd1'
+            OLD_SOURCE='885671ae5082e5dbd77ed4be93e6b29a679cd41e'
+            ZIP=pathlib.Path('__FRONTEND_ZIP_PATH__')
+            EXPECTED_ZIP_SHA='__FRONTEND_ZIP_SHA__'
+            BASE=pathlib.Path('/var/www/hd-manager')
+            CURRENT=BASE/'current'
+            SHA=lambda b:hashlib.sha256(b).hexdigest()
+            result={'at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'scope':'Owner-authorized evaluation switch, delegated setting action and open payroll consistency frontend release','sourceCommit':SOURCE,'activated':False,'databaseChanged':False,'backendChanged':False,'nginxReloaded':False,'servicesCreated':False}
+
+            def fetch(path,method='GET',payload=None):
+                headers={'Cache-Control':'no-cache','Origin':'https://app.hdconnect.net'}
+                if method=='OPTIONS':headers.update({'Access-Control-Request-Method':'POST','Access-Control-Request-Headers':'content-type,authorization'})
+                if payload is not None:headers['Content-Type']='application/json'
+                req=urllib.request.Request('https://app.hdconnect.net'+path,method=method,headers=headers,data=json.dumps(payload).encode() if payload is not None else None)
+                try:response=urllib.request.urlopen(req,timeout=30,context=ssl.create_default_context())
+                except urllib.error.HTTPError as e:response=e
+                raw=response.read(4*1024*1024)
+                return response.status,response.headers,raw
+
+            def public_version():
+                status,headers,raw=fetch('/version.json?owner_home_check='+stamp)
+                assert status==200 and 'json' in headers.get('Content-Type',''), 'PUBLIC_VERSION_NOT_JSON'
+                return json.loads(raw).get('buildId')
+
+            def assert_identity():
+                checks=[]
+                for method,expected,payload in [('GET',405,None),('OPTIONS',204,None),('POST',400,{'identifier':'','password':'','appId':'hd-manager-release-qa-20261114'})]:
+                    status,headers,raw=fetch('/api/identity/login?owner_home_check='+stamp,method,payload)
+                    checks.append({'method':method,'http':status,'allowOrigin':headers.get('Access-Control-Allow-Origin')})
+                    assert status==expected, 'IDENTITY_CONTRACT_FAILED'
+                    assert headers.get('Access-Control-Allow-Origin')=='https://app.hdconnect.net', 'IDENTITY_CORS_FAILED'
+                    if method!='OPTIONS':assert json.loads(raw).get('success') is False, 'IDENTITY_JSON_FAILED'
+                return checks
+
+            def swap_link(target):
+                temp=BASE/('.current-owner-home-'+stamp)
+                assert not temp.exists() and not temp.is_symlink(), 'LINK_COLLISION'
+                os.symlink(str(target),str(temp));os.replace(str(temp),str(CURRENT))
+
+            stamp=datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+            try:
+                assert str(ZIP).startswith('/var/tmp/hd-manager-home-') and ZIP.is_file() and not ZIP.is_symlink(), 'INVALID_TRANSFER_PATH'
+                assert SHA(ZIP.read_bytes())==EXPECTED_ZIP_SHA, 'ARTIFACT_HASH_MISMATCH'
+                assert CURRENT.is_symlink(), 'CURRENT_IS_NOT_SYMLINK'
+                old=CURRENT.resolve(strict=True)
+                assert str(old).startswith(str(BASE/'releases')+'/'), 'OLD_RELEASE_OUT_OF_SCOPE'
+                old_version=json.loads((old/'version.json').read_text())
+                assert old_version.get('buildId')==OLD_SOURCE, 'PRODUCTION_CHANGED_SINCE_APPROVAL'
+                assert public_version()==OLD_SOURCE, 'PUBLIC_PRODUCTION_CHANGED'
+                result['identityBefore']=assert_identity()
+                with zipfile.ZipFile(ZIP) as archive:
+                    entries=archive.infolist()
+                    assert entries and sum(e.file_size for e in entries)<160*1024*1024, 'UNEXPECTED_ARTIFACT_SIZE'
+                    for e in entries:
+                        p=pathlib.PurePosixPath(e.filename)
+                        assert not p.is_absolute() and '..' not in p.parts and '\\' not in e.filename, 'ZIP_PATH_TRAVERSAL'
+                        assert not stat.S_ISLNK(e.external_attr>>16), 'ZIP_SYMLINK_NOT_ALLOWED'
+                        assert p.name not in ['.env','hdmanager-upload-key.jks'] and not p.name.endswith(('.pem','.p12','.jks')), 'SENSITIVE_ARTIFACT_FILE'
+                    assert json.loads(archive.read('version.json')).get('buildId')==SOURCE, 'WRONG_BUNDLE_SOURCE'
+                    assert archive.read('index.html').strip(), 'MISSING_INDEX'
+                    new_index_sha=SHA(archive.read('index.html'))
+                    new=BASE/'releases'/('owner-home-'+SOURCE[:12]+'-'+stamp)
+                    assert not new.exists(), 'NEW_RELEASE_EXISTS'
+                    budget=sum(e.file_size for e in entries)+sum(p.stat().st_size for p in old.rglob("*") if p.is_file() and not p.is_symlink())+16*1024*1024
+                    capacity=os.statvfs(BASE)
+                    assert not (capacity.f_flag&os.ST_RDONLY) and capacity.f_favail>10000, 'RELEASE_FILESYSTEM_NOT_WRITABLE'
+                    physical_free=capacity.f_bfree*capacity.f_frsize
+                    ordinary_free=capacity.f_bavail*capacity.f_frsize
+                    # shutil.disk_usage.free reports f_bavail, which excludes the existing
+                    # root allocation. This is a root-owned static deployment, not a new
+                    # backend write path. Never change filesystem reservation settings;
+                    # retain at least 1.5 GiB physical free space even after the full budget.
+                    assert physical_free-budget>=1.5*1024*1024*1024, 'INSUFFICIENT_PHYSICAL_RELEASE_RESERVE'
+                    use_root_capacity=ordinary_free<=budget
+                    if use_root_capacity:
+                        # Keep the existing deployment directory ownership unchanged. It
+                        # need not be owned by root; only the actual writer must be root
+                        # to use the already configured privileged filesystem allocation.
+                        assert os.geteuid()==0, 'ORDINARY_USER_RELEASE_CAPACITY_UNAVAILABLE'
+                        assert physical_free-budget>=1.5*1024*1024*1024, 'INSUFFICIENT_PHYSICAL_RELEASE_RESERVE'
+                    result['capacity']={'ordinaryUserFreeBytesBefore':ordinary_free,'physicalFreeBytesBefore':physical_free,'maximumDeploymentBudgetBytes':budget,'minimumPhysicalFreeBytes':1.5*1024*1024*1024,'filesystemReservationChanged':False}
+                    backup_dir=pathlib.Path('/var/backups/hd-manager-frontend')/stamp
+                    backup_dir.mkdir(parents=True,mode=0o700);os.chmod(backup_dir,0o700)
+                    backup=backup_dir/'frontend-original.tar.gz'
+                    before_index_sha=SHA((old/'index.html').read_bytes())
+                    with tarfile.open(backup,'w:gz',dereference=False) as tar:tar.add(old,arcname='.')
+                    os.chmod(backup,0o600)
+                    with tarfile.open(backup,'r:gz') as tar:
+                        index=tar.extractfile('./index.html')
+                        assert index and SHA(index.read())==before_index_sha, 'BACKUP_INDEX_VERIFICATION_FAILED'
+                        version=tar.extractfile('./version.json')
+                        assert version and json.load(version).get('buildId')==OLD_SOURCE, 'BACKUP_VERSION_VERIFICATION_FAILED'
+                    assert CURRENT.resolve(strict=True)==old and SHA((old/'index.html').read_bytes())==before_index_sha, 'PRODUCTION_CONCURRENT_CHANGE'
+                    result.update({'oldRelease':str(old),'oldSourceCommit':OLD_SOURCE,'oldIndexSha256':before_index_sha,'backupPath':str(backup),'backupSha256':SHA(backup.read_bytes()),'newRelease':str(new),'newIndexSha256':new_index_sha,'artifactSha256':EXPECTED_ZIP_SHA})
+                    new.mkdir(mode=0o755)
+                    archive.extractall(new)
+                # Existing open tabs may still lazy-load old content-hashed chunks. Keep
+                # those static assets reachable; never replace a new asset or the new index.
+                retained=0
+                if (old/'assets').is_dir():
+                    for source in (old/'assets').rglob('*'):
+                        assert not source.is_symlink(), 'UNEXPECTED_OLD_ASSET_SYMLINK'
+                        if not source.is_file():continue
+                        destination=new/'assets'/source.relative_to(old/'assets')
+                        if destination.exists():
+                            assert SHA(destination.read_bytes())==SHA(source.read_bytes()), 'IMMUTABLE_ASSET_NAME_COLLISION'
+                        else:
+                            destination.parent.mkdir(parents=True,exist_ok=True)
+                            os.link(source,destination);retained+=1
+                result['retainedLegacyStaticAssets']=retained
+                for root,dirs,files in os.walk(new):
+                    os.chmod(root,0o755)
+                    for name in files:
+                        file=pathlib.Path(root)/name
+                        if file.stat().st_nlink==1:os.chmod(file,0o644)
+                manifest=backup_dir/'rollback-manifest.json'
+                manifest.write_text(json.dumps(result,indent=2));os.chmod(manifest,0o600)
+                assert os.statvfs(BASE).f_bfree*os.statvfs(BASE).f_frsize>=1.5*1024*1024*1024, 'PHYSICAL_RESERVE_BEFORE_ACTIVATION_FAILED'
+                assert CURRENT.resolve(strict=True)==old, 'CONCURRENT_ACTIVATION'
+                swap_link(new);result['activated']=True
+                assert CURRENT.resolve(strict=True)==new, 'ACTIVATION_LINK_MISMATCH'
+                assert public_version()==SOURCE, 'PUBLIC_NEW_VERSION_MISMATCH'
+                status,headers,index=fetch('/?owner_home_check='+stamp)
+                assert status==200 and SHA(index)==new_index_sha, 'PUBLIC_INDEX_HASH_MISMATCH'
+                result['identityAfter']=assert_identity()
+                result['capacity']['physicalFreeBytesAfter']=os.statvfs(BASE).f_bfree*os.statvfs(BASE).f_frsize
+                assert result['capacity']['physicalFreeBytesAfter']>=1.5*1024*1024*1024, 'PHYSICAL_RESERVE_AFTER_ACTIVATION_FAILED'
+                result['publicVersion']=SOURCE
+                result['status']='FRONTEND_DEPLOYED_AWAITING_AUTHENTICATED_SMOKE'
+                result['rollbackManifest']=str(manifest)
+                (backup_dir/'deployment-result.json').write_text(json.dumps(result,indent=2));os.chmod(backup_dir/'deployment-result.json',0o600)
+            except Exception as e:
+                result['error']=str(e)[:350]
+                result['status']='BLOCKED_BEFORE_FRONTEND_CHANGE' if not result['activated'] else 'ACTIVATION_VERIFY_FAILED'
+                if result['activated']:
+                    try:
+                        assert CURRENT.resolve(strict=True)==new, 'ROLLBACK_BLOCKED_CONCURRENT_OPERATOR_CHANGE'
+                        assert old.is_dir() and SHA((old/'index.html').read_bytes())==before_index_sha, 'OLD_RELEASE_CHANGED'
+                        swap_link(old)
+                        assert public_version()==OLD_SOURCE, 'ROLLBACK_PUBLIC_VERSION_FAILED'
+                        result['status']='FRONTEND_ROLLED_BACK'
+                    except Exception as rollback_error:result['rollbackError']=str(rollback_error)[:350]
+            print(json.dumps(result))
+          FRONTEND_ZIP: ${{ runner.temp }}/hd-manager-evaluation-frontend.zip
         run: |-
-          node --input-type=module <<'HD_READ_ONLY_RELEASE_METADATA'
+          python3 - <<'HD_VERIFY_PYTHON_SOURCE'
+          import ast,os
+          ast.parse(os.environ['REMOTE_PROBE'])
+          HD_VERIFY_PYTHON_SOURCE
+          node --input-type=module <<'HD_APPROVED_EVALUATION_FRONTEND'
           import fs from 'node:fs';
           import os from 'node:os';
           import path from 'node:path';
           import dns from 'node:dns/promises';
           import {execFileSync} from 'node:child_process';
-          import {randomBytes,createCipheriv,publicEncrypt,constants} from 'node:crypto';
-          const dir=fs.mkdtempSync(path.join(process.env.RUNNER_TEMP||os.tmpdir(),'hd502-readonly-'));
+          import {createHash,randomBytes,createCipheriv,publicEncrypt,constants} from 'node:crypto';
+          const dir=fs.mkdtempSync(path.join(process.env.RUNNER_TEMP||os.tmpdir(),'hd-owner-frontend-'));
           const keyFile=path.join(dir,'ci-key'),known=path.join(dir,'known_hosts');
           let result,keyFormat;
           try {
@@ -74,10 +242,18 @@ jobs:
            const pinned=process.env.VPS_KNOWN_HOSTS;
            if(pinned)fs.writeFileSync(known,pinned,{mode:0o600});
            const args=['-i',keyFile,'-o','IdentitiesOnly=yes','-o','BatchMode=yes','-o','ConnectTimeout=10','-o','ConnectionAttempts=1','-o','LogLevel=ERROR','-o','RequestTTY=no','-o','StrictHostKeyChecking='+(pinned?'yes':'accept-new'),'-o','UserKnownHostsFile='+known,user+'@'+host,'python3 -'];
-           const stdout=execFileSync('ssh',args,{input:process.env.REMOTE_PROBE,encoding:'utf8',timeout:150000,maxBuffer:2*1024*1024,stdio:['pipe','pipe','pipe']});
-           result={status:'SSH_READ_COMPLETED',keyFormat,hostTrust:pinned?'EXISTING_KNOWN_HOSTS':'EXISTING_CI_HOST_MATCHED_PRODUCTION_DNS_FIRST_USE_HOSTKEY',payload:JSON.parse(stdout)};
+           const artifact=process.env.FRONTEND_ZIP;
+           if(!artifact||!fs.statSync(artifact).isFile())throw Error('FRONTEND_ARTIFACT_MISSING');
+           const artifactHash=createHash('sha256').update(fs.readFileSync(artifact)).digest('hex');
+           const stagingProbe="import tempfile,os\nfor d in ['/var/www/hd-manager','/var/backups','/var/tmp']:\n s=os.statvfs(d)\n assert not (s.f_flag&os.ST_RDONLY) and s.f_favail>10000, 'UNUSABLE_RELEASE_FILESYSTEM'\n assert s.f_bfree*s.f_frsize-"+fs.statSync(artifact).size+"-99652691>=1.5*1024*1024*1024, 'INSUFFICIENT_RESERVE_BEFORE_TRANSFER'\n assert s.f_bavail*s.f_frsize>99652691 or os.geteuid()==0, 'UNPRIVILEGED_RESERVE_UNAVAILABLE'\np=tempfile.mkdtemp(prefix='hd-manager-home-',dir='/var/tmp'); os.chmod(p,0o700); print(p)\n";
+           const staging=execFileSync('ssh',args,{input:stagingProbe,encoding:'utf8',timeout:20000,stdio:['pipe','pipe','pipe']}).trim();
+           if(!/^\/var\/tmp\/hd-manager-home-[a-zA-Z0-9_-]+$/.test(staging))throw Error('INVALID_PRIVATE_TRANSFER_PATH');
+           execFileSync('scp',[...args.slice(0,-2),artifact,user+'@'+host+':'+staging+'/frontend.zip'],{timeout:90000,stdio:['ignore','pipe','pipe']});
+           const remote=process.env.REMOTE_PROBE.replace('__FRONTEND_ZIP_PATH__',staging+'/frontend.zip').replace('__FRONTEND_ZIP_SHA__',artifactHash);
+           const stdout=execFileSync('ssh',args,{input:remote,encoding:'utf8',timeout:150000,maxBuffer:2*1024*1024,stdio:['pipe','pipe','pipe']});
+           result={status:'SSH_SCOPE_COMPLETED',keyFormat,hostTrust:pinned?'EXISTING_KNOWN_HOSTS':'EXISTING_CI_HOST_MATCHED_PRODUCTION_DNS_FIRST_USE_HOSTKEY',payload:JSON.parse(stdout)};
           } catch(error) {
-           result={status:'READ_DIAGNOSTIC_FAILED',keyFormat,code:/^[A-Z_]+$/.test(error.message)?error.message:'SSH_OR_PROBE_FAILURE',exitStatus:error.status,stdout:String(error.stdout||'').slice(-20000),stderr:String(error.stderr||'').slice(-12000)};
+           result={status:'FRONTEND_OPERATION_FAILED',keyFormat,code:/^[A-Z_]+$/.test(error.message)?error.message:'SSH_OR_PROBE_FAILURE',exitStatus:error.status,stdout:String(error.stdout||'').slice(-20000),stderr:String(error.stderr||'').slice(-12000)};
           } finally {
            for(const file of [keyFile,known])try{fs.unlinkSync(file);}catch{}
            try{fs.rmdirSync(dir);}catch{}
@@ -89,6 +265,6 @@ jobs:
           const encoded=ciphertext.toString('base64'),parts=Math.ceil(encoded.length/6000);
           for(let i=0;i<parts;i++)console.log('HD502_PART '+i+' '+parts+' '+encoded.slice(i*6000,(i+1)*6000));
           console.log('HD502_STATUS '+result.status);
-          if(result.status!=='SSH_READ_COMPLETED')process.exitCode=1;
+          if(result.status!=='SSH_SCOPE_COMPLETED'||result.payload?.status!=='FRONTEND_DEPLOYED_AWAITING_AUTHENTICATED_SMOKE')process.exitCode=1;
 
-          HD_READ_ONLY_RELEASE_METADATA
+          HD_APPROVED_EVALUATION_FRONTEND
