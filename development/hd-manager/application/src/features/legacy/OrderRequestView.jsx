@@ -186,15 +186,16 @@ export function createOrderRequestView(runtime) {
     quickProductSelectionTimersRef.current.clear();
     quickProductSelectionLocksRef.current.clear();
   }, []);
-  const openRequestDatePicker = () => {
+  const openRequestDatePicker = (event) => {
     const input = requestDateInputRef.current;
-    if (!input) return;
+    if (!input || typeof input.showPicker !== 'function') return;
     try {
-      if (typeof input.showPicker === 'function') input.showPicker();
-      else input.click();
-    } catch (error) {
+      input.showPicker();
+      // The native default can toggle the picker again after showPicker().
+      event?.preventDefault();
+    } catch {
+      // Preserve the native click if the browser refuses programmatic opening.
       input.focus();
-      input.click();
     }
   };
 
@@ -3449,15 +3450,13 @@ export function createOrderRequestView(runtime) {
       <div className="hd-request-toolbar">
         <label
           className="hd-request-toolbar__date relative inline-flex items-center justify-center"
-          onClick={(event) => {
-            if (event.target?.tagName !== 'INPUT') openRequestDatePicker();
-          }}
         >
           <span>{formatDateLabel(requestFilterDate)}</span>
           <input
             ref={requestDateInputRef}
             type="date"
             value={requestFilterDate}
+            onClick={openRequestDatePicker}
             onChange={(e) => setRequestFilterDateFromUser(e.target.value)}
             className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
             aria-label="Chọn ngày xem đơn đặt hàng"
