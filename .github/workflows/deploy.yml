@@ -112,7 +112,7 @@ jobs:
         run: npm run test:firestore-sales-commission-tiers
 
       - name: Verify customer product atomic sync and permissions
-        run: npx firebase-tools emulators:exec --only firestore --project demo-customer-product-sync "node tests/customer-product-auto-sync.emulator.mjs"
+        run: npx firebase-tools emulators:exec --config firebase.rules-tests.json --only firestore --project demo-customer-product-sync "node tests/customer-product-auto-sync.emulator.mjs"
 
       - name: Verify password recovery transaction
         run: npm run test:identity:firestore
