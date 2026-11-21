@@ -15,6 +15,8 @@ test('real quote component renders and searches without reading financial histor
     import {usePagedList} from './src/services/renderOptimization.js';
     import {ListPagination} from './src/design-system/ListPagination.jsx';
     import SearchableProductPicker from './src/features/products/SearchableProductPicker.jsx';
+    import {buildCustomerBatchPricePatch} from './src/utils/customerBatchPricePatch.js';
+    import {configScopeFingerprint} from './src/utils/customerProductAutoSync.js';
     import {createRoot} from 'react-dom/client';
     import {Search,X,Loader2,CheckCircle,Send} from 'lucide-react';
     const getSalesDownlineEmployeeIds=()=>[];
@@ -43,6 +45,7 @@ test('real quote component renders and searches without reading financial histor
       ...Array.from({length:25},(_,i)=>({id:'page-'+i,name:'Page customer '+String(i).padStart(2,'0'),empId:'sales',customerProductIds:['p1']}))
     ];
     createRoot(document.getElementById('root')).render(<PriceQuoteBroadcastView
+      dataReady={true} dataFresh={true} shareReady={false}
       employee={{id:'sales'}} employees={[]} customers={customers} products={products}
       orders={forbidden} payments={forbidden}
       onEditCustomer={async(id,patch)=>{window.saved.push({id,patch});return {success:true}}}
