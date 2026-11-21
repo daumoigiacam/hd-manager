@@ -13,9 +13,9 @@ const canonical=path.join(root,'development/hd-manager/application/src/App.jsx')
 
 test('native bundler resolves relative imports inside synthetic JSX to canonical files, including files absent from legacy source',async()=>{
   const result=await build({stdin:{contents:"import * as domain from './src/utils/deliveryCashflowTotals.js';export {domain};",resolveDir:root},bundle:true,write:false,platform:'node',format:'esm',metafile:true});
-  const inputs=Object.keys(result.metafile.inputs).map(file=>file.replaceAll('\\','/'));
-  assert.ok(inputs.some(file=>file.endsWith('development/hd-manager/application/src/utils/deliveryCashflowTotals.js')));
-  assert.ok(!inputs.some(file=>file==='src/utils/deliveryCashflowTotals.js'));
+  const inputs=Object.keys(result.metafile.inputs).map(file=>path.resolve(process.cwd(),file));
+  assert.ok(inputs.includes(path.join(root,'development/hd-manager/application/src/utils/deliveryCashflowTotals.js')));
+  assert.ok(!inputs.includes(path.join(root,'src/utils/deliveryCashflowTotals.js')));
 });
 test('canonical routing covers constructed file URLs, absolute/relative paths and Buffer paths without changing fixtures/server/destinations',()=>{
   const legacy=path.join(root,'src/App.jsx');
