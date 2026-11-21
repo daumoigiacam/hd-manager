@@ -64,7 +64,7 @@
     "test:warehouse-product-scanner": "node tests/warehouse-product-scanner.test.mjs",
     "test:warehouse-supplier-picker": "node tests/warehouse-supplier-picker.test.mjs",
     "test:warehouse-dispatch-bulk-order-billing": "node tests/warehouse-dispatch-bulk-order-billing.test.mjs",
-    "test:warehouse-dispatch-order-creation": "node tests/warehouse-dispatch-order-creation.test.mjs",
+    "test:warehouse-dispatch-order-creation": "node tests/warehouse-dispatch-order-creation.test.mjs && node --test development/hd-manager/application/tests/order-creation-admission.test.mjs",
     "test:warehouse-inventory": "node tests/warehouse-inventory-integrity.test.mjs",
     "test:order-request-ux": "node tests/order-request-ux.test.mjs",
     "test:order-share-cache": "node tests/order-share-cache.test.mjs",
@@ -147,7 +147,11 @@
     "test:company-employee-reviews": "node --test development/hd-manager/application/tests/company-employee-reviews.test.mjs development/hd-manager/application/tests/evaluation-toggle-payroll.test.mjs",
     "test:firestore-company-employee-reviews": "firebase emulators:exec --only firestore --project demo-hdmanager-review-feature \"node tests/company-employee-reviews-rules.test.mjs\"",
     "test:sales-commission-tiers": "node --test development/hd-manager/application/tests/sales-commission-tiers.test.mjs development/hd-manager/application/tests/commission-policy.test.mjs",
-    "test:firestore-sales-commission-tiers": "firebase emulators:exec --only firestore --project demo-hdmanager-commission-tiers \"node tests/sales-commission-tiers-rules.test.mjs\""
+    "test:firestore-sales-commission-tiers": "firebase emulators:exec --only firestore --project demo-hdmanager-commission-tiers \"node tests/sales-commission-tiers-rules.test.mjs\"",
+    "test:firestore-order-creation-reconciliation": "node scripts/run-firestore-emulator-test.mjs development/hd-manager/application/tests/warehouse-order-reconciliation.emulator.mjs demo-hdmanager-order-creation",
+    "test:canonical-broad-audit": "node scripts/canonical-broad-audit.mjs test",
+    "lint:canonical-broad-audit": "node scripts/canonical-broad-audit.mjs lint",
+    "test:canonical-broad-audit:emulator": "node scripts/canonical-broad-audit.mjs emulator"
   },
   "build": {
     "appId": "com.hdmanager.desktop",

@@ -8,7 +8,7 @@ test('actual expanded dispatch rows preserve the frozen branch, attribute, quant
  const item=Object.freeze({id:'line',productId:'p',quantity:3,unitPrice:104000,sizeLabel:'To',attributeLabel:'To',actualQuantity:3,billingUnit:'Con',billingQuantity:3,billingSnapshotVersion:2});
  const requests=Object.freeze([Object.freeze({id:'r',customerId:'c',branchId:'branch',items:Object.freeze([item])})]);
  const customers=Object.freeze([Object.freeze({id:'c',name:'Customer'})]),products=Object.freeze([Object.freeze({id:'p',name:'Product',unit:'Kg'})]);let reads=0;
- const bindings={orderRequests:requests,customers,products,todayOrderRequests:requests,
+ const bindings={orderRequests:requests,customers,products,todayOrderRequests:requests,getEntityTimestamp:()=>0,
   warehouseOrderRowsCache:createProjectionCache({maxScopes:1}),dispatchOrderRowsScope:'company:actor:date',
   customerLookup:new Map(customers.map(x=>[x.id,x])),productLookup:new Map(products.map(x=>[x.id,x])),
   getCustomerDisplayName:c=>c?.name||'',resolveRequestDateKey:()=>{reads++;return'2026-11-01'},
@@ -16,11 +16,12 @@ test('actual expanded dispatch rows preserve the frozen branch, attribute, quant
   getProductShortName:()=> 'VKM',getOrderLineUnitPriceValue:i=>i.unitPrice,getOrderLineQuantityValue:i=>i.quantity,
   getOrderLineWeightKgValue:()=>8.5,getOrderLineSizeLabel:i=>i.sizeLabel,getOrderLineAttributeLabel:i=>i.attributeLabel};
  const run=()=>appFunction('dispatchOrderRows',bindings,{memoCallback:true,scope:'WarehouseDispatchView'})();
- const expected=buildFrozenDispatchOrderRows(bindings),first=run(),after=reads;assert.deepEqual(first,expected);
+ const expectedRows=()=>buildFrozenDispatchOrderRows(bindings).map((row,index)=>({...row,itemIndex:index,requestTimestamp:0}));
+ const expected=expectedRows(),first=run(),after=reads;assert.deepEqual(first,expected);
  assert.equal(first[0].branchId,'branch');assert.equal(first[0].unitPrice,104000);assert.equal(first[0].sizeLabel,'To');assert.equal(first[0].item,item);
  assert.equal(run(),first);assert.equal(reads,after,'remount must not re-expand every historical request line');
  for(const key of ['orderRequests','customers','products']){
-  bindings[key]=[...bindings[key]];const next=run();assert.notEqual(next,first);assert.deepEqual(next,buildFrozenDispatchOrderRows(bindings));
+  bindings[key]=[...bindings[key]];const next=run();assert.notEqual(next,first);assert.deepEqual(next,expectedRows());
  }
  const old=run();bindings.dispatchOrderRowsScope='company:other-actor:other-date';const other=run();assert.notEqual(other,old);
  bindings.dispatchOrderRowsScope='company:actor:date';assert.notEqual(run(),old,'large row arrays keep only one scope per source set');

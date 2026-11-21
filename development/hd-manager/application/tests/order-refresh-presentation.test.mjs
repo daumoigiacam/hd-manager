@@ -36,7 +36,8 @@ test('actual Orders keeps live children, scope/query isolation and current-sourc
   assert.match(app,/orderReadIdentity=JSON.stringify\(\[currentReadOwnerKey,dashboardPrivacyScope\]\)/);
   assert.match(app,/renderContent\(ledger\)/);assert.match(app,/customerLedgerMap=\{orderReadLedgerMap\} readIdentity=\{orderReadIdentity\}/);
   assert.match(app,/orderMutationsReady=mainLedgerReady&&orderLedgerSourcesReady/);
-  for(const callback of ['onAddOrder','onEditOrder','onAddPayment','onDeleteOrder'])assert(app.includes(callback+'={(...args)=>runOrderMutation('+callback+',args)}'));
+  assert(app.includes('onAddOrder={(...args)=>runOrderCreation(args,orderReadIdentity)}'));
+  for(const callback of ['onEditOrder','onAddPayment','onDeleteOrder'])assert(app.includes(callback+'={(...args)=>runOrderMutation('+callback+',args)}'));
   assert.match(orders,/useRetainedReadProjection\(orderViewProjection,presentationIdentity\)/);
   assert.match(orders,/JSON.stringify\(\[presentationIdentity,displayOrderRenderKey\]\)/);
   assert.match(orders,/if\(orderViewsReady\)onPrimaryReady\?\.\(\)/);

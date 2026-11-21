@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
+import {createBusinessMutationId} from '../../utils/businessMutationIds.js';
 import { useAppScreenBack } from "../../hooks/useAppScreenBack.js";
 import { useCallback, useSyncExternalStore } from "react";
 import { createOrderSearchState } from "../../services/orderSearchState.js";
@@ -55,12 +56,32 @@ export function createOrderManagementView(runtime) {
   const [returnEditorOrderId, setReturnEditorOrderId] = useState('');
   const [returnDraft, setReturnDraft] = useState({ pieces: '', weightKg: '', reason: '', status: 'pending_pickup', discountAmount: '' });
   const [returnEditorError, setReturnEditorError] = useState('');
+  const returnPendingCommandRef = useRef(null);
   const [orderItemEditor, setOrderItemEditor] = useState({ orderId: '', itemIndex: -1, quantity: '', unitPrice: '' });
   const [orderPaymentDraft, setOrderPaymentDraft] = useState({ open: false, orderId: '', amount: '', method: 'Chuyển khoản', date: getTodayString(), isSaving: false, error: '' });
   const [searchCus, setSearchCus] = useState('');
   const [showCusDropdown, setShowCusDropdown] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const [archivingOrderIds,setArchivingOrderIds]=useState([]);
+  const [archiveError,setArchiveError]=useState('');
+  const archiveInFlightRef=useRef(new Set());
+  const archiveScope=JSON.stringify([readIdentity,currentCompany?.id,employee?.id,canDeleteOrder]);
+  const archiveScopeRef=useRef(archiveScope);archiveScopeRef.current=archiveScope;
+  const archiveMountedRef=useRef(true);
+  useEffect(()=>{archiveMountedRef.current=true;return()=>{archiveMountedRef.current=false;};},[]);
+  useEffect(()=>{setArchivingOrderIds([]);setArchiveError('');},[archiveScope]);
+  const handleArchiveOrder=async orderId=>{
+    const scope=archiveScope,key=JSON.stringify([scope,orderId]);
+    if(!canDeleteOrder||archiveScopeRef.current!==scope||archiveInFlightRef.current.has(key))return;
+    archiveInFlightRef.current.add(key);setArchivingOrderIds(ids=>[...ids,orderId]);setArchiveError('');
+    try{
+      const receipt=await onDeleteOrder(orderId);
+      if(receipt?.success!==true||receipt.confirmed!==true||receipt.queued||receipt.pending)throw new Error(receipt?.message||'Máy chủ chưa xác nhận lưu trữ hóa đơn.');
+    }catch(error){if(archiveMountedRef.current&&archiveScopeRef.current===scope)setArchiveError(getFriendlyFirebaseErrorMessage(error,'Không thể lưu trữ hóa đơn.'));}
+    finally{archiveInFlightRef.current.delete(key);if(archiveMountedRef.current&&archiveScopeRef.current===scope)setArchivingOrderIds(ids=>ids.filter(id=>id!==orderId));}
+  };
   useAppScreenBack(() => {
+    if (bulkOrderSubmittingRef.current) return true;
     if (showCusDropdown) {
       setShowCusDropdown(false);
       return true;
@@ -115,6 +136,7 @@ export function createOrderManagementView(runtime) {
   const createEmptyOrderItem = () => ({ productId: '', description: '', quantity: 1, unitPrice: '' });
   const getDefaultSalesEmpId = () => (isSales ? employee?.id || '' : salesEmployees[0]?.id || '');
   const createSingleOrderState = () => ({
+    clientMutationId: createBusinessMutationId('order'),
     customerId: '',
     branchId: '',
     branchName: '',
@@ -132,6 +154,7 @@ export function createOrderManagementView(runtime) {
     paymentMethod: 'Chuyển khoản'
   });
   const createBulkOrderDraft = (seed = {}) => ({
+    clientMutationId: seed.clientMutationId || createBusinessMutationId('order'),
     localId: seed.localId || `bulk_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
     customerId: seed.customerId || '',
     customerName: seed.customerName || '',
@@ -825,9 +848,13 @@ export function createOrderManagementView(runtime) {
       return;
     }
 
-    const nowIso = new Date().toISOString();
+    const requestKey = JSON.stringify([order.id, pieces, weightKg, reason, status, discountAmount]);
+    if (returnPendingCommandRef.current?.key !== requestKey) {
+      returnPendingCommandRef.current = {key:requestKey,id:createReturnGoodsRecordId(),createdAt:new Date().toISOString(),baseDiscount:parseLooseMoneyValue(order.discount)};
+    }
+    const nowIso = returnPendingCommandRef.current.createdAt;
     const nextRecord = {
-      id: createReturnGoodsRecordId(),
+      id: returnPendingCommandRef.current.id,
       pieces,
       weightKg,
       reason,
@@ -846,9 +873,9 @@ export function createOrderManagementView(runtime) {
       createdByEmpId: employee?.id || '',
       createdByName: employee?.name || ''
     };
-    const nextReturnGoods = [...getOrderReturnGoodsRecords(order), nextRecord];
+    const nextReturnGoods = [...getOrderReturnGoodsRecords(order).filter(record => record.id !== nextRecord.id), nextRecord];
     const returnSummary = summarizeOrderReturnGoods({ returnGoods: nextReturnGoods });
-    const nextDiscount = parseLooseMoneyValue(order.discount) + discountAmount;
+    const nextDiscount = returnPendingCommandRef.current.baseDiscount + discountAmount;
 
     try {
       const result = await commitOrderEdit(order, {
@@ -870,6 +897,7 @@ export function createOrderManagementView(runtime) {
         : status === 'discounted_sale'
           ? 'Đã ghi nhận hàng trả và giảm giá bán luôn cho khách.'
           : 'Đã ghi nhận hàng trả đã lấy về kho.');
+      returnPendingCommandRef.current = null;
       closeOrderReturnEditor();
     } catch (error) {
       setReturnEditorError(getFriendlyFirebaseErrorMessage(error, 'Không thể lưu thông tin trả hàng.'));
@@ -1473,16 +1501,20 @@ export function createOrderManagementView(runtime) {
   };
   const handleItemProductChange = (index, prodId) => {
     const prod = activeProducts.find(p => p.id === prodId);
-    const newItems = [...newOrder.items]; 
+    const newItems = newOrder.items.map(item => ({ ...item }));
     if(prod) {
       newItems[index].productId = prod.id;
       newItems[index].description = prod.name;
       newItems[index].unitPrice = prod.sellingPrice;
+      newItems[index].quantityUnit = getProductPrimaryPricingUnit(prod);
+      newItems[index].pricingUnit = newItems[index].quantityUnit;
     } 
     else {
       newItems[index].productId = '';
       newItems[index].description = '';
       newItems[index].unitPrice = '';
+      newItems[index].quantityUnit = '';
+      newItems[index].pricingUnit = '';
     }
     setNewOrder({...newOrder, items: newItems});
   };
@@ -1605,6 +1637,7 @@ export function createOrderManagementView(runtime) {
     const orderTotal = Math.max(0, orderSubtotal - discount + customerDraftExpense);
 
     const orderId = await onAddOrder(empId, {
+      clientMutationId: draft.clientMutationId,
       customerId,
       branchId: draft.branchId || draft.customerBranchId || '',
       branchName: draft.branchName || draft.customerBranchName || '',
@@ -2122,6 +2155,8 @@ export function createOrderManagementView(runtime) {
   };
 
   const buildOrderDuplicateSignature = (entry = {}) => {
+    const dispatchIds = getWarehouseDispatchIds(entry);
+    if (dispatchIds.length > 0) return `dispatch::${dispatchIds.slice().sort().join('|')}`;
     const customerKey = entry.customerId || normalizeLookupText(entry.customerName || entry.customer?.name || '');
     const branchKey = `${entry.branchId || entry.customerBranchId || ''}`.trim()
       || normalizeLookupText(entry.branchName || entry.customerBranchName || '');
@@ -2144,6 +2179,7 @@ export function createOrderManagementView(runtime) {
     const existingOrderSignatures = new Set(
       activeOrders
         .map((order) => buildOrderDuplicateSignature({
+          sourceDispatchIds: getWarehouseDispatchIds(order),
           customerId: order.customerId,
           customerName: order.customer?.name,
           branchId: order.branchId || order.customerBranchId || '',
@@ -2319,9 +2355,14 @@ export function createOrderManagementView(runtime) {
 
     try {
       for (let index = 0; index < bulkOrderDrafts.length; index += 1) {
-        const result = await submitOrderDraft(bulkOrderDrafts[index], { allowDescriptionOnly: true });
+        const draft = bulkOrderDrafts[index];
+        const result = await submitOrderDraft(draft, { allowDescriptionOnly: true });
         if (Array.isArray(result?.postSaveWarnings)) postSaveWarnings.push(...result.postSaveWarnings);
         createdCount += 1;
+        // Only acknowledged orders leave the queue. A later failure must not
+        // make retry collide with this batch's already-created prefix.
+        setBulkOrderDrafts(previous => previous.filter(item => item.localId !== draft.localId));
+        setBulkOrderStatus(`Đã tạo ${createdCount}/${bulkOrderDrafts.length} đơn. Đang xác nhận các đơn còn lại...`);
       }
       setBulkOrderDrafts([]);
       setShowAddOrder(false);
@@ -2332,9 +2373,9 @@ export function createOrderManagementView(runtime) {
       setBulkOrderStatus(`Đã tạo ${createdCount} đơn hàng từ ${sourceLabel}.${postSaveWarnings.length > 0 ? ` Có ${postSaveWarnings.length} cảnh báo phụ cần kiểm tra.` : ''}`);
     } catch (error) {
       if (isOrderSaveTimeoutError(error)) {
-        setBulkOrderStatus('Có đơn chưa được máy chủ xác nhận. App giữ nguyên dữ liệu để bạn kiểm tra kết nối và thử lại an toàn.');
+        setBulkOrderStatus(`Đã tạo ${createdCount} đơn. Có đơn chưa được máy chủ xác nhận; app giữ ${bulkOrderDrafts.length - createdCount} bản nháp chưa xác nhận để bạn kiểm tra trước khi thử lại.`);
       } else {
-        setBulkOrderStatus(`Dừng ở đơn nháp ${createdCount + 1}: ${getFriendlyFirebaseErrorMessage(error, 'Không thể tạo đơn.')}`);
+        setBulkOrderStatus(`Đã tạo ${createdCount} đơn; giữ lại ${bulkOrderDrafts.length - createdCount} bản nháp chưa tạo. ${getFriendlyFirebaseErrorMessage(error, 'Không thể tạo đơn.')}`);
       }
     } finally {
       bulkOrderSubmittingRef.current = false;
@@ -2423,6 +2464,7 @@ export function createOrderManagementView(runtime) {
   };
 
   const closeAddOrderModal = () => {
+    if (bulkOrderSubmittingRef.current) return;
     setShowAddOrder(false);
     setShowOrderSourcePicker(false);
     setOrderCreationSource('');
@@ -2561,6 +2603,7 @@ export function createOrderManagementView(runtime) {
         </div>
       </div>
 
+      {archiveError&&<p role="alert" className="rounded-xl border border-red-100 bg-red-50 p-3 text-sm text-red-700">{archiveError}</p>}
       {bulkOrderStatus && !showAddOrder && (
         <div
           className={`rounded-2xl border px-4 py-3 text-sm font-semibold leading-6 ${
@@ -2627,9 +2670,11 @@ export function createOrderManagementView(runtime) {
               {canDeleteOrder && (
                 <button
                   type="button"
+                  aria-label={`Lưu trữ hóa đơn ${formatOrderCode(order.id)}`}
+                  disabled={archivingOrderIds.includes(order.id)}
                   onClick={(event) => {
                     event.stopPropagation();
-                    if (window.confirm('Xóa vĩnh viễn đơn hàng này?')) onDeleteOrder(order.id);
+                    if (window.confirm('Lưu trữ hóa đơn này khỏi danh sách đang sử dụng?')) void handleArchiveOrder(order.id);
                   }}
                   className="absolute top-3 right-3 z-10 text-gray-300 hover:text-red-500"
                 >
@@ -3485,6 +3530,7 @@ export function createOrderManagementView(runtime) {
                  </h2>
                  <button
                    type="button"
+                   disabled={isBulkOrderSubmitting}
                    onClick={() => {
                      setShowAddOrder(false);
                      setShowOrderSourcePicker(true);
@@ -3494,7 +3540,7 @@ export function createOrderManagementView(runtime) {
                    Đổi cách tạo đơn
                  </button>
                </div>
-               <button onClick={closeAddOrderModal} className="hover:bg-blue-700 p-1 rounded-full"><X size={24}/></button>
+               <button disabled={isBulkOrderSubmitting} onClick={closeAddOrderModal} className="hover:bg-blue-700 p-1 rounded-full"><X size={24}/></button>
             </HDHeader>
             
              <div className="hd-order-create-content min-h-0 flex-1 overflow-y-auto px-3 pt-2 pb-3 sm:px-4">
@@ -3528,6 +3574,7 @@ export function createOrderManagementView(runtime) {
                       <div className="grid grid-cols-[1fr_auto] gap-2 rounded-2xl border border-violet-100 bg-white/80 p-2">
                         <input
                           type="date"
+                          disabled={isBulkOrderSubmitting}
                           value={selectedWarehouseDispatchDate}
                           onChange={(event) => {
                             setSelectedWarehouseDispatchDate(event.target.value || getTodayString());
@@ -3576,7 +3623,7 @@ export function createOrderManagementView(runtime) {
                   )}
 
                   {bulkOrderDrafts.length > 0 && (
-                    <div className="space-y-3">
+                    <fieldset disabled={isBulkOrderSubmitting} className="min-w-0 space-y-3">
                       <div className="flex items-center justify-between gap-3">
                         <div>
                           <p className="text-sm font-bold text-slate-900">{bulkOrderDrafts.length} đơn nháp chờ rà soát</p>
@@ -3758,7 +3805,7 @@ export function createOrderManagementView(runtime) {
                         {isBulkOrderSubmitting ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
                         Tạo {bulkOrderDrafts.length} đơn hàng loạt
                       </button>
-                    </div>
+                    </fieldset>
                   )}
                 </div>
                 )}

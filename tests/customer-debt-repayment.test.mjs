@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { readApplicationSourceRoot, readApplicationSource } from '../scripts/helpers/application-source.cjs';
 import test from 'node:test';
 
-const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const source = readApplicationSource()+'\n'+readFileSync(path.join(readApplicationSourceRoot(),'src/features/customers/productCRMShared.jsx'),'utf8');
 const extract = (name, next) => source.slice(source.indexOf(`const ${name} =`), source.indexOf(`const ${next} =`));
 const context = vm.createContext({
   roundMoneyValue: Math.round,
@@ -46,7 +48,7 @@ test('repayment submission uses expenses, blocks overpayment and leaves receipt 
   let expense = null;
   let status = '';
   const state = {
-    debtPaymentSubmitRef: { current: false }, selectedCustomer: { id: 'c', name: 'Customer', ledger: { creditBalance: 100 } },
+    sourceFresh:true,debtPaymentSubmitRef: { current: false }, selectedCustomer: { id: 'c', name: 'Customer', ledger: { creditBalance: 100 } },
     newPayment: { kind: 'repayment', amount: '60', date: '2026-10-02', method: 'Tiền mặt', clientMutationId: 'stable-id' },
     canRecordRepayment: true, canRecordCustomerPayment: true, isDriver: false,
     employee: { id: 'emp', name: 'Accountant' }, paymentTargetOrderId: '',

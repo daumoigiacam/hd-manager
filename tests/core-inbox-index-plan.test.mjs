@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {planInboxIndexes} from '../scripts/helpers/inbox-index-plan.mjs';
 import {appFunction} from './helpers/app-source-function.mjs';
+import {planMessageReadQueries} from '../src/services/messageReadAccessPlan.js';
 const config=JSON.parse(fs.readFileSync('firestore.indexes.json','utf8'));
 test('repair is limited to five existing tracked schemas and treats CREATING as incomplete, not a duplicate',()=>{
  const plan=planInboxIndexes(config,[]);assert.equal(plan.create.length,5);assert.equal(plan.ready,false);
@@ -16,6 +17,7 @@ test('repair is limited to five existing tracked schemas and treats CREATING as 
 test('tracked schemas cover actual App customer, assigned staff, internal and manager inbox queries without dropping filters',()=>{
  const specs=planInboxIndexes(config,[]).create;
  const factory=customer=>appFunction('getTenantCollectionSources',{
+  getMessageReadPlan:()=>[{kind:'all',filters:[]}],
   db:{},appId:'fixture',tenantCompanyId:'company-a',customerSession:customer,sessionCustomerId:'customer-a',
   currentUser:{id:'employee-a',role:'employee'},customerOwnedCollections:new Set(['messages','notifications']),
   collection:(_db,...p)=>({collectionGroup:p.at(-1)}),doc:()=>{throw Error('Not an inbox query')},
@@ -25,6 +27,7 @@ test('tracked schemas cover actual App customer, assigned staff, internal and ma
  const queries=[...factory(true)('messages'),...factory(true)('notifications'),...factory(false)('messages')];
  // Also evaluate the ordinary assigned/internal branch with the real factory.
  const ordinary=appFunction('getTenantCollectionSources',{
+  getMessageReadPlan:()=>planMessageReadQueries({company:{id:'company-a'},employee:{id:'employee-a',companyId:'company-a'},currentUser:{id:'employee-a',companyId:'company-a'},isManager:false},()=>true),
   db:{},appId:'fixture',tenantCompanyId:'company-a',customerSession:false,sessionCustomerId:'',currentUser:{id:'employee-a',role:'employee'},
   collection:(_db,...p)=>({collectionGroup:p.at(-1)}),firebaseQuery:(ref,...filters)=>({...ref,filters}),
   firebaseWhere:(field,op)=>({kind:'where',field,op}),firebaseOrderBy:(field,order)=>({kind:'order',field,order}),firebaseLimit:count=>({kind:'limit',count}),isOwnerRoleValue:()=>false,

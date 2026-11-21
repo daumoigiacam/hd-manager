@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import {readApplicationSource} from '../scripts/helpers/application-source.cjs';
 import { HdApiError } from '../src/api/client.js';
 import { createHdConnectStagingApi } from '../src/api/hdConnectStaging.js';
 
@@ -158,7 +159,10 @@ test('keeps email OTP flows while allowing email-or-phone password login', () =>
 });
 
 test('shows safe phone-login enrollment controls without persisting temporary passwords in legacy paths', () => {
-  const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  let detailSource = '';
+  try { detailSource = readFileSync(new URL('../src/features/legacy/CustomerDetailRender.jsx', import.meta.url), 'utf8'); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const source = readApplicationSource() + detailSource;
 
   assert.match(source, /Cho phép đăng nhập bằng số điện thoại/);
   assert.match(source, /Cho phép khách hàng đăng nhập/);

@@ -66,6 +66,7 @@ const CORE_SOURCE_MODULES = new Set([
   'src/services/startupTelemetry.js',
   'src/services/useNativeOfflineWorkspace.js',
   'src/utils/businessDate.js',
+  'src/utils/nativePluginRegistry.js', // Existing native proxies share one registration across shells.
   'src/utils/keyboardViewport.js',
   'src/utils/preloadableModule.js',
 ]);
@@ -394,6 +395,8 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [nativeStartupEntryPlugin, localStartupShell, earlyPlugin, react(), employeeHomeDomainPlugin('@hd/company-home-domain',['buildOrderDuplicateSignature']),
+      // Vite serves development workers through the main plugin container.
+      employeeHomeDomainPlugin('@hd/online-home-payroll',['buildDashboardPayrollCostRows','getDateKeyFromAnyValue','normalizeEmployeeReviewMonthKey']),
       // Reuse the existing audited pure-domain extractor. Finance needs the
       // original date/approval presentation, not CRM UI/plugin bindings.
       employeeHomeDomainPlugin('@hd/cashflow-presentation',['CASHFLOW_APPROVAL_STATUS','getDateKeyFromAnyValue','getEntityTimestamp','getPaymentDateSource','getPaymentMethodLabel','getPaymentSourceLabel','parseInputCurrency','isCashflowOfficial','isPayosPaymentRecord','requiresCashflowApproval'],'src/features/customers/productCRMShared.jsx'),

@@ -9,7 +9,7 @@ const stubs=['AccountGreeting','EmployeeHomeStatCard','EmployeeHomeQuickRow','St
 const ignored=new Set([...names,...stubs,'useMemo','useRef','useState','useEffect']);const roots=new Set();let program;
 traverse(tree,{Program(p){program=p},FunctionDeclaration(p){if(!names.includes(p.node.id?.name))return;
  p.traverse({ReferencedIdentifier(q){const b=q.scope.getBinding(q.node.name);if(b?.scope===program.scope&&!ignored.has(q.node.name))roots.add(q.node.name)}});p.skip()}});
-const domain=extractEmployeeHomeDomain(source,path.resolve('src'),[...roots]);
+const domain=extractEmployeeHomeDomain(source,path.resolve('development/hd-manager/application/src'),[...roots]);
 
 test('shared compact Home screen matches the pre-refactor DOM and actions across roles, dates, attendance, payroll, assets and delivery',{timeout:60000},async()=>{
  const contents=`import React,{useMemo,useRef,useState,useEffect}from'react';import{createRoot}from'react-dom/client';
@@ -46,7 +46,7 @@ test('shared compact Home screen matches the pre-refactor DOM and actions across
   root.render(<EmployeePersonalHomeScreen model={model} employee={{name:'Synthetic'}} date="2026-11-02" publication={publication} onModelCommit={v=>{commits++;connected=v===publication&&!!document.querySelector('#after .hd-staff-greeting-surface')}}/>);
   await new Promise(r=>setTimeout(r,80));const result={commits,connected};root.unmount();return result;
  };`;
- const bundle=await build({stdin:{contents,loader:'jsx',resolveDir:path.resolve('src')},bundle:true,write:false,jsx:'automatic',format:'iife',define:{'process.env.NODE_ENV':'"production"'}});
+ const bundle=await build({stdin:{contents,loader:'jsx',resolveDir:path.resolve('development/hd-manager/application/src')},bundle:true,write:false,jsx:'automatic',format:'iife',define:{'process.env.NODE_ENV':'"production"'}});
  const browser=await chromium.launch(chromiumLaunchOptions());try{
   const page=await browser.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));await page.route('**/*',route=>route.abort());
   await page.setContent('<div id="before"></div><div id="after"></div>');await page.addScriptTag({content:bundle.outputFiles[0].text});

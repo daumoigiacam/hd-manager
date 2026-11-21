@@ -5,6 +5,7 @@ import { getPreviousPayrollMonthKey } from "../../utils/payrollDebtCarryover.js"
 import { applyEmployeePayrollPolicyForMonth } from "../../utils/payrollPolicyHistory.js";
 import { getReadOnlyModuleProjectionEntry, getLocalProjectionClockScope, EMPTY_MODULE_PROJECTION_SOURCE } from "../../services/moduleProjectionCaches.js";
 import { useCooperativeProjection } from "../../hooks/useCooperativeProjection.js";
+import {useRetainedReadProjection} from '../../hooks/useRetainedReadProjection.js';
 import { useCallback } from "react";
 import CommissionCalculationDetails from '../employees/CommissionCalculationDetails.jsx';
 import { projectEvaluationSummaryToPayroll } from "../../utils/payrollEvaluationBonus.js";
@@ -84,6 +85,10 @@ export function createSalaryView(runtime) {
   const [financialDateInput, setFinancialDateInput] = useState(getTodayString());
   const [editingFinancialRecord, setEditingFinancialRecord] = useState(null);
   const [financialModalError, setFinancialModalError] = useState('');
+  const [isSubmittingFinancial, setIsSubmittingFinancial] = useState(false);
+  const financialSubmitRef = useRef(false);
+  const financialIntentRef = useRef(null);
+  const financialModalOwnerRef = useRef('');
   const [advanceRequestAmount, setAdvanceRequestAmount] = useState('');
   const [advanceRequestReason, setAdvanceRequestReason] = useState('');
   const [advanceRequestSalaryMonth, setAdvanceRequestSalaryMonth] = useState(getTodayString().substring(0, 7));
@@ -143,6 +148,10 @@ export function createSalaryView(runtime) {
     setPayrollScreen('detail');
   }, [reportPayrollTarget, canViewCompanyPayroll, currentEmployee?.id, employees, setPayrollScreen]);
   useAppScreenBack(() => {
+    if (showModal) {
+      if (!financialSubmitRef.current) setShowModal(false);
+      return true;
+    }
     if (showPayrollLockConfirm) {
       setShowPayrollLockConfirm(false);
       return true;
@@ -336,12 +345,46 @@ export function createSalaryView(runtime) {
       periodKey:currentMonth,clockKey:getLocalProjectionClockScope(getTodayString())}):undefined;
   const payrollViewProjection=useCooperativeProjection(preparePayrollView,payrollProjectionEntry);
   const payrollViewReady=isPayrollLocked || (!payrollViewProjection.pending && !payrollViewProjection.error);
+  const payrollPresentationIdentity=JSON.stringify([
+    payrollCompanyId,currentUser?.uid||currentUser?.id||currentUser?.employeeId||'',currentUser?.identityId||'',currentEmployeeId,
+    currentUser?.role||'',currentEmployee?.role||'',currentEmployee?.position||'',currentMonth,
+    canViewCompanyPayroll,canViewAllPayroll,canAddSalaryAdjustments,canEditSalaryAdjustments,canDeleteSalaryAdjustments,
+    canEditOvertimePerformanceRecords,canManageEmployeePurchases,canEditEmployeePurchaseRecords,canDeleteEmployeePurchaseRecords,
+    canViewSalaryAdvance,canCreateSalaryAdvanceRequest,canCreateSalaryAdvanceForOthers,canViewSalaryAdvanceRequests,
+    canApproveSalaryAdvance,canRejectSalaryAdvance,canDeleteSalaryAdvance,canConfigureSalaryAdvanceLimit,
+    currentCompany?.rolePermissions||null,currentCompany?.rolePermissionActions||null,
+    currentCompany?.employeeRolePermissions||null,currentCompany?.employeeRolePermissionActions||null,
+    isPayrollLocked,lockedPayrollPeriod?.id||'',lockedPayrollPeriod?.status||'',lockedPayrollPeriod?.updatedAt||'',
+    isEmployeeReviewEnabled(currentCompany),
+  ]);
+  const payrollPresentation=useRetainedReadProjection(payrollViewProjection,payrollPresentationIdentity,{enabled:!isPayrollLocked});
+  const payrollPresentationAvailable=isPayrollLocked || payrollPresentation.available;
+  const financialScopeRef=useRef(payrollPresentationIdentity);
+  const previousFinancialScopeRef=useRef(payrollPresentationIdentity);
+  financialScopeRef.current=payrollPresentationIdentity;
+  useEffect(()=>{
+    if(previousFinancialScopeRef.current===payrollPresentationIdentity)return;
+    previousFinancialScopeRef.current=payrollPresentationIdentity;
+    setShowModal(false);
+    setSelectedEmp(null);
+    setEditingFinancialRecord(null);
+    setFinancialModalError('');
+    financialIntentRef.current=null;
+    financialModalOwnerRef.current='';
+    setExpandedEmp(null);
+    setExpandedAttendanceEmp(null);
+    setExpandedAdvanceEmp(null);
+    setEvaluationDetailEmployeeId('');
+  },[payrollPresentationIdentity]);
   const payrollView=payrollViewProjection.value?.detailsByEmployee ? payrollViewProjection.value : EMPTY_PAYROLL_VIEW;
   const payrollEvaluationResultsByEmployee=payrollView.evaluations;
   const buildPayrollSalaryDetails=useCallback(employeeId=>payrollView.detailsByEmployee.get(employeeId) || null,[payrollView]);
   const liveSalaryRows=payrollView.rows;
 
   const salaryRows = isPayrollLocked ? lockedSnapshotRows : liveSalaryRows;
+  // Retained rows are for rendering only. All calculations and write admission
+  // above/below continue to use the current payrollView and payrollViewReady.
+  const displaySalaryRows=isPayrollLocked ? lockedSnapshotRows : (payrollPresentation.value?.rows || EMPTY_PAYROLL_VIEW.rows);
 
   const aggregateData = useMemo(() => {
     const totals = salaryRows.reduce((acc, row) => {
@@ -690,6 +733,7 @@ export function createSalaryView(runtime) {
   }, [advanceRequestTargetEmployeeId, currentCompany, currentEmployeeId, employees, currentMonth, advanceRequests, buildPayrollSalaryDetails]);
 
   const openFinancialModal = (emp, type) => {
+    if (!payrollViewReady || financialSubmitRef.current) return;
     if (type === 'employee_purchase') {
       if (!canManageEmployeePurchases) return;
     } else if (type === 'performance') {
@@ -710,11 +754,13 @@ export function createSalaryView(runtime) {
     }
     setFinancialDateInput(getTodayString());
     setFinancialModalError('');
+    financialIntentRef.current=null;
+    financialModalOwnerRef.current=payrollPresentationIdentity;
     setShowModal(true);
   };
 
   const openEditFinancialModal = (emp, record) => {
-    if (!record) return;
+    if (!record || !payrollViewReady || financialSubmitRef.current) return;
     if (record.type === 'employee_purchase') {
       if (!canEditEmployeePurchaseRecords) return;
     } else if (!canEditSalaryAdjustments) {
@@ -727,11 +773,13 @@ export function createSalaryView(runtime) {
     setReasonInput(record.reason || '');
     setFinancialDateInput(record.date || getTodayString());
     setFinancialModalError('');
+    financialIntentRef.current=null;
+    financialModalOwnerRef.current=payrollPresentationIdentity;
     setShowModal(true);
   };
 
   const handleDeleteFinancialRecord = async (record) => {
-    if (!record?.id) return;
+    if (!record?.id || !payrollViewReady) return;
     const isAdvanceRecord = record.type === 'advance';
     const isEmployeePurchaseRecord = record.type === 'employee_purchase';
     if (isAdvanceRecord) {
@@ -784,37 +832,55 @@ export function createSalaryView(runtime) {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (financialSubmitRef.current) return;
+    if (financialScopeRef.current!==payrollPresentationIdentity || financialModalOwnerRef.current!==payrollPresentationIdentity) return;
     if (!payrollViewReady) { setFinancialModalError('Đang cập nhật bảng lương. Vui lòng chờ tính xong rồi lưu.');return; }
     if (!selectedEmp) return;
-
-    if (modalType === 'performance') {
-      if (!canEditOvertimePerformanceRecords) return;
-      await onUpdatePerformance(selectedEmp.id, overtimeInput, currentMonth);
-    } else {
-      const val = parseInputCurrency(amountInput);
-      if (!val || isNaN(val)) return;
-      if (modalType === 'employee_purchase') {
-        if (editingFinancialRecord?.id && !canEditEmployeePurchaseRecords) return;
-        if (!editingFinancialRecord?.id && !canManageEmployeePurchases) return;
-      } else {
-        if (editingFinancialRecord?.id && !canEditSalaryAdjustments) return;
-        if (!editingFinancialRecord?.id && !canAddSalaryAdjustments) return;
-      }
-      if (editingFinancialRecord?.id && onEditFinancial) {
-        await onEditFinancial(editingFinancialRecord.id, {
-          type: modalType,
-          amount: val,
-          reason: capitalizeFirst(reasonInput),
-          date: financialDateInput || getTodayString()
-        });
-      } else {
-        await onAddFinancial(selectedEmp.id, modalType, val, capitalizeFirst(reasonInput), financialDateInput || getTodayString());
-      }
-    }
-
-    setEditingFinancialRecord(null);
+    financialSubmitRef.current=true;
+    setIsSubmittingFinancial(true);
     setFinancialModalError('');
-    setShowModal(false);
+    const submittedScope=payrollPresentationIdentity;
+    try {
+      let result;
+      if (modalType === 'performance') {
+        if (!canEditOvertimePerformanceRecords || typeof onUpdatePerformance!=='function') throw new Error('Tài khoản chưa có quyền cập nhật giờ tăng ca.');
+        const hours=Number(String(overtimeInput??'').trim().replace(',','.'));
+        if (!String(overtimeInput??'').trim() || !Number.isFinite(hours) || hours<0) throw new Error('Số giờ tăng ca phải là số hữu hạn từ 0 trở lên.');
+        result=await onUpdatePerformance(selectedEmp.id,hours,currentMonth);
+      } else {
+        const raw=String(amountInput??'').trim();
+        const val=typeof amountInput==='number' ? amountInput : parseInputCurrency(amountInput);
+        if (!raw || (typeof amountInput!=='number' && !/^[\d\s.,]+$/.test(raw)) || !Number.isFinite(val) || val<=0) throw new Error('Số tiền phải là số hữu hạn lớn hơn 0.');
+        const editing=Boolean(editingFinancialRecord?.id);
+        const allowed=modalType==='employee_purchase'
+          ? (editing ? canEditEmployeePurchaseRecords : canManageEmployeePurchases)
+          : (editing ? canEditSalaryAdjustments : canAddSalaryAdjustments);
+        if (!allowed) throw new Error('Tài khoản chưa có quyền cập nhật khoản lương này.');
+        const reason=capitalizeFirst(reasonInput),date=financialDateInput||getTodayString();
+        if (editing) {
+          if (typeof onEditFinancial!=='function') throw new Error('Không thể sửa khoản lương này.');
+          result=await onEditFinancial(editingFinancialRecord.id,{type:modalType,amount:val,reason,date});
+        } else {
+          if (typeof onAddFinancial!=='function') throw new Error('Không thể thêm khoản lương này.');
+          const fingerprint=JSON.stringify([submittedScope,selectedEmp.id,modalType,val,reason,date]);
+          if (financialIntentRef.current?.fingerprint!==fingerprint) financialIntentRef.current={fingerprint,
+            id:globalThis.crypto?.randomUUID?.()||`financial_${Date.now()}_${Math.random().toString(36).slice(2)}`};
+          result=await onAddFinancial(selectedEmp.id,modalType,val,reason,date,{clientMutationId:financialIntentRef.current.id});
+          if (result?.queued===true) throw new Error('Máy chủ chưa xác nhận khoản lương. Bản nhập vẫn được giữ để thử lại.');
+        }
+      }
+      if (result?.success===false) throw new Error(result.message||'Không thể lưu khoản lương.');
+      if (financialScopeRef.current!==submittedScope) return;
+      financialIntentRef.current=null;
+      setEditingFinancialRecord(null);
+      setFinancialModalError('');
+      setShowModal(false);
+    } catch (error) {
+      if (financialScopeRef.current===submittedScope) setFinancialModalError(getFriendlyFirebaseErrorMessage(error,'Không thể lưu. Bản nhập vẫn được giữ để thử lại.'));
+    } finally {
+      financialSubmitRef.current=false;
+      setIsSubmittingFinancial(false);
+    }
   };
 
   const getFinancialModalTitle = () => {
@@ -1047,7 +1113,7 @@ export function createSalaryView(runtime) {
 
   return (
     <div className="payroll-workspace space-y-4 animate-in fade-in pb-16" aria-busy={!payrollViewReady}>
-      {!payrollViewReady ? payrollPendingNotice : <>
+      {!payrollPresentationAvailable ? payrollPendingNotice : <>
       {payrollScreen === 'overview' && showPayrollConfigNotice && (
         <div className="rounded-2xl border border-amber-100 bg-amber-50/80 p-4 text-amber-900 shadow-sm">
           <div className="flex items-start justify-between gap-3">
@@ -1149,11 +1215,12 @@ export function createSalaryView(runtime) {
       )}
 
       <PayrollWorkspace
+        key={payrollPresentationIdentity}
         screen={payrollScreen}
         searchText={payrollSearchKeyword}
         filterOpen={payrollFilterOpen}
         onScreenChange={setPayrollScreen}
-        rows={salaryRows}
+        rows={displaySalaryRows}
         monthKey={currentMonth}
         onMonthChange={setSalaryMonth}
         isLocked={isPayrollLocked}
@@ -1279,7 +1346,7 @@ export function createSalaryView(runtime) {
       <details className="rounded-xl border border-slate-100 bg-white p-3 shadow-sm">
         <summary className="cursor-pointer text-sm font-semibold text-blue-700">Bảng tính chi tiết và tác vụ</summary>
       <div className="mt-3 space-y-3">
-        {salaryRows.filter(row => row.emp?.id === selectedPayrollEmployeeId).map((row) => {
+        {displaySalaryRows.filter(row => row.emp?.id === selectedPayrollEmployeeId).map((row) => {
           const {
             emp,
             details,
@@ -1819,16 +1886,18 @@ export function createSalaryView(runtime) {
                     </div>
                   </div>
 
-                  <div className="rounded-2xl border border-blue-100 bg-blue-50 p-3 text-[11px] leading-relaxed text-blue-800">
+                  {!(canAddSalaryAdjustmentsByRole || canEditSalaryAdjustmentsByRole || canDeleteSalaryAdjustmentsByRole
+                    || canEditOvertimePerformanceRecordsByRole || canManageEmployeePurchasesByRole
+                    || canEditEmployeePurchaseRecordsByRole || canDeleteEmployeePurchaseRecordsByRole) && <div className="rounded-2xl border border-blue-100 bg-blue-50 p-3 text-[11px] leading-relaxed text-blue-800">
                     Bảng lương chỉ dùng để xem lương cá nhân. Nếu cần điều chỉnh, hãy báo kế toán nhân sự xử lý theo quy trình.
-                  </div>
+                  </div>}
                 </div>
               )}
             </div>
           );
         })}
 
-        {salaryRows.length === 0 && (!isPayrollLocked || lockedSnapshotLoadState === 'loaded') && (
+        {displaySalaryRows.length === 0 && (!isPayrollLocked || lockedSnapshotLoadState === 'loaded') && (
           <div className="bg-white rounded-2xl border border-gray-100 p-6 text-center text-sm text-gray-400">
             {canViewCompanyPayroll ? 'Chưa có nhân viên nào để tính lương trong kỳ hiện tại.' : 'Chưa có dữ liệu lương của tài khoản này trong kỳ hiện tại.'}
           </div>
@@ -2034,27 +2103,27 @@ export function createSalaryView(runtime) {
         </div>
       )}
 
-      {showModal && (
+      {showModal && financialModalOwnerRef.current===payrollPresentationIdentity && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl p-5 w-full max-w-sm">
-            <div className="flex justify-between items-center mb-4"><h3 className="font-bold text-lg text-gray-800">{getFinancialModalTitle()}</h3><button onClick={() => setShowModal(false)} className="text-gray-400"><X /></button></div>
-            <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="flex justify-between items-center mb-4"><h3 className="font-bold text-lg text-gray-800">{getFinancialModalTitle()}</h3><button aria-label="Đóng khoản lương" disabled={isSubmittingFinancial} onClick={() => {if(!financialSubmitRef.current)setShowModal(false);}} className="text-gray-400"><X /></button></div>
+            <form role="dialog" aria-label={getFinancialModalTitle()} aria-busy={isSubmittingFinancial} onSubmit={handleSubmit} className="space-y-4">
               {modalType === 'performance' ? (
                 <>
-                  <div><label className="block text-xs font-semibold text-gray-700 mb-1">Số giờ tăng ca đã duyệt</label><input type="number" min="0" step="0.5" value={overtimeInput} onChange={(e) => setOvertimeInput(e.target.value)} className="w-full border border-gray-300 rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-blue-500" /></div>
+                  <div><label className="block text-xs font-semibold text-gray-700 mb-1">Số giờ tăng ca đã duyệt</label><input aria-label="Số giờ tăng ca đã duyệt" disabled={isSubmittingFinancial} type="number" min="0" step="0.5" value={overtimeInput} onChange={(e) => setOvertimeInput(e.target.value)} className="w-full border border-gray-300 rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-blue-500" /></div>
                   <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-[11px] leading-relaxed text-amber-900">
                     Không tự suy ra từ việc quên chấm ra hoặc ra ca muộn. Chỉ nhập số giờ đã xác minh sau khi đối chiếu chấm công thực tế.
                   </div>
                 </>
               ) : (
                 <>
-                  <div><label className="block text-xs font-semibold text-gray-700 mb-1">Số tiền (VNĐ)</label><input type="tel" required value={formatInputCurrency(amountInput)} onChange={(e) => setAmountInput(parseInputCurrency(e.target.value))} className="w-full border border-gray-300 rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-emerald-500" /></div>
-                  <div><label className="block text-xs font-semibold text-gray-700 mb-1">Lý do</label><input type="text" required value={reasonInput} onChange={(e) => setReasonInput(capitalizeFirst(e.target.value))} placeholder={modalType === 'employee_purchase' ? 'Ví dụ: Mua hàng công ty' : 'Nhập lý do'} className="w-full border border-gray-300 rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-emerald-500" /></div>
-                  <div><label className="block text-xs font-semibold text-gray-700 mb-1">Ngày áp dụng</label><input type="date" value={financialDateInput} onChange={(e) => setFinancialDateInput(e.target.value)} className="w-full border border-gray-300 rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-emerald-500" /></div>
-                  {financialModalError && <p className="rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-xs font-semibold text-red-600">{financialModalError}</p>}
+                  <div><label className="block text-xs font-semibold text-gray-700 mb-1">Số tiền (VNĐ)</label><input aria-label="Số tiền (VNĐ)" disabled={isSubmittingFinancial} type="tel" required value={String(amountInput).trim().startsWith('-') ? amountInput : formatInputCurrency(amountInput)} onChange={(e) => setAmountInput(e.target.value)} className="w-full border border-gray-300 rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                  <div><label className="block text-xs font-semibold text-gray-700 mb-1">Lý do</label><input aria-label="Lý do" disabled={isSubmittingFinancial} type="text" required value={reasonInput} onChange={(e) => setReasonInput(capitalizeFirst(e.target.value))} placeholder={modalType === 'employee_purchase' ? 'Ví dụ: Mua hàng công ty' : 'Nhập lý do'} className="w-full border border-gray-300 rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-emerald-500" /></div>
+                  <div><label className="block text-xs font-semibold text-gray-700 mb-1">Ngày áp dụng</label><input aria-label="Ngày áp dụng" disabled={isSubmittingFinancial} type="date" value={financialDateInput} onChange={(e) => setFinancialDateInput(e.target.value)} className="w-full border border-gray-300 rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-emerald-500" /></div>
                 </>
               )}
-              <button type="submit" disabled={!payrollViewReady} className="w-full bg-emerald-500 hover:bg-emerald-600 transition-colors text-white py-3 rounded-lg font-semibold mt-4 disabled:opacity-50">{editingFinancialRecord ? 'Lưu thay đổi' : 'Xác nhận'}</button>
+              {financialModalError && <p role="alert" className="rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-xs font-semibold text-red-600">{financialModalError}</p>}
+              <button type="submit" disabled={!payrollViewReady || isSubmittingFinancial} className="w-full bg-emerald-500 hover:bg-emerald-600 transition-colors text-white py-3 rounded-lg font-semibold mt-4 disabled:opacity-50">{isSubmittingFinancial ? 'Đang lưu...' : editingFinancialRecord ? 'Lưu thay đổi' : 'Xác nhận'}</button>
             </form>
           </div>
         </div>

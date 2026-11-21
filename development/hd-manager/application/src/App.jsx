@@ -1,12 +1,19 @@
 import {buildCommissionCalculation,assertCommissionCalculationReady} from './utils/commissionRevenue.js';
+import {orderCreationIntent,assertOrderCreationReplay} from './utils/orderCreationCommand.js';
 import {restoreHomeSessionReport,saveHomeSessionReport} from './services/homeSessionReport.js';
 import {isEmployeeReviewEnabled,employeeReviewFeaturePatch} from './utils/companyEmployeeReviews.js';
+import {assertAssetMutationAccess,prepareAssetMutation,prepareAssetCostMutation} from './utils/assetMutationIntegrity.js';
+import {prepareMessageMutation,commitMessageMutation,completeMessageMutation,messageScopeError} from './utils/messageMutationIntegrity.js';
+import {planMessageReadQueries,canUseMessageReadWorker} from './services/messageReadAccessPlan.js';
+import {updateAssetCostDraft} from './utils/assetCostDraft.js';
+import {useSettingsSave} from './hooks/useSettingsSave.js';
 import {salesCommissionBreakdown} from './utils/salesCommissionTiers.js';
 import RestoredLocalWorkspace from './layout/RestoredLocalWorkspace.jsx';
 import RetainedFullWorkspace from './layout/RetainedFullWorkspace.jsx';
 import {getProductWorkspaceReadCollections} from './services/productWorkspaceReadPlan.js';
 import {getOrderRequestWorkspaceReadCollections} from './services/orderRequestWorkspaceReadPlan.js';
 import {getOrderWorkspaceReadCollections,runReadyOrderMutation,runReadyFinancialMutation} from './services/orderWorkspaceReadPlan.js';
+import {useOrderCreationAdmission} from './hooks/useOrderCreationAdmission.js';
 import {getBankWorkspaceReadCollections,BANK_PRIMARY_COLLECTIONS} from './services/bankWorkspaceReadPlan.js';
 import {getQuoteWorkspaceReadCollections,QUOTE_PRIMARY_COLLECTIONS,QUOTE_SHARE_COLLECTIONS,admitQuoteShare} from './services/quoteWorkspaceReadPlan.js';
 import {getMessageWorkspaceReadCollections,getMessageAttachmentReadCollections,MESSAGE_PRIMARY_COLLECTIONS} from './services/messageWorkspaceReadPlan.js';
@@ -263,6 +270,7 @@ import { canSaveLocallyFirst, coalescePendingWrite } from './utils/localFirstSav
 import { ATOMIC_SAVE_COLLECTION, validateAtomicWrites, mergeAtomicWrites, expandPendingWrites, commitAtomicWrites } from './utils/atomicSave.js';
 import { commitIdempotentWarehouseDispatchCreate } from './features/warehouse/warehouseDispatchCreateRepository.js';
 import { createDeliverySavePlan } from './utils/deliverySavePlan.js';
+import { assertDeliveryCashflowWrite } from './utils/deliveryCashflow.js';
 import { createRecordedShareCanvas } from './utils/shareCanvas.js';
 import { createPreloadableModule } from './utils/preloadableModule.js';
 import { createDraftRevision } from './utils/draftRevision.js';
@@ -432,6 +440,8 @@ import {
 import { attendanceRoster, attendanceDepartment } from './utils/attendanceRoster.js';
 import { useAppScreenBack } from './hooks/useAppScreenBack.js';
 import { canManageCompanyWifi, isUsableAttendanceBssid, matchesAttendanceWifi } from './utils/attendanceWifi.js';
+import {assertSettingsScope, prepareSettingsMutation, commitSettingsMutation} from './utils/settingsMutationIntegrity.js';
+import {assertSettingsDataPermission, buildSettingsRestoreOperations, prepareSettingsDataCommand, commitSettingsDataCommand, loadSettingsResetCommand} from './utils/settingsDataIntegrity.js';
 import { unlockWarmSession } from './services/warmSessionUnlock.js';
 import { rememberedNativeUid, rememberNativeSession, forgetNativeSession } from "./services/nativeSessionPersistence.js";
 import { createAutoWifiAttendanceController } from './utils/autoWifiAttendance.js';
@@ -508,7 +518,7 @@ import {
 
 import { getFirebaseEmulatorConfig } from './config/firebase-endpoints.js';
 import { setPersistence, signInWithCustomToken, signOut, onAuthStateChanged } from "firebase/auth";
-import { collection, doc, getDoc as firebaseGetDoc, getDocFromServer as firebaseGetDocFromServer, getDocs as firebaseGetDocs, setDoc as firebaseSetDoc, deleteDoc as firebaseDeleteDoc, runTransaction as firebaseRunTransaction, serverTimestamp, increment, onSnapshot as firebaseOnSnapshot, query as firebaseQuery, queryEqual as firebaseQueryEqual, where as firebaseWhere, orderBy as firebaseOrderBy, limit as firebaseLimit } from "firebase/firestore";
+import { collection, doc, getDoc as firebaseGetDoc, getDocFromServer as firebaseGetDocFromServer, getDocs as firebaseGetDocs, getDocsFromServer as firebaseGetDocsFromServer, setDoc as firebaseSetDoc, deleteDoc as firebaseDeleteDoc, runTransaction as firebaseRunTransaction, serverTimestamp, increment, onSnapshot as firebaseOnSnapshot, query as firebaseQuery, queryEqual as firebaseQueryEqual, where as firebaseWhere, orderBy as firebaseOrderBy, limit as firebaseLimit } from "firebase/firestore";
 import {
   getRealtimeDataChangeCount,
   isRealtimeWriteConfirmed,
@@ -559,7 +569,9 @@ import { ListPagination } from './design-system/ListPagination.jsx';
 import { planForegroundRealtimeActivation } from './services/realtimeListenerPlanner.js';
 import {createActiveSourceRetention} from './services/activeSourceRetention.js';
 import {createModuleReadinessTrace,observeModuleReadiness} from './services/moduleReadinessTrace.js';
-import { sortBankTransactionsByTransactionDate } from './utils/bankTransactionView.js';
+import { isBankTransactionIgnored, sortBankTransactionsByTransactionDate } from './utils/bankTransactionView.js';
+import { assertPricingLossStandards } from './utils/pricingLossValidation.js';
+import { buildCustomerBatchPricePatch } from './utils/customerBatchPricePatch.js';
 import {
   hasSearchQuery as hasTokenSearchQuery,
   getProductSearchFields,
@@ -1942,6 +1954,7 @@ const ROLE_PERMISSION_MODULES = [
       { id: 'share_customer_quote', label: 'Chia sẻ báo giá cho khách' },
       { id: 'customer_debt_limit', label: 'Cấu hình hạn mức công nợ khách' },
       { id: 'view_customer_debt_limit_alerts', label: 'Xem nhãn phải thu tiền ngay' },
+      { id: 'view_customer_care_reminders', label: 'Xem nhắc chăm sóc khách hàng' },
       { id: 'send_customer_debt_reminder', label: 'Nhắc nợ khách hàng' },
       { id: 'driver_debt_permission', label: 'Phân quyền tài xế' },
       { id: 'customer_loyalty_points', label: 'Tích điểm khách hàng' },
@@ -2423,6 +2436,9 @@ if (DEFAULT_ROLE_PERMISSION_ACTIONS.driver?.asset_management) {
   };
 }
 ['accounting', 'sales', 'driver', 'production', 'warehouse'].forEach((departmentKey) => {
+  // This existing notification gate had no selectable action. Register it
+  // without granting it implicitly to staff who previously lacked access.
+  DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey].customers.view_customer_care_reminders = false;
   if (!DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey]?.warehouse_dispatch) return;
   DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey].warehouse_dispatch = {
     ...DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey].warehouse_dispatch,
@@ -2793,9 +2809,12 @@ const formatPercentValue = (value) => viPercentFormatter.format(normalizeSalaryA
 const parseSalaryAdvancePercentSettingInput = (value) => {
   const text = `${value ?? ''}`.trim();
   if (!text) return { isUnlimited: true, percent: null, invalid: false };
-  const parsed = parseFloat(text.replace(',', '.').replace(/[^\d.]/g, ''));
-  if (!Number.isFinite(parsed)) return { isUnlimited: false, percent: null, invalid: true };
-  return { isUnlimited: false, percent: Math.max(0, Math.min(100, parsed)), invalid: false };
+  const normalized = text.replace(',', '.');
+  const parsed = Number(normalized);
+  if (!/^\d+(?:\.\d+)?$/.test(normalized) || !Number.isFinite(parsed) || parsed < 0 || parsed > 100) {
+    return { isUnlimited: false, percent: null, invalid: true };
+  }
+  return { isUnlimited: false, percent: parsed, invalid: false };
 };
 
 const stringifySalaryAdvancePercentInput = (value) => (
@@ -10587,9 +10606,13 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
     lastAt: '',
     error: ''
   });
-  const readPermissionKey=useMemo(()=>canonicalQueryValue([getCompanyRolePermissions(currentCompany),getCompanyRolePermissionActions(currentCompany),currentCompany?.employeeRolePermissions||{},currentCompany?.employeeRolePermissionActions||{}]),[currentCompany?.rolePermissions,currentCompany?.rolePermissionActions,currentCompany?.employeeRolePermissions,currentCompany?.employeeRolePermissionActions]);
+  // Owner access is immutable. Editing another role must not destroy the
+  // owner's open editor or its pending command receipt. Staff revisions still
+  // invalidate every private read before any child can publish stale access.
+  const readPermissionKey=useMemo(()=>isOwnerAccountUser(null,currentUser) ? 'owner-all-permissions' : canonicalQueryValue([getCompanyRolePermissions(currentCompany),getCompanyRolePermissionActions(currentCompany),currentCompany?.employeeRolePermissions||{},currentCompany?.employeeRolePermissionActions||{}]),[currentUser,currentCompany?.rolePermissions,currentCompany?.rolePermissionActions,currentCompany?.employeeRolePermissions,currentCompany?.employeeRolePermissionActions]);
   const readOwnerKey=JSON.stringify([dataSessionId,currentUser?.companyId||'',currentUser?.id||'',currentUser?.accountType||'',currentUser?.role||'',readPermissionKey]);
   const [readOwner,setReadOwner]=useState(readOwnerKey);
+  const messageReadSubjectRef=useRef(null);
   const readOwnerRef=useRef(readOwnerKey);readOwnerRef.current=readOwnerKey;
   const readAccessRef=useRef(null);
   if(readAccessRef.current?.ownerKey!==readOwnerKey){
@@ -12318,6 +12341,16 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
       ])
     );
 
+    const getMessageReadPlan = () => {
+      const subject=messageReadSubjectRef.current;
+      if(!subject||subject.ownerKey!==readOwnerKey||subject.currentUser?.companyId!==tenantCompanyId)return [];
+      const currentRole=`${subject.currentUser?.role||''}`.trim().toLowerCase();
+      const currentPosition=`${subject.currentUser?.position||''}`.trim().toLowerCase();
+      const isManager=isOwnerRoleValue(currentRole)||isOwnerRoleValue(currentPosition)
+        ||['super_admin','admin','manager','company_owner','business_owner','accounting','accountant'].includes(currentRole);
+      return planMessageReadQueries({...subject,isManager},hasCompanyRolePermissionAction);
+    };
+
     const getTenantCollectionSources = (colName) => {
       if (colName === 'companies') {
         return [doc(db, 'artifacts', appId, 'public', 'data', 'companies', tenantCompanyId)];
@@ -12327,39 +12360,9 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
         if (colName !== 'messages') {
           return [firebaseQuery(collectionRef, firebaseWhere('companyId', '==', tenantCompanyId))];
         }
-        const currentEmployeeId = `${currentUser?.employeeId || currentUser?.id || ''}`.trim();
-        const currentRole = `${currentUser?.role || ''}`.trim().toLowerCase();
-        const currentPosition = `${currentUser?.position || ''}`.trim().toLowerCase();
-        const isMessageManager = isOwnerRoleValue(currentRole)
-          || isOwnerRoleValue(currentPosition)
-          || ['super_admin', 'admin', 'manager', 'company_owner', 'business_owner', 'accounting', 'accountant'].includes(currentRole);
-        if (isMessageManager) {
-          return [firebaseQuery(
-            collectionRef,
-            firebaseWhere('companyId', '==', tenantCompanyId),
-            firebaseOrderBy('createdAt', 'desc'),
-            firebaseLimit(200)
-          )];
-        }
-        if (!currentEmployeeId) return [];
-        return [
-          firebaseQuery(
-            collectionRef,
-            firebaseWhere('companyId', '==', tenantCompanyId),
-            firebaseWhere('conversationType', '==', 'customer_support'),
-            firebaseWhere('assignedEmployeeId', '==', currentEmployeeId),
-            firebaseWhere('assignmentState', '==', 'assigned'),
-            firebaseOrderBy('createdAt', 'desc'),
-            firebaseLimit(200)
-          ),
-          firebaseQuery(
-            collectionRef,
-            firebaseWhere('companyId', '==', tenantCompanyId),
-            firebaseWhere('conversationType', 'in', ['internal', 'internal_group', 'support']),
-            firebaseOrderBy('createdAt', 'desc'),
-            firebaseLimit(200)
-          )
-        ];
+        return getMessageReadPlan().map(plan=>firebaseQuery(collectionRef,
+          firebaseWhere('companyId','==',tenantCompanyId),...plan.filters.map(filter=>firebaseWhere(...filter)),
+          firebaseOrderBy('createdAt','desc'),firebaseLimit(200)));
       }
       if (colName === 'customers' && sessionCustomerId) {
         return [doc(db, 'artifacts', appId, 'public', 'data', 'customers', sessionCustomerId)];
@@ -13226,6 +13229,13 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
       try {
         const collectionRefs = getTenantCollectionSources(colName);
         if (collectionRefs.length === 0) {
+          if(colName==='messages'){
+            // A policy-empty, nonfinancial view must neither retain old content
+            // nor wait for a query the current actor is forbidden to issue.
+            setFn([]);
+            lastStableCollectionDataRef.current.delete(colName);
+            markCollectionServerConfirmed(colName);
+          }
           markCollectionLoaded(colName);
           return () => {};
         }
@@ -13241,12 +13251,12 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
           // to boot in a Worker. Historical/report reads keep their Worker.
           && !(['customers','products'].includes(colName) && activeTabForSyncRef.current === 'customers')
           && canUseFirestoreReadWorker(colName, collectionRefs.length, customerSession)
-          && (colName !== 'messages' || firebaseQueryEqual(collectionRefs[0], firebaseQuery(
+          && (colName !== 'messages' || (canUseMessageReadWorker(getMessageReadPlan()) && firebaseQueryEqual(collectionRefs[0], firebaseQuery(
             collection(db, 'artifacts', appId, 'public', 'data', 'messages'),
             firebaseWhere('companyId', '==', tenantCompanyId),
             firebaseOrderBy('createdAt', 'desc'),
             firebaseLimit(200)
-          ))));
+          )))));
         const sourceItemsByIndex = new Map();
         const committedSourceItemsByIndex = new Map();
         const serverConfirmedSourceIndexes = new Set();
@@ -13898,6 +13908,8 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
       || (userPhone && isSameLoginPhone(emp.phone || emp.phoneNumber, userPhone))
     )) || (startupWorkspaceReady?startupWorkspace.employee:currentUser);
   }, [currentUser, employees,startupWorkspaceReady,startupWorkspace]);
+  messageReadSubjectRef.current={ownerKey:readOwnerKey,company:currentCompany,currentUser,
+    employee:rawEmployees.find(row=>row.id===(currentUser?.employeeId||currentUser?.id)&&row.companyId===currentUser?.companyId)||appCurrentEmployee};
   useEffect(() => {
     if (!currentUser || (currentUser.role !== 'customer' && !currentUser.isCustomerAccount)) return;
     const sessionPhone = `${currentUser.phone || currentUser.phoneNumber || ''}`.trim();
@@ -16086,511 +16098,142 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', collectionName, itemId), { isArchived: !currentStatus }, { merge: true });
   };
 
-  const handleUpdateCompanySettings = async (settingsData) => {
-    if (!firebaseUser || !myCompanyId) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
-    if (Object.prototype.hasOwnProperty.call(settingsData || {}, 'employeeReviewsEnabled')) {
-      if (!hasCompanyRolePermissionAction({company:currentCompany,employee:appCurrentEmployee,currentUser},'settings','manage_employee_review_settings')) return {success:false,message:'Bạn chưa được cấp quyền bật/tắt Đánh giá nhân sự.'};
-      if (Object.keys(settingsData).some(key => key !== 'employeeReviewsEnabled')) return {success:false,message:'Vui lòng lưu riêng cấu hình Đánh giá.'};
-      const actorId = appCurrentEmployee?.id || currentUser?.employeeId || currentUser?.id || '';
-      const patch = employeeReviewFeaturePatch(settingsData.employeeReviewsEnabled, actorId, serverTimestamp());
-      const companyRef = doc(db, 'artifacts', appId, 'public', 'data', 'companies', myCompanyId);
-      // A company feature switch needs a server-confirmed transaction. It must
-      // not report success or change another account's UI while offline.
-      await withTimeout(runTransaction(db, async transaction => {
-        const companySnapshot = await transaction.get(companyRef);
-        if (!companySnapshot.exists()) throw new Error('Không tìm thấy công ty.');
-        transaction.update(companyRef, patch);
-      }), 12000, 'Máy chủ chưa xác nhận cấu hình Đánh giá. Vui lòng kiểm tra kết nối mạng.');
-      const confirmed = {employeeReviewsEnabled:patch.employeeReviewsEnabled,employeeReviewsUpdatedByEmpId:actorId};
-      setCurrentCompany(previous => previous?.id === myCompanyId ? {...previous,...confirmed} : previous);
-      setRawCompanies(previous => previous.map(company => company.id === myCompanyId ? {...company,...confirmed} : company));
-      return {success:true};
-    }
-    const wifiKeys = ['attendanceWifiEnabled', 'attendanceWifiSsid', 'attendanceWifiBssid', 'attendanceWifiUpdatedAt'];
-    if (settingsData?.attendanceWifiSsid !== undefined && Object.keys(settingsData).every(key => wifiKeys.includes(key))) {
-      if (!canManageCompanyWifi(employee)) return { success: false, message: 'Chỉ Chủ/Admin được đặt WiFi công ty.' };
-      const wifiPatch = {
-        attendanceWifiEnabled: settingsData.attendanceWifiEnabled !== false,
-        attendanceWifiSsid: normalizeWifiName(settingsData.attendanceWifiSsid),
-        attendanceWifiBssid: normalizeWifiName(settingsData.attendanceWifiBssid).toLowerCase(),
-        attendanceWifiUpdatedAt: new Date().toISOString()
-      };
-      if (!wifiPatch.attendanceWifiSsid || !isUsableAttendanceBssid(wifiPatch.attendanceWifiBssid)) return { success: false, message: 'SSID hoặc BSSID chưa hợp lệ.' };
-      await withTimeout(setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'companies', myCompanyId), wifiPatch, { merge: true }), 12000, 'Chưa nhận xác nhận lưu WiFi công ty.');
-      setCurrentCompany(previous => ({ ...previous, ...wifiPatch }));
-      setRawCompanies(previous => previous.map(company => company.id === myCompanyId ? { ...company, ...wifiPatch } : company));
-      return { success: true };
-    }
-    const currentTransferProfile = getInvoiceTransferProfile(currentCompany);
-    const currentLoyaltySettings = getCustomerLoyaltySettings(currentCompany);
-    const currentCustomerCareSettings = getCustomerCareSettings(currentCompany);
-    const currentAttendanceWifiSettings = getAttendanceWifiSettings(currentCompany);
-    const currentWarehouseAutoCancelDays = getWarehouseOrderAutoCancelDays(currentCompany);
-    const normalizedLoyaltyEarnAmount = parseInt(settingsData.loyaltyEarnAmountPerPoint ?? currentLoyaltySettings.earnAmountPerPoint, 10);
-    const normalizedLoyaltyRedeemValue = parseInt(settingsData.loyaltyRedeemValuePerPoint ?? currentLoyaltySettings.redeemValuePerPoint, 10);
-    const normalizedCustomerCareInactiveDays = parseInt(settingsData.customerCareInactiveDays ?? currentCustomerCareSettings.inactiveDays, 10);
-    const normalizedWarehouseAutoCancelDays = Math.max(0, parseInt(settingsData.warehouseOrderAutoCancelDays ?? currentWarehouseAutoCancelDays, 10) || 0);
-    const currentSalaryAdvancePercent = Object.prototype.hasOwnProperty.call(currentCompany || {}, 'salaryAdvancePercent')
-      ? currentCompany?.salaryAdvancePercent
-      : currentCompany?.payrollAdvancePercent;
-    const normalizedSalaryAdvancePercent = settingsData.salaryAdvancePercent !== undefined
-      ? normalizeSalaryAdvancePercentOrNull(settingsData.salaryAdvancePercent)
-      : normalizeSalaryAdvancePercentOrNull(currentSalaryAdvancePercent);
-    const normalizedSalaryAdvancePercentByDepartment = normalizeCompanySalaryAdvancePercentByDepartment(
-      {
-        ...(currentCompany?.salaryAdvancePercentByDepartment || {}),
-        ...(settingsData.salaryAdvancePercentByDepartment || {})
-      },
-      normalizedSalaryAdvancePercent ?? DEFAULT_SALARY_ADVANCE_PERCENT
-    );
-    const normalizedEmployeeReviewCriteriaLabels = normalizeEmployeeReviewCriteriaLabels(
-      settingsData.employeeReviewCriteriaLabels !== undefined
-        ? settingsData.employeeReviewCriteriaLabels
-        : currentCompany?.employeeReviewCriteriaLabels,
-      currentCompany
-    );
-    const nextLogoUrl = settingsData.logoUrl !== undefined
-      ? `${settingsData.logoUrl || ''}`.trim()
-      : getCompanyLogoUrl(currentCompany);
-    const normalizedBankAccountNumber = settingsData.bankAccountNumber !== undefined
-      ? normalizePaymentAccountNumber(settingsData.bankAccountNumber)
-      : normalizePaymentAccountNumber(currentTransferProfile.accountNumber || currentCompany?.bankAccountNumber || '');
-    const normalizedSepayVirtualAccountNumber = settingsData.sepayVirtualAccountNumber !== undefined
-      ? normalizePaymentAccountNumber(settingsData.sepayVirtualAccountNumber)
-      : normalizePaymentAccountNumber(
-        currentTransferProfile.sepayVirtualAccountNumber
-        || currentCompany?.sepayVirtualAccountNumber
-        || currentCompany?.sepayVaAccountNumber
-        || currentCompany?.sepayVaNumber
-        || currentCompany?.bankVirtualAccountNumber
-        || currentCompany?.virtualBankAccountNumber
-        || currentCompany?.vaAccountNumber
-        || currentCompany?.virtualAccountNumber
-        || ''
-      );
-    const normalizedSepayUseVirtualAccount = settingsData.sepayUseVirtualAccount !== undefined
-      ? Boolean(settingsData.sepayUseVirtualAccount && normalizedSepayVirtualAccountNumber)
-      : Boolean(currentTransferProfile.sepayUseVirtualAccount && normalizedSepayVirtualAccountNumber);
-    const normalizedSepayReceivingAccountNumber = normalizedSepayUseVirtualAccount
-      ? normalizedSepayVirtualAccountNumber
-      : normalizedBankAccountNumber;
-    const normalizedSettings = {
-      name: settingsData.name !== undefined ? `${settingsData.name || ''}`.trim() : (currentCompany?.name || ''),
-      displayName: settingsData.displayName !== undefined ? `${settingsData.displayName || ''}`.trim() : (currentCompany?.displayName || ''),
-      companyPhone: settingsData.companyPhone !== undefined ? `${settingsData.companyPhone || ''}`.trim() : (currentCompany?.companyPhone || currentCompany?.ownerPhone || ''),
-      companyAddress: settingsData.companyAddress !== undefined ? `${settingsData.companyAddress || ''}`.trim() : (currentCompany?.companyAddress || currentCompany?.address || ''),
-      logoUrl: nextLogoUrl,
-      logo: nextLogoUrl,
-      bankId: settingsData.bankId !== undefined ? `${settingsData.bankId || ''}`.trim().toUpperCase() : currentTransferProfile.bankId,
-      bankName: settingsData.bankName !== undefined ? normalizeLeadingLabel(settingsData.bankName || '') : currentTransferProfile.bankName,
-      bankAccountName: settingsData.bankAccountName !== undefined ? `${settingsData.bankAccountName || ''}`.trim().toUpperCase() : currentTransferProfile.accountName,
-      bankAccountNumber: normalizedBankAccountNumber,
-      companyBankAccounts: settingsData.companyBankAccounts ?? getCompanyBankAccounts(currentCompany),
-      primaryCompanyBankAccountId: settingsData.primaryCompanyBankAccountId ?? currentCompany?.primaryCompanyBankAccountId ?? '',
-      sepayVirtualAccountNumber: normalizedSepayVirtualAccountNumber,
-      sepayVaAccountNumber: normalizedSepayVirtualAccountNumber,
-      sepayVaNumber: normalizedSepayVirtualAccountNumber,
-      sepayUseVirtualAccount: normalizedSepayUseVirtualAccount,
-      sepayReceivingAccountNumber: normalizedSepayReceivingAccountNumber,
-      bankVirtualAccountNumber: normalizedSepayVirtualAccountNumber,
-      virtualBankAccountNumber: normalizedSepayVirtualAccountNumber,
-      vaAccountNumber: normalizedSepayVirtualAccountNumber,
-      virtualAccountNumber: normalizedSepayVirtualAccountNumber,
-      invoiceQrTemplate: settingsData.invoiceQrTemplate || currentCompany?.invoiceQrTemplate || DEFAULT_INVOICE_TRANSFER_PROFILE.template,
-      invoiceTemplateId: normalizeInvoiceTemplateId(settingsData.invoiceTemplateId || currentCompany?.invoiceTemplateId),
-      autoReconcileByOrderCode: settingsData.autoReconcileByOrderCode ?? isOrderCodeAutoMatchEnabled(currentCompany),
-      customerLoyaltyEnabled: settingsData.customerLoyaltyEnabled ?? currentLoyaltySettings.enabled,
-      loyaltyEarnMode: settingsData.loyaltyEarnMode ?? currentLoyaltySettings.earnMode,
-      loyaltyRevenuePercent: settingsData.loyaltyRevenuePercent ?? currentLoyaltySettings.revenuePercent,
-      loyaltyEarnAmountPerPoint: normalizedLoyaltyEarnAmount > 0 ? normalizedLoyaltyEarnAmount : DEFAULT_CUSTOMER_LOYALTY_SETTINGS.earnAmountPerPoint,
-      loyaltyRedeemValuePerPoint: normalizedLoyaltyRedeemValue > 0 ? normalizedLoyaltyRedeemValue : DEFAULT_CUSTOMER_LOYALTY_SETTINGS.redeemValuePerPoint,
-      loyaltyEligibilityConditions: settingsData.loyaltyEligibilityConditions !== undefined
-        ? normalizeLoyaltyEligibilityConditions(settingsData.loyaltyEligibilityConditions)
-        : normalizeLoyaltyEligibilityConditions(currentLoyaltySettings.eligibilityConditions),
-      customerCareReminderEnabled: settingsData.customerCareReminderEnabled ?? currentCustomerCareSettings.enabled,
-      customerCareRules: settingsData.customerCareRules ?? currentCompany?.customerCareRules ?? {},
-      customerCareInactiveDays: normalizedCustomerCareInactiveDays > 0 ? normalizedCustomerCareInactiveDays : DEFAULT_CUSTOMER_CARE_SETTINGS.inactiveDays,
-      warehouseOrderAutoCancelDays: normalizedWarehouseAutoCancelDays,
-      warehouseStockResetAt: settingsData.warehouseStockResetAt !== undefined
-        ? `${settingsData.warehouseStockResetAt || ''}`.trim()
-        : (currentCompany?.warehouseStockResetAt || ''),
-      warehouseStockVisibilitySettings: settingsData.warehouseStockVisibilitySettings !== undefined
-        ? normalizeWarehouseStockVisibilitySettings(settingsData.warehouseStockVisibilitySettings)
-        : normalizeWarehouseStockVisibilitySettings(currentCompany?.warehouseStockVisibilitySettings || {}),
-      floatingQuickActionEnabled: settingsData.floatingQuickActionEnabled !== undefined
-        ? Boolean(settingsData.floatingQuickActionEnabled)
-        : (currentCompany?.floatingQuickActionEnabled !== false),
-      productGroups: settingsData.productGroups !== undefined
-        ? normalizeProductGroups(settingsData.productGroups)
-        : normalizeProductGroups(currentCompany?.productGroups || []),
-      warehouseQuantityUnits: settingsData.warehouseQuantityUnits !== undefined
-        ? dedupeWarehouseQuantityUnits(settingsData.warehouseQuantityUnits)
-        : dedupeWarehouseQuantityUnits(currentCompany?.warehouseQuantityUnits || []),
-      salaryAdvancePercent: normalizedSalaryAdvancePercent,
-      salaryAdvancePercentByDepartment: normalizedSalaryAdvancePercentByDepartment,
-      attendanceWifiEnabled: settingsData.attendanceWifiEnabled ?? currentAttendanceWifiSettings.enabled,
-      attendanceWifiSsid: settingsData.attendanceWifiSsid !== undefined ? normalizeWifiName(settingsData.attendanceWifiSsid) : currentAttendanceWifiSettings.ssid,
-      attendanceWifiBssid: settingsData.attendanceWifiBssid !== undefined ? normalizeWifiName(settingsData.attendanceWifiBssid) : currentAttendanceWifiSettings.bssid,
-      attendanceWifiUpdatedAt: settingsData.attendanceWifiUpdatedAt || currentAttendanceWifiSettings.updatedAt || '',
-      rolePermissions: settingsData.rolePermissions !== undefined ? normalizeRolePermissions(settingsData.rolePermissions) : getCompanyRolePermissions(currentCompany),
-      rolePermissionActions: settingsData.rolePermissionActions !== undefined
-        ? normalizeRolePermissionActions(settingsData.rolePermissionActions, settingsData.rolePermissions ?? currentCompany?.rolePermissions ?? {})
-        : getCompanyRolePermissionActions(currentCompany),
-      employeeRolePermissions: settingsData.employeeRolePermissions !== undefined
-        ? normalizeEmployeeRolePermissions(settingsData.employeeRolePermissions, employees)
-        : normalizeEmployeeRolePermissions(currentCompany?.employeeRolePermissions || {}, employees),
-      employeeRolePermissionActions: settingsData.employeeRolePermissionActions !== undefined
-        ? normalizeEmployeeRolePermissionActions(settingsData.employeeRolePermissionActions, settingsData.employeeRolePermissions ?? currentCompany?.employeeRolePermissions ?? {}, employees)
-        : normalizeEmployeeRolePermissionActions(currentCompany?.employeeRolePermissionActions || {}, currentCompany?.employeeRolePermissions || {}, employees),
-      employeeReviewCriteriaLabels: normalizedEmployeeReviewCriteriaLabels,
-      employeeDepartments:
-        settingsData.employeeDepartments !== undefined
-          ? normalizeCompanyDepartments(settingsData.employeeDepartments)
-          : normalizeCompanyDepartments(currentCompany?.employeeDepartments),
-      dailyInventorySnapshots: settingsData.dailyInventorySnapshots !== undefined
-        ? normalizeProcessingInventorySnapshots(settingsData.dailyInventorySnapshots)
-        : normalizeProcessingInventorySnapshots(currentCompany?.dailyInventorySnapshots || currentCompany?.processingInventorySnapshots || {}),
-      zaloDispatcherEnabled: settingsData.zaloDispatcherEnabled !== undefined
-        ? Boolean(settingsData.zaloDispatcherEnabled)
-        : Boolean(currentCompany?.zaloDispatcherEnabled),
-      zaloDispatcherMachineId: settingsData.zaloDispatcherMachineId !== undefined
-        ? `${settingsData.zaloDispatcherMachineId || ''}`.trim()
-        : (currentCompany?.zaloDispatcherMachineId || ''),
-      zaloDispatcherMachineName: settingsData.zaloDispatcherMachineName !== undefined
-        ? `${settingsData.zaloDispatcherMachineName || ''}`.trim()
-        : (currentCompany?.zaloDispatcherMachineName || ''),
-      zaloDispatcherHeartbeatAt: settingsData.zaloDispatcherHeartbeatAt !== undefined
-        ? `${settingsData.zaloDispatcherHeartbeatAt || ''}`.trim()
-        : (currentCompany?.zaloDispatcherHeartbeatAt || ''),
-      zaloDispatcherDelayMinSec: Math.max(1, parseInt(settingsData.zaloDispatcherDelayMinSec ?? currentCompany?.zaloDispatcherDelayMinSec ?? DEFAULT_ZALO_DISPATCHER_DELAY_MIN_SEC, 10) || DEFAULT_ZALO_DISPATCHER_DELAY_MIN_SEC),
-      zaloDispatcherDelayMaxSec: Math.max(1, parseInt(settingsData.zaloDispatcherDelayMaxSec ?? currentCompany?.zaloDispatcherDelayMaxSec ?? DEFAULT_ZALO_DISPATCHER_DELAY_MAX_SEC, 10) || DEFAULT_ZALO_DISPATCHER_DELAY_MAX_SEC),
-      zaloDispatcherSendInvoicesEnabled: settingsData.zaloDispatcherSendInvoicesEnabled !== undefined
-        ? Boolean(settingsData.zaloDispatcherSendInvoicesEnabled)
-        : (currentCompany?.zaloDispatcherSendInvoicesEnabled !== false),
-      zaloDispatcherSendCampaignsEnabled: settingsData.zaloDispatcherSendCampaignsEnabled !== undefined
-        ? Boolean(settingsData.zaloDispatcherSendCampaignsEnabled)
-        : (currentCompany?.zaloDispatcherSendCampaignsEnabled !== false),
-      zaloDispatcherPaused: settingsData.zaloDispatcherPaused !== undefined
-        ? Boolean(settingsData.zaloDispatcherPaused)
-        : Boolean(currentCompany?.zaloDispatcherPaused),
-      zaloDispatcherMaxPerHour: Math.max(1, parseInt(settingsData.zaloDispatcherMaxPerHour ?? currentCompany?.zaloDispatcherMaxPerHour ?? 240, 10) || 240),
-      zaloInboxBridgeEnabled: settingsData.zaloInboxBridgeEnabled !== undefined
-        ? Boolean(settingsData.zaloInboxBridgeEnabled)
-        : Boolean(currentCompany?.zaloInboxBridgeEnabled),
-      zaloInboxBridgeMachineId: settingsData.zaloInboxBridgeMachineId !== undefined
-        ? `${settingsData.zaloInboxBridgeMachineId || ''}`.trim()
-        : (currentCompany?.zaloInboxBridgeMachineId || ''),
-      zaloInboxBridgeMachineName: settingsData.zaloInboxBridgeMachineName !== undefined
-        ? `${settingsData.zaloInboxBridgeMachineName || ''}`.trim()
-        : (currentCompany?.zaloInboxBridgeMachineName || ''),
-      zaloInboxBridgeHeartbeatAt: settingsData.zaloInboxBridgeHeartbeatAt !== undefined
-        ? `${settingsData.zaloInboxBridgeHeartbeatAt || ''}`.trim()
-        : (currentCompany?.zaloInboxBridgeHeartbeatAt || ''),
-      zaloInboxBridgeScanIntervalSec: Math.max(3, parseInt(settingsData.zaloInboxBridgeScanIntervalSec ?? currentCompany?.zaloInboxBridgeScanIntervalSec ?? DEFAULT_ZALO_INBOX_BRIDGE_SETTINGS.scanIntervalSec, 10) || DEFAULT_ZALO_INBOX_BRIDGE_SETTINGS.scanIntervalSec),
-      zaloInboxBridgeClipboardEnabled: settingsData.zaloInboxBridgeClipboardEnabled !== undefined
-        ? Boolean(settingsData.zaloInboxBridgeClipboardEnabled)
-        : (currentCompany?.zaloInboxBridgeClipboardEnabled !== false),
-      zaloInboxBridgeAutoProcessEnabled: settingsData.zaloInboxBridgeAutoProcessEnabled !== undefined
-        ? Boolean(settingsData.zaloInboxBridgeAutoProcessEnabled)
-        : (currentCompany?.zaloInboxBridgeAutoProcessEnabled !== false),
-      enableAiAutoReply: settingsData.enableAiAutoReply !== undefined
-        ? Boolean(settingsData.enableAiAutoReply)
-        : Boolean(currentCompany?.enableAiAutoReply),
-      aiAutoReplyDryRun: settingsData.aiAutoReplyDryRun !== undefined
-        ? Boolean(settingsData.aiAutoReplyDryRun)
-        : (currentCompany?.aiAutoReplyDryRun !== false),
-      aiAutoReplyStartTime: settingsData.aiAutoReplyStartTime !== undefined
-        ? normalizeClockTime(settingsData.aiAutoReplyStartTime, '06:00')
-        : normalizeClockTime(currentCompany?.aiAutoReplyStartTime || '06:00', '06:00'),
-      aiAutoReplyEndTime: settingsData.aiAutoReplyEndTime !== undefined
-        ? normalizeClockTime(settingsData.aiAutoReplyEndTime, '20:00')
-        : normalizeClockTime(currentCompany?.aiAutoReplyEndTime || '20:00', '20:00'),
-      aiAutoReplyMaxPerGroupPerHour: Math.max(1, parseInt(settingsData.aiAutoReplyMaxPerGroupPerHour ?? currentCompany?.aiAutoReplyMaxPerGroupPerHour ?? 6, 10) || 6),
-      zaloSchedulerMode: settingsData.zaloSchedulerMode !== undefined
-        ? (ZALO_SCHEDULER_MODE_OPTIONS.some(option => option.id === settingsData.zaloSchedulerMode) ? settingsData.zaloSchedulerMode : DEFAULT_ZALO_SCHEDULER_SETTINGS.mode)
-        : getZaloSchedulerSettings(currentCompany).mode,
-      zaloSchedulerDailyTime: settingsData.zaloSchedulerDailyTime !== undefined
-        ? normalizeClockTime(settingsData.zaloSchedulerDailyTime)
-        : getZaloSchedulerSettings(currentCompany).dailyTime,
-      zaloSchedulerDelayMinutes: Math.max(0, parseInt(settingsData.zaloSchedulerDelayMinutes ?? getZaloSchedulerSettings(currentCompany).delayMinutes, 10) || 0),
-      zaloSchedulerEditHoldMinutes: Math.max(0, parseInt(settingsData.zaloSchedulerEditHoldMinutes ?? getZaloSchedulerSettings(currentCompany).editHoldMinutes, 10) || 0),
-      updatedAt: new Date().toISOString()
+  const handleUpdateCompanySettings = async (settingsData, options = {}) => {
+    const isCurrent = () => readOwnerRef.current === readOwnerKey && activeTenantScopeRef.current === myCompanyId;
+    assertSettingsScope(isCurrent);
+    if (!firebaseUser || !myCompanyId || currentCompany?.id !== myCompanyId) throw new Error('Phiên làm việc không hợp lệ.');
+    const actorId = appCurrentEmployee?.id || currentUser?.employeeId || currentUser?.id || '';
+    const permissionContext = {company:currentCompany, employee:appCurrentEmployee, currentUser};
+    const normalizers = {
+      bankId: value => value.trim().toUpperCase(),
+      bankName: normalizeLeadingLabel,
+      bankAccountName: value => value.trim().toUpperCase(),
+      bankAccountNumber: normalizePaymentAccountNumber,
+      ...Object.fromEntries(['sepayVirtualAccountNumber','sepayVaAccountNumber','sepayVaNumber','sepayReceivingAccountNumber','bankVirtualAccountNumber','virtualBankAccountNumber','vaAccountNumber','virtualAccountNumber']
+        .map(key => [key, normalizePaymentAccountNumber])),
+      invoiceTemplateId: normalizeInvoiceTemplateId,
+      loyaltyEligibilityConditions: normalizeLoyaltyEligibilityConditions,
+      productGroups: normalizeProductGroups,
+      warehouseQuantityUnits: dedupeWarehouseQuantityUnits,
+      warehouseQtyUnits: dedupeWarehouseQuantityUnits,
+      employeeDepartments: normalizeCompanyDepartments,
+      companyDepartments: normalizeCompanyDepartments,
+      employeeReviewCriteriaLabels: value => normalizeEmployeeReviewCriteriaLabels(value, currentCompany),
+      warehouseStockVisibilitySettings: normalizeWarehouseStockVisibilitySettings,
+      attendanceWifiSsid: normalizeWifiName,
+      attendanceWifiBssid: value => normalizeWifiName(value).toLowerCase(),
+      rolePermissions: normalizeRolePermissions,
+      rolePermissionActions: value => normalizeRolePermissionActions(value, settingsData.rolePermissions ?? currentCompany.rolePermissions ?? {}),
+      employeeRolePermissions: value => normalizeEmployeeRolePermissions(value, employees),
+      employeeRolePermissionActions: value => normalizeEmployeeRolePermissionActions(value, settingsData.employeeRolePermissions ?? currentCompany.employeeRolePermissions ?? {}, employees),
+      dailyInventorySnapshots: normalizeProcessingInventorySnapshots
     };
-
-    const isLoyaltySettingsUpdate = Object.prototype.hasOwnProperty.call(settingsData, 'customerLoyaltyEnabled') || Object.prototype.hasOwnProperty.call(settingsData, 'customerCareRules');
-    const settingsPatch = isLoyaltySettingsUpdate
-      ? Object.fromEntries([...Object.keys(settingsData), 'updatedAt'].map(key => [key, normalizedSettings[key]]))
-      : normalizedSettings;
-    const settingsWriteResult = await saveDataDocument(
-      'companies',
-      myCompanyId,
-      settingsPatch,
-      { merge: true },
-      4500,
-      'Firebase SDK phản hồi chậm khi lưu cấu hình công ty.'
-    );
-    if (isLoyaltySettingsUpdate) {
-      await requireSharedWriteConfirmation(settingsWriteResult, 'companies', myCompanyId);
+    const plan = await prepareSettingsMutation({patch:settingsData, options, company:currentCompany, companyId:myCompanyId,
+      actorId, context:permissionContext, hasPermission:hasCompanyRolePermissionAction, normalizers, isCurrent});
+    assertSettingsScope(isCurrent);
+    const isReviewSwitch = plan.keys.includes('employeeReviewsEnabled');
+    const isWifiUpdate = plan.keys.some(key => key.startsWith('attendanceWifi'));
+    if (isWifiUpdate && (!canManageCompanyWifi(appCurrentEmployee)
+      || (Object.hasOwn(plan.patch, 'attendanceWifiSsid') && !plan.patch.attendanceWifiSsid)
+      || (Object.hasOwn(plan.patch, 'attendanceWifiBssid') && !isUsableAttendanceBssid(plan.patch.attendanceWifiBssid)))) {
+      throw new Error('Chỉ Chủ/Admin được đặt WiFi công ty; SSID và BSSID phải hợp lệ.');
     }
-    const nextCompany = { ...(currentCompany || {}), id: myCompanyId, ...settingsPatch };
-    setCurrentCompany(nextCompany);
-    setRawCompanies(prev => [...prev.filter(company => company.id !== myCompanyId), nextCompany]);
-    return { success: true };
+    const companyRef = doc(db, 'artifacts', appId, 'public', 'data', 'companies', myCompanyId);
+    const commandRef = doc(db, 'artifacts', appId, 'public', 'data', 'companySettingsCommands', myCompanyId + '_' + actorId + '_' + plan.commandId);
+    const employeeRef = doc(db, 'artifacts', appId, 'public', 'data', 'employees', actorId);
+    const result = await withTimeout(commitSettingsMutation({plan, db, companyRef, commandRef, employeeRef, runTransaction,
+      isCurrent, hasPermission:hasCompanyRolePermissionAction, context:permissionContext,
+      buildPatch: patch => isReviewSwitch
+        ? employeeReviewFeaturePatch(patch.employeeReviewsEnabled, actorId, serverTimestamp())
+        : {...patch, ...(Object.hasOwn(patch, 'attendanceWifiUpdatedAt') ? {attendanceWifiUpdatedAt:plan.mutationAt} : {}), updatedAt:plan.mutationAt}
+    }), 12000, 'Máy chủ chưa xác nhận cấu hình công ty. Vui lòng kiểm tra kết nối mạng.');
+    assertSettingsScope(isCurrent);
+    // Replays publish current server fields, preserving later settings edits.
+    const publishKeys = [...plan.keys, ...(isReviewSwitch ? ['employeeReviewsUpdatedByEmpId'] : ['updatedAt'])];
+    const publishConfirmed = previous => {
+      if (!isCurrent() || previous?.id !== myCompanyId) return previous;
+      const next = {...previous};
+      for (const key of publishKeys) {
+        if (Object.hasOwn(result.document,key)) next[key] = result.document[key];
+        else delete next[key];
+      }
+      return next;
+    };
+    setCurrentCompany(publishConfirmed);
+    setRawCompanies(previous => isCurrent() ? previous.map(publishConfirmed) : previous);
+    return {success:true, confirmed:true, queued:false, replay:result.replay};
   };
 
   const handleResetCompanyDemoData = async (scopeIds = [], resetOptions = {}) => {
-    if (!firebaseUser || !myCompanyId) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
-
-    const selectedScopeIds = Array.isArray(scopeIds) && scopeIds.length > 0
-      ? scopeIds
-      : RESET_DATA_SCOPE_OPTIONS.map(option => option.id);
-    const resetDateRange = {
-      dateFrom: normalizeResetDateKey(resetOptions?.dateFrom),
-      dateTo: normalizeResetDateKey(resetOptions?.dateTo)
-    };
-    const hasResetDateRange = Boolean(resetDateRange.dateFrom || resetDateRange.dateTo);
-    if (resetDateRange.dateFrom && resetDateRange.dateTo && resetDateRange.dateFrom > resetDateRange.dateTo) {
-      return { success: false, message: 'Khoảng thời gian reset chưa hợp lệ.' };
+    const isCurrent = () => readOwnerRef.current === readOwnerKey && activeTenantScopeRef.current === myCompanyId;
+    assertSettingsScope(isCurrent);
+    if (!firebaseUser || !myCompanyId || currentCompany?.id !== myCompanyId) throw new Error('Phiên làm việc không hợp lệ.');
+    const actorId = appCurrentEmployee?.id || currentUser?.employeeId || currentUser?.id || '';
+    const context = {company:currentCompany, employee:appCurrentEmployee, currentUser};
+    assertSettingsDataPermission('reset', context, hasCompanyRolePermissionAction);
+    if (!Array.isArray(scopeIds) || scopeIds.some(id => !RESET_DATA_SCOPE_OPTIONS.some(option => option.id === id))
+      || !resetOptions || typeof resetOptions !== 'object' || Object.keys(resetOptions).some(key => !['dateFrom','dateTo','clientCommandId','clientMutationAt'].includes(key))) {
+      throw new Error('Phạm vi reset chưa hợp lệ.');
     }
-    const selectedCollections = new Set(
-      RESET_DATA_SCOPE_OPTIONS
-        .filter(option => selectedScopeIds.includes(option.id))
-        .flatMap(option => option.collections)
-    );
-    if (selectedCollections.size === 0) {
-      return { success: false, message: 'Vui lòng chọn ít nhất một phạm vi cần reset.' };
+    const selectedScopeIds = [...new Set(scopeIds.length ? scopeIds : RESET_DATA_SCOPE_OPTIONS.map(option => option.id))].sort();
+    const dateRange = {dateFrom:normalizeResetDateKey(resetOptions.dateFrom),dateTo:normalizeResetDateKey(resetOptions.dateTo)};
+    for (const key of ['dateFrom','dateTo']) {
+      const value = dateRange[key];
+      if (resetOptions[key] && (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)
+        || !Number.isFinite(Date.parse(value + 'T00:00:00.000Z')) || new Date(value + 'T00:00:00.000Z').toISOString().slice(0,10) !== value)) {
+        throw new Error('Khoảng thời gian reset chưa hợp lệ.');
+      }
     }
-
-    const localCollectionSources = {
-      employeeReviews,
-      customers,
-      customer_cart: customerCart,
-      customer_points: customerPoints,
-      customerLoans,
-      reward_catalog: rewardCatalog,
-      promotions,
-      notifications,
-      products,
-      orders,
-      orderRequests,
-      warehouseImports,
-      warehouseDispatches,
-      warehouseStockCounts,
-      assets,
-      assetCostLogs,
-      deliveryReports,
-      payments,
-      bankAccounts,
-      bankTransactions,
-      payment_reconciliations: paymentReconciliations,
-      advances: advanceRequests,
-      financials,
-      expenses,
-      holidays,
-      attendance: attendanceRecords || {},
-      performance: performanceRecords || {},
-      messages,
-      zalo_send_queue: zaloSendQueue,
-      zalo_campaigns: zaloCampaigns,
-      zalo_campaign_queue: zaloCampaignQueue,
-      zalo_inbox_messages: zaloInboxMessages,
-      zalo_inbox_bridge_logs: zaloInboxBridgeLogs,
-      order_requests: zaloOrderRequests,
-      ai_reply_rules: aiReplyRules,
-      pricingInputs,
-      pricingRules,
-      pricingScenarios,
-      pricingChangeLogs
-    };
-    const localCollectionSetters = {
-      employeeReviews: setRawEmployeeReviews,
-      customers: setRawCustomers,
-      customer_cart: setRawCustomerCart,
-      customer_points: setRawCustomerPoints,
-      customerLoans: setRawCustomerLoans,
-      reward_catalog: setRawRewardCatalog,
-      promotions: setRawPromotions,
-      notifications: setRawNotifications,
-      products: setRawProducts,
-      orders: setRawOrders,
-      orderRequests: setRawOrderRequests,
-      warehouseImports: setRawWarehouseImports,
-      warehouseDispatches: setRawWarehouseDispatches,
-      warehouseStockCounts: setRawWarehouseStockCounts,
-      assets: setRawAssets,
-      assetCostLogs: setRawAssetCostLogs,
-      deliveryReports: setRawDeliveryReports,
-      payments: setRawPayments,
-      bankAccounts: setRawBankAccounts,
-      bankTransactions: setRawBankTransactions,
-      payment_reconciliations: setRawPaymentReconciliations,
-      advances: setRawAdvanceRequests,
-      financials: setRawFinancials,
-      expenses: setRawExpenses,
-      holidays: setRawHolidays,
-      attendance: setRawAttendance,
-      performance: setRawPerformance,
-      messages: setRawMessages,
-      zalo_send_queue: setRawZaloSendQueue,
-      zalo_campaigns: setRawZaloCampaigns,
-      zalo_campaign_queue: setRawZaloCampaignQueue,
-      zalo_inbox_messages: setRawZaloInboxMessages,
-      zalo_inbox_bridge_logs: setRawZaloInboxBridgeLogs,
-      order_requests: setRawZaloOrderRequests,
-      ai_reply_rules: setRawAiReplyRules,
-      pricingInputs: setRawPricingInputs,
-      pricingRules: setRawPricingRules,
-      pricingScenarios: setRawPricingScenarios,
-      pricingChangeLogs: setRawPricingChangeLogs
-    };
-    const objectCollectionNames = new Set(['attendance', 'performance']);
-    const getLocalIdsForCollection = (collectionName) => {
-      const source = localCollectionSources[collectionName];
-      if (Array.isArray(source)) {
-        return new Set(source
-          .filter(item => !hasResetDateRange || isResetRecordInDateRange(item, item?.id, resetDateRange))
-          .map(item => item?.id)
-          .filter(Boolean));
-      }
-      if (source && typeof source === 'object') {
-        return new Set(Object.entries(source)
-          .filter(([id, item]) => !hasResetDateRange || isResetRecordInDateRange(item, id, resetDateRange))
-          .map(([id]) => id)
-          .filter(Boolean));
-      }
-      return new Set();
-    };
-    const belongsToCurrentCompany = (data = {}, id = '', localIds = new Set()) => (
-      data?.companyId === myCompanyId
-      || data?.sourceCompanyId === myCompanyId
-      || data?.company?.id === myCompanyId
-      || localIds.has(id)
-    );
-
-    const deleteTargets = new Map();
-    for (const collectionName of selectedCollections) {
-      const localIds = getLocalIdsForCollection(collectionName);
-      const targetIds = new Set(localIds);
-      try {
-        const snapshot = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', collectionName));
-        snapshot.forEach((snapDoc) => {
-          const data = snapDoc.data?.() || {};
-          if (
-            belongsToCurrentCompany(data, snapDoc.id, localIds)
-            && (!hasResetDateRange || isResetRecordInDateRange(data, snapDoc.id, resetDateRange))
-          ) {
-            targetIds.add(snapDoc.id);
-          }
+    if (dateRange.dateFrom && dateRange.dateTo && dateRange.dateFrom > dateRange.dateTo) throw new Error('Khoảng thời gian reset chưa hợp lệ.');
+    const options = {clientCommandId:Object.hasOwn(resetOptions,'clientCommandId') ? resetOptions.clientCommandId : globalThis.crypto.randomUUID(),
+      clientMutationAt:Object.hasOwn(resetOptions,'clientMutationAt') ? resetOptions.clientMutationAt : new Date().toISOString()};
+    const reference = (name,id) => doc(db, 'artifacts', appId, 'public', 'data', name, id);
+    const intent = {selectedScopeIds,...dateRange};
+    let operations = await loadSettingsResetCommand({reference,getDoc:firebaseGetDocFromServer,companyId:myCompanyId,actorId,options,intent,isCurrent});
+    assertSettingsScope(isCurrent);
+    if (!operations) {
+      const selectedCollections = [...new Set(RESET_DATA_SCOPE_OPTIONS.filter(option => selectedScopeIds.includes(option.id)).flatMap(option => option.collections))].sort();
+      const targets = new Map();
+      const scan = async name => {
+        assertSettingsScope(isCurrent);
+        // A failed scan aborts the entire plan. Cached local IDs are never deletion authority.
+        const snapshot = await firebaseGetDocsFromServer(firebaseQuery(collection(db, 'artifacts', appId, 'public', 'data', name), firebaseWhere('companyId','==',myCompanyId)));
+        assertSettingsScope(isCurrent);
+        const rows = [];
+        snapshot.forEach(item => {
+          const data = item.data();
+          if (data.companyId !== myCompanyId) throw new Error('Bản ghi reset thuộc công ty khác.');
+          if (isResetRecordInDateRange(data,item.id,dateRange)) rows.push({...data,id:item.id});
         });
-      } catch (error) {
-        console.warn(`Không thể quét trực tiếp collection ${collectionName}, dùng dữ liệu đang tải trong app.`, error);
+        return rows;
+      };
+      for (const name of selectedCollections) {
+        const rows = await scan(name);
+        assertSettingsScope(isCurrent);
+        rows.forEach(row => targets.set(name + '/' + row.id,{collectionName:name,documentId:row.id}));
       }
-      if (targetIds.size > 0) deleteTargets.set(collectionName, targetIds);
-    }
-
-    const warehouseImportIds = deleteTargets.get('warehouseImports');
-    if (warehouseImportIds?.size) {
-      const linkedExpenseIds = new Set();
-      const collectLinkedExpenseId = (expense = {}, id = '') => {
-        if (!expense || expense.isArchived) return;
-        const linkedImportId = expense.sourceWarehouseImportId || expense.warehouseImportId || '';
-        const isLinkedWarehouseExpense = linkedImportId && warehouseImportIds.has(linkedImportId);
-        if (isLinkedWarehouseExpense && (!hasResetDateRange || isResetRecordInDateRange(expense, id, resetDateRange))) {
-          linkedExpenseIds.add(id || expense.id);
+      const importIds = new Set([...targets.values()].filter(row => row.collectionName === 'warehouseImports').map(row => row.documentId));
+      if (importIds.size) {
+        const expenses = await scan('expenses');
+        assertSettingsScope(isCurrent);
+        for (const row of expenses) if (!row.isArchived && importIds.has(row.sourceWarehouseImportId || row.warehouseImportId)) {
+          targets.set('expenses/' + row.id,{collectionName:'expenses',documentId:row.id});
         }
-      };
-      (expenses || []).forEach(item => collectLinkedExpenseId(item, item?.id));
-      try {
-        const expenseSnapshot = await getDocs(collection(db, 'artifacts', appId, 'public', 'data', 'expenses'));
-        expenseSnapshot.forEach((snapDoc) => collectLinkedExpenseId(snapDoc.data?.() || {}, snapDoc.id));
-      } catch (error) {
-        console.warn('Không thể quét chi phí liên kết phiếu nhập, dùng dữ liệu đang tải trong app.', error);
       }
-      if (linkedExpenseIds.size) {
-        const expenseTargetIds = deleteTargets.get('expenses') || new Set();
-        linkedExpenseIds.forEach(id => id && expenseTargetIds.add(id));
-        deleteTargets.set('expenses', expenseTargetIds);
+      operations = [...targets.values()];
+      if (selectedScopeIds.includes('warehouseStockCounts') && !dateRange.dateFrom && !dateRange.dateTo) {
+        operations.push({collectionName:'companies',documentId:myCompanyId,payload:{warehouseStockResetAt:options.clientMutationAt,
+          dailyInventorySnapshots:{},processingInventorySnapshots:{}}});
       }
+      operations.sort((a,b) => (a.collectionName + '/' + a.documentId).localeCompare(b.collectionName + '/' + b.documentId));
     }
-
-    const deleteTasks = [];
-    deleteTargets.forEach((ids, collectionName) => {
-      ids.forEach(id => {
-        deleteTasks.push(() => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', collectionName, id)));
-      });
-    });
-
-    const shouldUpdateWarehouseStockResetAt = selectedScopeIds.includes('warehouseStockCounts') && !hasResetDateRange;
-    const updateWarehouseStockResetAt = async () => {
-      if (!shouldUpdateWarehouseStockResetAt) return false;
-      const resetAt = new Date().toISOString();
-      const nextSnapshots = {};
-      const companyPatch = {
-        warehouseStockResetAt: resetAt,
-        dailyInventorySnapshots: nextSnapshots,
-        processingInventorySnapshots: nextSnapshots,
-        updatedAt: resetAt
-      };
-      const nextCompany = {
-        ...(currentCompany || {}),
-        id: myCompanyId,
-        ...companyPatch
-      };
-      await setDoc(
-        doc(db, 'artifacts', appId, 'public', 'data', 'companies', myCompanyId),
-        companyPatch,
-        { merge: true }
-      );
-      setCurrentCompany(nextCompany);
-      setRawCompanies(prev => [...prev.filter(company => company.id !== myCompanyId), nextCompany]);
-      return true;
-    };
-    const removeDeletedTargetsFromLocalState = () => {
-      deleteTargets.forEach((ids, collectionName) => {
-        const setCollectionState = localCollectionSetters[collectionName];
-        if (!setCollectionState || !ids?.size) return;
-        if (objectCollectionNames.has(collectionName)) {
-          setCollectionState(prev => Object.fromEntries(
-            Object.entries(prev || {}).filter(([id]) => !ids.has(id))
-          ));
-          return;
-        }
-        setCollectionState(prev => Array.isArray(prev)
-          ? prev.filter(item => !ids.has(item?.id))
-          : prev
-        );
-      });
-    };
-    const runDeleteTasksInBatches = async (tasks = []) => {
-      const batchSize = 25;
-      for (let index = 0; index < tasks.length; index += batchSize) {
-        const batch = tasks.slice(index, index + batchSize);
-        await Promise.all(batch.map(task => task()));
-      }
-    };
-
-    if (deleteTasks.length === 0) {
-      const didResetWarehouseStock = await updateWarehouseStockResetAt();
-      return {
-        success: true,
-        message: didResetWarehouseStock
-          ? 'Đã đặt lại mốc tồn kho. Bảng tồn kho đối chiếu sẽ không còn lấy dữ liệu trước thời điểm reset.'
-          : 'Không còn dữ liệu demo để xóa.'
-      };
-    }
-
-    await runDeleteTasksInBatches(deleteTasks);
-    removeDeletedTargetsFromLocalState();
-
-    await updateWarehouseStockResetAt();
-
-    await Promise.all(
-      Array.from(deleteTargets.keys()).map(collectionName => forceRefreshCollectionRef.current?.(collectionName).catch(() => false))
-    );
-    return {
-      success: true,
-      message: `Đã reset ${selectedScopeIds.length} phạm vi dữ liệu đã chọn${hasResetDateRange ? ` trong khoảng ${resetDateRange.dateFrom || 'đầu'} đến ${resetDateRange.dateTo || 'nay'}` : ''} (${deleteTasks.length} bản ghi).`
-    };
+    const plan = await prepareSettingsDataCommand({kind:'reset',operations,companyId:myCompanyId,actorId,options,intent,isCurrent});
+    assertSettingsScope(isCurrent);
+    const receipt = await commitSettingsDataCommand({plan,db,reference,runTransaction,isCurrent,context,hasPermission:hasCompanyRolePermissionAction});
+    assertSettingsScope(isCurrent);
+    // Realtime server snapshots publish deletions. Replaying a completed reset
+    // must not locally remove a subsequently recreated document with the same ID.
+    return {...receipt,message:'Đã reset dữ liệu đã chọn (' + receipt.count + ' bản ghi).'};
   };
 
   const handleCreateCompanyBackup = async ({ background = false } = {}) => {
@@ -16619,7 +16262,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
     const readBackupCollection = async (collectionName) => {
       const target = collection(db, 'artifacts', appId, 'public', 'data', collectionName);
       const snapshot = collectionName === 'companies' && !isPreviewDataMode
-        ? await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'companies', myCompanyId))
+        ? await withTimeout(firebaseGetDocFromServer(doc(db, 'artifacts', appId, 'public', 'data', 'companies', myCompanyId)), 15000, 'Máy chủ chưa xác nhận dữ liệu sao lưu công ty.')
         : await getDocs(isPreviewDataMode ? target : firebaseQuery(target, firebaseWhere('companyId', '==', myCompanyId)));
       const documents = snapshot.docs || (snapshot.exists() ? [snapshot] : []);
       return documents
@@ -16627,7 +16270,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
         .filter(record => shouldIncludeBackupRecord(collectionName, record));
     };
 
-    const isBackupSessionCurrent = () => activeTenantScopeRef.current === myCompanyId
+    const isBackupSessionCurrent = () => readOwnerRef.current === readOwnerKey && activeTenantScopeRef.current === myCompanyId
       && automaticBackupAccessRef.current?.allowed
       && automaticBackupAccessRef.current.companyId === myCompanyId
       && automaticBackupAccessRef.current.uid === firebaseUser.uid;
@@ -16644,17 +16287,19 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
       collectionNames: BACKUP_DATA_COLLECTIONS,
       readCollection: async name => {
         const target = collection(db, 'artifacts', appId, 'public', 'data', name);
-        return (await getDocs(isPreviewDataMode ? target : firebaseQuery(target, firebaseWhere('companyId', '==', myCompanyId)))).docs;
+        return (await (isPreviewDataMode ? getDocs(target)
+          : withTimeout(firebaseGetDocsFromServer(firebaseQuery(target, firebaseWhere('companyId', '==', myCompanyId))), 15000, 'Máy chủ chưa xác nhận đủ dữ liệu sao lưu.'))).docs;
       },
       normalizeRecord: docSnap => normalizeBackupSerializableValue({ id: docSnap.id, ...docSnap.data() }),
       includeRecord: shouldIncludeBackupRecord,
       isCurrent: isBackupSessionCurrent,
       yieldWork: yieldBackupWork,
     });
-    const companyRecords = currentCompany
+    const companyRecords = isPreviewDataMode && currentCompany
       ? [normalizeBackupSerializableValue({ ...currentCompany, id: myCompanyId, companyId: myCompanyId })]
       : await readBackupCollection('companies');
     if (!isBackupSessionCurrent()) throw Object.assign(new Error('Phiên sao lưu đã thay đổi.'), { name: 'AbortError' });
+    if (!isPreviewDataMode && companyRecords.length !== 1) throw new Error('Không tìm thấy dữ liệu công ty được máy chủ xác nhận để sao lưu.');
 
     const backup = {
       schemaVersion: 1,
@@ -16677,77 +16322,21 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
     };
   };
 
-  const handleRestoreCompanyBackup = async (backupPayload) => {
-    if (!firebaseUser || !myCompanyId) {
-      return { success: false, message: 'Phiên làm việc không hợp lệ.' };
-    }
-    if (!backupPayload || typeof backupPayload !== 'object' || !backupPayload.collections) {
-      return { success: false, message: 'File sao lưu không đúng định dạng.' };
-    }
-
-    const collections = backupPayload.collections || {};
-    const writeJobs = [];
-    const now = new Date().toISOString();
-    let desktopDispatcherInfo = null;
-    try {
-      const desktopBridge = typeof window !== 'undefined' ? window.hdDesktop : null;
-      if (desktopBridge?.isDesktop && desktopBridge?.getMachineId) {
-        desktopDispatcherInfo = await desktopBridge.getMachineId();
-      }
-    } catch (error) {
-      console.warn('Cannot read desktop dispatcher machine info while approving Zalo send.', error);
-    }
-
-    const companyBackup = normalizeBackupCollectionItems(collections.companies)[0] || null;
-    if (companyBackup) {
-      const { id: _oldCompanyId, ...companyData } = companyBackup;
-      writeJobs.push(() => setDoc(
-        doc(db, 'artifacts', appId, 'public', 'data', 'companies', myCompanyId),
-        {
-          ...companyData,
-          id: myCompanyId,
-          restoredFromCompanyId: backupPayload.sourceCompanyId || _oldCompanyId || '',
-          restoredAt: now,
-          updatedAt: now
-        },
-        { merge: true }
-      ));
-    }
-
-    BACKUP_DATA_COLLECTIONS.forEach((collectionName) => {
-      normalizeBackupCollectionItems(collections[collectionName]).forEach((item, index) => {
-        const itemId = item.id || `${collectionName}_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 8)}`;
-        writeJobs.push(() => setDoc(
-          doc(db, 'artifacts', appId, 'public', 'data', collectionName, itemId),
-          {
-            ...item,
-            id: itemId,
-            companyId: myCompanyId,
-            restoredAt: now
-          },
-          { merge: true }
-        ));
-      });
-    });
-
-    if (writeJobs.length === 0) {
-      return { success: false, message: 'File sao lưu không có dữ liệu để khôi phục.' };
-    }
-
-    const chunkSize = 80;
-    await withActivityAuditSuppressed(async () => {
-      for (let index = 0; index < writeJobs.length; index += chunkSize) {
-        await Promise.all(writeJobs.slice(index, index + chunkSize).map(runJob => runJob()));
-      }
-    });
-
-    const restoredCount = Math.max(0, writeJobs.length - (companyBackup ? 1 : 0));
-
-    return {
-      success: true,
-      restoredCount,
-      message: `Đã khôi phục ${restoredCount} bản ghi.`
-    };
+  const handleRestoreCompanyBackup = async (backupPayload, options = {}) => {
+    const isCurrent = () => readOwnerRef.current === readOwnerKey && activeTenantScopeRef.current === myCompanyId;
+    assertSettingsScope(isCurrent);
+    if (!firebaseUser || !myCompanyId || currentCompany?.id !== myCompanyId) throw new Error('Phiên làm việc không hợp lệ.');
+    const actorId = appCurrentEmployee?.id || currentUser?.employeeId || currentUser?.id || '';
+    const context = {company:currentCompany,employee:appCurrentEmployee,currentUser};
+    assertSettingsDataPermission('restore',context,hasCompanyRolePermissionAction);
+    const operations = buildSettingsRestoreOperations(backupPayload,{companyId:myCompanyId,collections:BACKUP_DATA_COLLECTIONS});
+    const plan = await prepareSettingsDataCommand({kind:'restore',operations,companyId:myCompanyId,actorId,options,isCurrent});
+    assertSettingsScope(isCurrent);
+    const reference = (name,id) => doc(db,'artifacts',appId,'public','data',name,id);
+    const receipt = await commitSettingsDataCommand({plan,db,reference,runTransaction,isCurrent,context,hasPermission:hasCompanyRolePermissionAction});
+    assertSettingsScope(isCurrent);
+    return {...receipt,restoredCount:operations.filter(row => row.collectionName !== 'companies').length,
+      message:'Đã khôi phục dữ liệu được máy chủ xác nhận.'};
   };
 
   const employeeInfo = currentUser ? (isCustomerSession ? currentUser : (employees.find(e => e.id === currentUser.id) || currentUser)) : null;
@@ -17134,7 +16723,12 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
       ...(approvalStatus === CASHFLOW_APPROVAL_STATUS.approved ? buildPaymentConfirmationWrites(paymentPayload) : []),
     ];
     if (writePlan) { writePlan.push(...writes); return { planned: true }; }
-    return saveAtomicDocuments(`payment_${id}`, writes);
+    const receipt = saveAtomicDocuments(`payment_${id}`, writes);
+    if (['order_direct_payment', 'debt_order_payment'].includes(paymentData.sourceType)) {
+      await requireSharedWriteConfirmation(receipt, ATOMIC_SAVE_COLLECTION, `payment_${id}`);
+      return { ...receipt, queued: false };
+    }
+    return receipt;
   };
 
   const handleLinkCustomerBankAccount = async (customerId, accountData = {}) => {
@@ -17261,7 +16855,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
     };
   };
 
-  const handleEditPayment = async (paymentId, paymentData = {}) => {
+  const handleEditPayment = async (paymentId, paymentData = {}, writePlan = null) => {
     if (isVpsStagingMode) {
       throw new Error('Payment editing is blocked in VPS staging until the finance payment contract is approved.');
     }
@@ -17306,6 +16900,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
         paymentMethod: patch.paymentMethod ?? previousPayment.paymentMethod ?? previousPayment.method ?? ''
       }));
     }
+    if (writePlan) { writePlan.push(...writes); return { planned: true }; }
     return saveAtomicDocuments(`payment_${paymentId}`, writes);
   };
   useEffect(() => {
@@ -17316,7 +16911,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
         .map(payment => payment.sourceBankTransactionId)
     );
     const pendingTransactions = bankTransactions.filter(transaction => {
-      if (!transaction?.id || transaction.isArchived || transaction.reconciledPaymentId) return false;
+      if (!transaction?.id || transaction.isArchived || transaction.reconciledPaymentId || isBankTransactionIgnored(transaction)) return false;
       const content = resolveBankTransactionContent(transaction);
       if (!content && transaction.autoReconcileStatus === 'missing_transfer_content') return false;
       if (transaction.autoReconcileStatus === 'no_order_code_match') {
@@ -17551,7 +17146,8 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
     }
     if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ.');
     if (!employees.some(employee => employee.id === empId && employee.companyId === myCompanyId)) throw new Error('Không tìm thấy nhân sự của công ty này.');
-    if (!['bonus', 'penalty', 'advance', 'allowance', 'employee_purchase'].includes(type) || parseLooseMoneyValue(amount) <= 0) throw new Error('Khoản lương/thưởng/phạt không hợp lệ.');
+    const cleanAmount = parseLooseMoneyValue(amount);
+    if (!['bonus', 'penalty', 'advance', 'allowance', 'employee_purchase'].includes(type) || !Number.isFinite(cleanAmount) || cleanAmount <= 0) throw new Error('Khoản lương/thưởng/phạt không hợp lệ.');
     const id = `f_${extraData.clientMutationId || crypto.randomUUID()}`;
     const financialPayload = {
       ...extraData,
@@ -17559,7 +17155,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
       companyId: myCompanyId,
       empId,
       type,
-      amount: parseLooseMoneyValue(amount),
+      amount: cleanAmount,
       reason,
       date: date || getTodayString(),
       isArchived: false,
@@ -17570,7 +17166,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
       writePlan.push({ collectionName: 'financials', documentId: id, payload: financialPayload, ifAbsent: true });
       return { planned: true, id };
     }
-    return saveDataDocument(
+    const receipt = await saveDataDocument(
         'financials',
         id,
         financialPayload,
@@ -17578,6 +17174,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
         4500,
         'Firebase SDK phản hồi chậm khi lưu khoản lương/thưởng/phạt.'
       );
+    return requireSharedWriteConfirmation(receipt, 'financials', id);
   };
 
   const handleEditFinancialRecord = async (financialId, patchData = {}) => {
@@ -17585,6 +17182,8 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
       throw new Error('Financial record editing is blocked in VPS staging until the accounting contract is approved.');
     }
     if (!firebaseUser || !myCompanyId || !financialId) throw new Error('Phiên làm việc hoặc khoản lương không hợp lệ.');
+    if (!rawFinancials.some(record => record.id === financialId && record.companyId === myCompanyId && !record.isArchived)) throw new Error('Không tìm thấy khoản lương của công ty này.');
+    if (patchData.amount !== undefined && (!Number.isFinite(parseLooseMoneyValue(patchData.amount)) || parseLooseMoneyValue(patchData.amount) <= 0)) throw new Error('Số tiền lương/thưởng/phạt không hợp lệ.');
     const patch = {
       ...patchData,
       updatedAt: new Date().toISOString(),
@@ -17593,7 +17192,8 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
     if (patchData.amount !== undefined) patch.amount = parseLooseMoneyValue(patchData.amount);
     if (patchData.reason !== undefined) patch.reason = capitalizeFirst(patchData.reason || '');
     if (patchData.date !== undefined) patch.date = patchData.date || getTodayString();
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'financials', financialId), patch, { merge: true });
+    const receipt = await saveDataDocument('financials', financialId, patch, { merge: true });
+    return requireSharedWriteConfirmation(receipt, 'financials', financialId);
   };
 
   const handleDeleteFinancialRecord = async (financialId) => {
@@ -17601,15 +17201,16 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
       throw new Error('Financial record deletion is blocked in VPS staging until the accounting contract is approved.');
     }
     if (!firebaseUser || !myCompanyId || !financialId) throw new Error('Phiên làm việc hoặc khoản lương không hợp lệ.');
+    if (!rawFinancials.some(record => record.id === financialId && record.companyId === myCompanyId && !record.isArchived)) throw new Error('Không tìm thấy khoản lương của công ty này.');
     const patch = {
       isArchived: true,
       archivedAt: new Date().toISOString(),
       archivedByEmpId: currentUser?.id || ''
     };
+    const receipt = await saveDataDocument('financials', financialId, patch, { merge: true });
+    const confirmed = await requireSharedWriteConfirmation(receipt, 'financials', financialId);
     setRawFinancials(prev => (Array.isArray(prev) ? prev : []).map(item => item?.id === financialId ? { ...item, ...patch } : item));
-    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'financials', financialId), {
-      ...patch
-    }, { merge: true });
+    return confirmed;
   };
 
   const handleLoadPayrollPeriodSnapshots = useCallback(async ({ monthKey } = {}) => {
@@ -18365,6 +17966,15 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
   const handleAddEmployeeReview = async (reviewData = {}) => {
     if (!firebaseUser || !myCompanyId) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
     if (!isEmployeeReviewEnabled(currentCompany)) return {success:false,message:'Công ty đã tắt tính năng Đánh giá.'};
+    const isReviewScopeCurrent = () => readOwnerRef.current === readOwnerKey && activeTenantScopeRef.current === myCompanyId;
+    if (!isReviewScopeCurrent() || (currentCompany?.id && currentCompany.id !== myCompanyId)
+      || (reviewData.companyId && reviewData.companyId !== myCompanyId)) {
+      return { success: false, message: 'Phiên công ty đã thay đổi. Vui lòng mở lại mục Đánh giá.' };
+    }
+    const reviewPermissionSubject = { company: currentCompany, employee: appCurrentEmployee, currentUser };
+    if (!['employee_reviews', 'employees'].some(module => hasCompanyRolePermissionAction(reviewPermissionSubject, module, 'create_employee_review'))) {
+      return { success: false, message: 'Bạn chưa được cấp quyền đánh giá nhân sự.' };
+    }
     const targetEmployeeId = `${reviewData.targetEmployeeId || ''}`.trim();
     if (!targetEmployeeId) return { success: false, message: 'Vui lòng chọn nhân sự cần đánh giá.' };
     const targetEmployee = rawEmployees.find(emp => emp.id === targetEmployeeId && emp.companyId === myCompanyId && !emp.isArchived);
@@ -18383,17 +17993,30 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
     const rating = Number(clampEmployeeReviewStar(reviewData.rating ?? reviewData.score ?? criteriaAverage, 0).toFixed(2));
     const isAnonymousPeerReview = source === 'peer';
 
-    const id = reviewData.id || `er_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const clientMutationId = `${reviewData.clientMutationId || ''}`.trim();
+    if (clientMutationId && !/^[a-zA-Z0-9_-]{1,160}$/.test(clientMutationId)) {
+      return { success: false, message: 'Mã thao tác đánh giá không hợp lệ.' };
+    }
+    const id = reviewData.id || `er_${clientMutationId || `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`}`;
     const existingReview = rawEmployeeReviews.find(review => review?.id === id && review?.companyId === myCompanyId);
+    if (reviewData.id && !existingReview) return { success: false, message: 'Không tìm thấy đánh giá trong công ty hiện tại.' };
+    if (existingReview ? source !== (existingReview.source || 'peer') : source !== 'peer') {
+      return { success: false, message: 'Không thể thay đổi nguồn đánh giá đã lưu. Vui lòng mở lại đánh giá.' };
+    }
+    if (existingReview && (existingReview.targetEmployeeId !== targetEmployeeId
+      || normalizeEmployeeReviewMonthKey(existingReview.monthKey || existingReview.date || existingReview.createdAt)
+        !== normalizeEmployeeReviewMonthKey(reviewData.monthKey || reviewData.date || getTodayString()))) {
+      return { success: false, message: 'Nhân sự hoặc tháng đánh giá đã thay đổi. Vui lòng mở lại đánh giá.' };
+    }
     const now = new Date().toISOString();
     const payload = {
       id,
       companyId: myCompanyId,
       targetEmployeeId,
       targetEmployeeName: targetEmployee.name || '',
-      reviewerEmployeeId,
-      reviewerName: isAnonymousPeerReview ? 'Ẩn danh' : (reviewData.reviewerName || currentUser?.name || ''),
-      isAnonymous: isAnonymousPeerReview || Boolean(reviewData.isAnonymous),
+      reviewerEmployeeId: existingReview ? (existingReview.reviewerEmployeeId || '') : reviewerEmployeeId,
+      reviewerName: isAnonymousPeerReview ? 'Ẩn danh' : (existingReview?.reviewerName || ''),
+      isAnonymous: isAnonymousPeerReview || Boolean(existingReview?.isAnonymous),
       source,
       rating,
       score: rating,
@@ -18402,66 +18025,64 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
       reason: capitalizeFirst(reviewData.reason || ''),
       monthKey: normalizeEmployeeReviewMonthKey(reviewData.monthKey || reviewData.date || now),
       date: reviewData.date || getTodayString(),
-      createdAt: reviewData.createdAt || now,
+      createdAt: existingReview?.createdAt || reviewData.createdAt || now,
       updatedAt: now,
-      createdByEmpId: currentUser?.id || ''
+      createdByEmpId: existingReview ? (existingReview.createdByEmpId || '') : (currentUser?.id || ''),
+      updatedByEmpId: currentUser?.id || ''
     };
 
+    const writeResult = await saveDataDocument(
+      'employeeReviews',
+      id,
+      payload,
+      { merge: true },
+      4500,
+      'Firebase SDK phản hồi chậm khi lưu đánh giá nhân sự.'
+    );
+    if (writeResult?.success === false) throw new Error(writeResult.message || 'Không lưu được đánh giá.');
+    const confirmation = await requireSharedWriteConfirmation(writeResult, 'employeeReviews', id);
+    if (confirmation?.queued || confirmation?.success === false) throw new Error(confirmation.message || 'Máy chủ chưa xác nhận đánh giá. Vui lòng thử lại.');
+    if (!isReviewScopeCurrent()) return { success: false, message: 'Phiên công ty đã thay đổi. Đánh giá đã được xác nhận trong phiên trước.' };
     upsertLocalListRecord(setRawEmployeeReviews, payload);
     rememberRecentLocalWrite('employeeReviews', id, payload);
-    try {
-      await saveDataDocument(
-        'employeeReviews',
-        id,
-        payload,
-        { merge: true },
-        4500,
-        'Firebase SDK phản hồi chậm khi lưu đánh giá nhân sự.'
-      );
-      const notificationId = `employee_review_${id}`;
-      const notificationPayload = {
-        id: notificationId,
-        companyId: myCompanyId,
-        type: 'employee_review_received',
-        title: rating >= 4 ? 'Bạn vừa nhận đánh giá tích cực' : 'Bạn vừa nhận đánh giá mới',
-        message: `${targetEmployee.name || 'Nhân sự'} vừa nhận đánh giá ${formatNumber(rating)} sao. Mở mục Đánh giá để xem chi tiết và gợi ý cải thiện.`,
-        targetEmployeeId,
-        employeeId: targetEmployeeId,
-        targetEmployeeIds: [targetEmployeeId],
-        relatedId: id,
-        tab: 'employee_reviews',
-        tone: rating >= 4 ? 'emerald' : rating <= 2 ? 'amber' : 'sky',
-        isRead: false,
-        isArchived: false,
-        createdAt: now,
-        updatedAt: now
-      };
-      upsertLocalListRecord(setRawNotifications, notificationPayload);
-      rememberRecentLocalWrite('notifications', notificationId, notificationPayload);
-      saveDataDocument(
-        'notifications',
-        notificationId,
-        notificationPayload,
-        { merge: true },
-        4500,
-        'Firebase SDK phản hồi chậm khi gửi thông báo đánh giá nhân sự.'
-      ).catch(error => {
-        console.warn('Không gửi được thông báo đánh giá nhân sự:', error);
-      });
-      return {
-        success: true,
-        message: source === 'peer'
-          ? 'Cảm ơn bạn đã đánh giá. Kết quả đã được ghi ẩn danh.'
-          : 'Đã lưu đánh giá nhân sự.'
-      };
-    } catch (error) {
-      if (existingReview) {
-        upsertLocalListRecord(setRawEmployeeReviews, existingReview);
-      } else {
-        rollbackLocalListRecord(setRawEmployeeReviews, id);
-      }
-      throw error;
-    }
+    const notificationId = `employee_review_${id}`;
+    const notificationPayload = {
+      id: notificationId,
+      companyId: myCompanyId,
+      type: 'employee_review_received',
+      title: rating >= 4 ? 'Bạn vừa nhận đánh giá tích cực' : 'Bạn vừa nhận đánh giá mới',
+      message: `${targetEmployee.name || 'Nhân sự'} vừa nhận đánh giá ${formatNumber(rating)} sao. Mở mục Đánh giá để xem chi tiết và gợi ý cải thiện.`,
+      targetEmployeeId,
+      employeeId: targetEmployeeId,
+      targetEmployeeIds: [targetEmployeeId],
+      relatedId: id,
+      tab: 'employee_reviews',
+      tone: rating >= 4 ? 'emerald' : rating <= 2 ? 'amber' : 'sky',
+      isRead: false,
+      isArchived: false,
+      createdAt: now,
+      updatedAt: now
+    };
+    upsertLocalListRecord(setRawNotifications, notificationPayload);
+    rememberRecentLocalWrite('notifications', notificationId, notificationPayload);
+    saveDataDocument(
+      'notifications',
+      notificationId,
+      notificationPayload,
+      { merge: true },
+      4500,
+      'Firebase SDK phản hồi chậm khi gửi thông báo đánh giá nhân sự.'
+    ).catch(error => {
+      console.warn('Không gửi được thông báo đánh giá nhân sự:', error);
+    });
+    return {
+      success: true,
+      queued: false,
+      id,
+      message: source === 'peer'
+        ? 'Cảm ơn bạn đã đánh giá. Kết quả đã được ghi ẩn danh.'
+        : 'Đã lưu đánh giá nhân sự.'
+    };
   };
 
   const handleAddCustomer = async (empId, customerData = {}) => {
@@ -18780,50 +18401,47 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
 
   const handleAddCustomerLoan = async (customerId, loanData = {}) => {
     if (!firebaseUser || !myCompanyId) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
+    const subject = { company: currentCompany, employee: appCurrentEmployee, currentUser };
+    if (!isOwnerAccountUser(appCurrentEmployee, currentUser)
+      && !['create_customer_loan', 'add_edit_customer'].some(action => hasCompanyRolePermissionAction(subject, 'customers', action))) {
+      return { success: false, message: 'Tài khoản hiện tại chưa có quyền tạo phiếu vay.' };
+    }
     const customer = rawCustomers.find(item => item.id === customerId && item.companyId === myCompanyId && !item.isArchived);
     if (!customer) return { success: false, message: 'Không tìm thấy khách hàng để tạo phiếu vay.' };
-    const productName = `${loanData.productName || loanData.itemName || ''}`.trim();
-    if (!productName) return { success: false, message: 'Vui lòng nhập hàng hóa khách vay.' };
-    const now = new Date().toISOString();
-    const id = `cl_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const payload = {
-      ...loanData,
-      id,
-      companyId: myCompanyId,
-      customerId,
-      customerName: getCustomerDisplayName(customer) || customer.name || '',
-      productName,
-      quantity: parseLooseQuantityValue(loanData.quantity),
-      unit: `${loanData.unit || 'Kg'}`.trim() || 'Kg',
-      weightKg: parseLooseQuantityValue(loanData.weightKg),
-      loanDate: loanData.loanDate || getTodayString(),
-      dueDate: loanData.dueDate || '',
-      note: `${loanData.note || ''}`.trim(),
-      returns: Array.isArray(loanData.returns) ? loanData.returns : [],
-      status: loanData.status || 'open',
-      isArchived: false,
-      createdAt: now,
-      updatedAt: now,
-      createdByEmpId: currentUser?.id || ''
-    };
-    setRawCustomerLoans(prev => [payload, ...prev.filter(item => item.id !== id)]);
-    await saveDataDocument('customerLoans', id, payload, {}, 4500, 'Firebase SDK phản hồi chậm khi lưu phiếu vay khách hàng.');
-    return { success: true, id };
+    const { prepareCustomerLoanCreate, commitCustomerLoan } = await import('./utils/customerLoanIntegrity.js');
+    const intent = prepareCustomerLoanCreate(customerId, { ...loanData, loanDate: loanData.loanDate || getTodayString() });
+    const result = await commitCustomerLoan({ intent, fingerprint: await payloadFingerprint(intent), companyId: myCompanyId,
+      employeeId: currentUser?.id || '', customerName: getCustomerDisplayName(customer) || customer.name || '', now: new Date().toISOString(),
+      reference: doc(db, 'artifacts', appId, 'public', 'data', 'customerLoans', intent.id),
+      customerReference: doc(db, 'artifacts', appId, 'public', 'data', 'customers', customerId),
+      transaction: work => runTransaction(db, work) });
+    if (activeTenantScopeRef.current === myCompanyId) {
+      upsertLocalListRecord(setRawCustomerLoans, result.loan);
+      rememberRecentLocalWrite('customerLoans', intent.id, result.loan);
+    }
+    return { success: true, id: intent.id, ...result };
   };
 
-  const handleEditCustomerLoan = async (loanId, patch = {}) => {
+  const handleEditCustomerLoan = async (loanId, patch = {}, expectedLoan = null) => {
     if (!firebaseUser || !myCompanyId) return { success: false, message: 'Phiên làm việc không hợp lệ.' };
-    const currentLoan = rawCustomerLoans.find(item => item.id === loanId && item.companyId === myCompanyId);
-    if (!currentLoan) return { success: false, message: 'Không tìm thấy phiếu vay cần cập nhật.' };
-    const now = new Date().toISOString();
-    const payload = {
-      ...patch,
-      updatedAt: patch.updatedAt || now,
-      updatedByEmpId: currentUser?.id || ''
-    };
-    setRawCustomerLoans(prev => prev.map(item => item.id === loanId ? { ...item, ...payload } : item));
-    await saveDataDocument('customerLoans', loanId, payload, { merge: true }, 4500, 'Firebase SDK phản hồi chậm khi cập nhật phiếu vay khách hàng.');
-    return { success: true };
+    const subject = { company: currentCompany, employee: appCurrentEmployee, currentUser };
+    const action = Object.hasOwn(patch, 'returns') ? 'return_customer_loan' : 'edit_customer_loan';
+    if (!isOwnerAccountUser(appCurrentEmployee, currentUser)
+      && ![action, 'add_edit_customer'].some(permission => hasCompanyRolePermissionAction(subject, 'customers', permission))) {
+      return { success: false, message: 'Tài khoản hiện tại chưa có quyền cập nhật phiếu vay.' };
+    }
+    const { prepareCustomerLoanEdit, commitCustomerLoan } = await import('./utils/customerLoanIntegrity.js');
+    const intent = prepareCustomerLoanEdit(loanId, patch, expectedLoan);
+    const result = await commitCustomerLoan({ intent, fingerprint: await payloadFingerprint(intent), companyId: myCompanyId,
+      employeeId: currentUser?.id || '', now: new Date().toISOString(),
+      reference: doc(db, 'artifacts', appId, 'public', 'data', 'customerLoans', loanId),
+      customerReference: doc(db, 'artifacts', appId, 'public', 'data', 'customers', intent.customerId),
+      transaction: work => runTransaction(db, work) });
+    if (activeTenantScopeRef.current === myCompanyId) {
+      upsertLocalListRecord(setRawCustomerLoans, result.loan);
+      rememberRecentLocalWrite('customerLoans', loanId, result.loan);
+    }
+    return { success: true, id: loanId, ...result };
   };
 
   const handleDeleteCustomerLoan = async (loanId) => {
@@ -18835,8 +18453,10 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
       archivedAt: new Date().toISOString(),
       archivedByEmpId: currentUser?.id || ''
     };
-    setRawCustomerLoans(prev => prev.filter(item => item.id !== loanId));
     await saveDataDocument('customerLoans', loanId, payload, { merge: true }, 4500, 'Firebase SDK phản hồi chậm khi xóa phiếu vay khách hàng.');
+    if (activeTenantScopeRef.current === myCompanyId) {
+      setRawCustomerLoans(prev => prev.filter(item => item.id !== loanId));
+    }
     return { success: true };
   };
 
@@ -18906,11 +18526,12 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
   };
 
   const handleAddOrder = async (empId, orderData, financialData = {}) => {
+    const creationIntent=orderData.clientMutationId?orderCreationIntent({companyId:myCompanyId,employeeId:empId,orderData,financialData}):null;
     const sourceDispatchIds = getWarehouseDispatchIds(orderData);
     const isWarehouseDispatchOrder = sourceDispatchIds.length > 0;
     const existingCompanyOrders = rawOrders.filter(order => order?.companyId === myCompanyId);
     const duplicateDispatchIds = isWarehouseDispatchOrder
-      ? findDuplicateWarehouseDispatchIds([orderData], existingCompanyOrders)
+      ? findDuplicateWarehouseDispatchIds([orderData], existingCompanyOrders.filter(order=>order.id!==creationIntent?.id))
       : [];
     if (duplicateDispatchIds.length > 0) {
       throw new Error(`Phiếu xuất kho ${duplicateDispatchIds.slice(0, 3).join(', ')} đã được liên kết với đơn hàng trước đó. App đã chặn tạo trùng.`);
@@ -18935,7 +18556,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
         date: orderDateKey || getTodayString(),
       });
       const duplicatedOrder = duplicateSignature
-        ? existingCompanyOrders.find((order) => buildOrderDuplicateSignature(order) === duplicateSignature)
+        ? existingCompanyOrders.find((order) => order.id!==creationIntent?.id&&buildOrderDuplicateSignature(order) === duplicateSignature)
         : null;
       if (duplicatedOrder) {
         throw new Error(`This order already exists (${duplicatedOrder.code || duplicatedOrder.id || 'existing order'}).`);
@@ -18981,7 +18602,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
       date: orderDateKey || getTodayString()
     });
     const duplicatedOrder = duplicateSignature
-      ? existingCompanyOrders.find(order => buildOrderDuplicateSignature(order) === duplicateSignature)
+      ? existingCompanyOrders.find(order => order.id!==creationIntent?.id&&buildOrderDuplicateSignature(order) === duplicateSignature)
       : null;
 
     if (duplicatedOrder) {
@@ -18992,14 +18613,15 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
       throw new Error('Đơn hàng này đang được lưu. App đã chặn thao tác bấm lưu lặp lại.');
     }
 
-    const id = duplicateSignature
+    const id = creationIntent?.id || (duplicateSignature
       ? `o_${buildStableHash([myCompanyId || 'company', duplicateSignature].join('|'))}`
-      : `o_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      : `o_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
 
     if (duplicateSignature) orderCreateInFlightRef.current.add(duplicateSignature);
 
     const newOrderDocument = {
       ...orderData,
+      ...(creationIntent?{clientMutationId:creationIntent.command.id,orderCreationCommand:creationIntent.command}:{}),
       ...(isWarehouseDispatchOrder ? { sourceType: 'warehouse_dispatch' } : {}),
       ...(isWarehouseDispatchOrder ? { sourceDispatchIds } : {}),
       date: orderDateTime,
@@ -19074,13 +18696,16 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
           updatedAt: now,
         };
 
-        await runTransaction(db, async (transaction) => {
+        const creationReceipt=await runTransaction(db, async (transaction) => {
           const orderSnapshot = await transaction.get(orderRef);
           if (orderSnapshot.exists()) {
+            if(creationIntent){assertOrderCreationReplay(orderSnapshot.data(),creationIntent.command,myCompanyId);return {replayed:true};}
             throw new Error('Phiếu xuất kho này đã được lên đơn trước đó. App đã chặn tạo trùng.');
           }
 
           const dispatchSnapshots = await Promise.all(dispatchRefs.map(dispatchRef => transaction.get(dispatchRef)));
+          const financialSnapshots=await Promise.all(financialWrites.map(write=>transaction.get(doc(db,'artifacts',appId,'public','data',write.collectionName,write.documentId))));
+          if(financialSnapshots.some(snapshot=>snapshot.exists()))throw new Error('Chứng từ thu/chi của đơn đã tồn tại. Vui lòng đối soát trước khi tạo lại.');
           const linkedDispatch = dispatchSnapshots.find(snapshot => {
             if (!snapshot.exists()) return true;
             const dispatch = snapshot.data() || {};
@@ -19100,6 +18725,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
           financialWrites.forEach(write => transaction.set(doc(db, 'artifacts', appId, 'public', 'data', write.collectionName, write.documentId), sanitizeFirestoreWritePayload(write.payload), write.options));
         });
 
+        if(creationReceipt?.replayed)return id;
         notifyFirestoreDocumentChanged(orderRef, 'set', newOrderDocument, {});
         queueActivityAuditLog({ documentRef: orderRef, action: 'set', payload: newOrderDocument, options: {} });
         dispatchRefs.forEach(dispatchRef => {
@@ -19124,11 +18750,16 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
           dispatchLinkPatch
         ));
       } else {
-        saveAtomicDocuments(`order_${id}`, [
+        const orderWrites=[
           { collectionName: 'orders', documentId: id, payload: newOrderDocument, options: {} },
           ...financialWrites,
-        ]);
-        void flushPendingFirebaseWriteNow(ATOMIC_SAVE_COLLECTION, `order_${id}`, 12000, myCompanyId).then(async () => {
+        ].map(write=>creationIntent?{...write,orderCreationCommand:creationIntent.command}:write);
+        const writeResult = saveAtomicDocuments(`order_${id}`, orderWrites);
+        const confirmation = await requireSharedWriteConfirmation(writeResult, ATOMIC_SAVE_COLLECTION, `order_${id}`);
+        // A replay publishes the current server documents through the queue.
+        // Never run creation side effects with the old submitted invoice again.
+        if (confirmation?.existingDocuments?.some(write => write.collectionName === 'orders' && write.documentId === id)) return id;
+        void Promise.resolve().then(async () => {
           if (activeTenantScopeRef.current !== myCompanyId) return;
           scheduleOrderShareWarmup({ order: newOrderDocument, company: currentCompany, customers,
             orders: [newOrderDocument, ...existingCompanyOrders.filter(order => order.id !== id)],
@@ -19157,7 +18788,9 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
       });
       return id;
     } catch (error) {
-      if (!isWarehouseDispatchOrder) {
+      // Command writes own their rollback from the actual server snapshot.
+      // An old form must not remove a newer confirmed invoice on rejection.
+      if (!isWarehouseDispatchOrder && !creationIntent) {
         if (error?.code === 'firestore/sync-pending') {
           setRawOrders(prev => (Array.isArray(prev)
             ? prev.map(order => order?.id === id ? { ...order, __pendingFirebaseSync: true } : order)
@@ -19970,6 +19603,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
 
   const handleSavePricingRules = async (rulesData = {}) => {
     if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ. Vui lòng đăng nhập lại.');
+    assertPricingLossStandards(rulesData);
     const id = rulesData.id || 'pricing_engine_rules';
     const updatedAt = new Date().toISOString();
     const payload = {
@@ -20143,269 +19777,97 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
   };
 
   const handleAddAsset = async (empId, assetData = {}) => {
-    if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ. Vui lòng đăng nhập lại.');
-    const id = `asset_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    const assignedDriverIds = getDeliveryAssignmentIds(assetData);
-    const assignedDriverId = assignedDriverIds[0] || '';
-    const handoverEntry = assetData.handoverDate || assetData.handoverKm || assetData.handoverCondition || assetData.handoverNote || assetData.handoverImageUrl
-      ? {
-          id: `handover_${Date.now()}`,
-          driverId: assignedDriverId,
-          driverIds: assignedDriverIds,
-          assignedDriverIds,
-          date: assetData.handoverDate || getTodayString(),
-          km: parseLooseQuantityValue(assetData.handoverKm),
-          condition: assetData.handoverCondition || '',
-          note: assetData.handoverNote || '',
-          imageUrl: assetData.handoverImageUrl || '',
-          createdAt: new Date().toISOString(),
-          createdByEmpId: empId || ''
-        }
-      : null;
-    await saveDataDocument('assets', id, {
-      ...assetData,
-      id,
-      companyId: myCompanyId,
-      createdByEmpId: empId || '',
-      assignedDriverId,
-      driverId: assignedDriverId,
-      assignedDriverIds,
-      driverIds: assignedDriverIds,
-      fuelNorm: parseLooseQuantityValue(assetData.fuelNorm),
-      tankCapacity: parseLooseQuantityValue(assetData.tankCapacity),
-      maintenanceIntervalKm: parseLooseQuantityValue(assetData.maintenanceIntervalKm),
-      lastMaintenanceKm: parseLooseQuantityValue(assetData.lastMaintenanceKm),
-      nextMaintenanceKm: parseLooseQuantityValue(assetData.nextMaintenanceKm),
-      currentKm: parseLooseQuantityValue(assetData.currentKm),
-      handoverKm: parseLooseQuantityValue(assetData.handoverKm),
-      handoverHistory: handoverEntry ? [handoverEntry] : [],
-      status: assetData.status || 'active',
-      isArchived: false,
-      createdAt: new Date().toISOString()
-    });
-    return id;
+    const checkAccess = () => assertAssetMutationAccess({firebaseUser,companyId:myCompanyId,currentCompany,currentUser,
+      employee:appCurrentEmployee,hasPermission:hasCompanyRolePermissionAction,
+      isCurrent:readOwnerRef.current===readOwnerKey&&activeTenantScopeRef.current===myCompanyId},'create_asset');
+    checkAccess();
+    const plan = await prepareAssetMutation({kind:'create',input:assetData,assets:rawAssets,companyId:myCompanyId,
+      actorId:currentUser.id,now:new Date().toISOString(),assignmentIds:getDeliveryAssignmentIds,
+      canManageHandover:hasCompanyRolePermissionAction({company:currentCompany,employee:appCurrentEmployee,currentUser},'asset_management','manage_asset_handover')});
+    checkAccess();
+    const receipt = saveAtomicDocuments(plan.key,plan.writes);
+    const confirmed = await requireSharedWriteConfirmation(receipt,ATOMIC_SAVE_COLLECTION,plan.key);
+    if (confirmed?.queued || confirmed?.success===false) throw new Error('Máy chủ chưa xác nhận tài sản. Vui lòng thử lại.');
+    return plan.id;
   };
 
   const handleEditAsset = async (assetId, assetData = {}, empId = '') => {
-    if (!firebaseUser || !myCompanyId || !assetId) throw new Error('Phiên làm việc hoặc tài sản không hợp lệ.');
-    const previousAsset = assets.find(asset => asset.id === assetId) || {};
-    const assignedDriverIds = getDeliveryAssignmentIds(assetData);
-    const assignedDriverId = assignedDriverIds[0] || '';
-    const previousAssignedDriverSignature = getDeliveryAssignmentIds(previousAsset).join('|');
-    const assignedDriverSignature = assignedDriverIds.join('|');
-    const shouldAppendHandover = (
-      assetData.handoverDate &&
-      (
-        `${assetData.handoverDate || ''}` !== `${previousAsset.handoverDate || ''}` ||
-        `${assetData.handoverKm || ''}` !== `${previousAsset.handoverKm || ''}` ||
-        assignedDriverSignature !== previousAssignedDriverSignature ||
-        `${assetData.handoverCondition || ''}` !== `${previousAsset.handoverCondition || ''}` ||
-        `${assetData.handoverNote || ''}` !== `${previousAsset.handoverNote || ''}` ||
-        `${assetData.handoverImageUrl || ''}` !== `${previousAsset.handoverImageUrl || ''}`
-      )
-    );
-    const nextHistory = Array.isArray(previousAsset.handoverHistory) ? [...previousAsset.handoverHistory] : [];
-    if (shouldAppendHandover) {
-      nextHistory.unshift({
-        id: `handover_${Date.now()}`,
-        driverId: assignedDriverId,
-        driverIds: assignedDriverIds,
-        assignedDriverIds,
-        date: assetData.handoverDate || getTodayString(),
-        km: parseLooseQuantityValue(assetData.handoverKm),
-        condition: assetData.handoverCondition || '',
-        note: assetData.handoverNote || '',
-        imageUrl: assetData.handoverImageUrl || '',
-        createdAt: new Date().toISOString(),
-        createdByEmpId: empId || employeeInfo?.id || currentUser?.id || ''
-      });
-    }
-    await saveDataDocument('assets', assetId, {
-      ...assetData,
-      assignedDriverId,
-      driverId: assignedDriverId,
-      assignedDriverIds,
-      driverIds: assignedDriverIds,
-      fuelNorm: parseLooseQuantityValue(assetData.fuelNorm),
-      tankCapacity: parseLooseQuantityValue(assetData.tankCapacity),
-      maintenanceIntervalKm: parseLooseQuantityValue(assetData.maintenanceIntervalKm),
-      lastMaintenanceKm: parseLooseQuantityValue(assetData.lastMaintenanceKm),
-      nextMaintenanceKm: parseLooseQuantityValue(assetData.nextMaintenanceKm),
-      currentKm: parseLooseQuantityValue(assetData.currentKm),
-      handoverKm: parseLooseQuantityValue(assetData.handoverKm),
-      handoverHistory: nextHistory,
-      updatedAt: new Date().toISOString(),
-      updatedByEmpId: empId || employeeInfo?.id || currentUser?.id || ''
-    }, { merge: true });
+    const checkAccess = () => assertAssetMutationAccess({firebaseUser,companyId:myCompanyId,currentCompany,currentUser,
+      employee:appCurrentEmployee,hasPermission:hasCompanyRolePermissionAction,
+      isCurrent:readOwnerRef.current===readOwnerKey&&activeTenantScopeRef.current===myCompanyId},'edit_asset');
+    checkAccess();
+    const plan = await prepareAssetMutation({kind:'edit',id:assetId,input:assetData,assets:rawAssets,companyId:myCompanyId,
+      actorId:currentUser.id,now:new Date().toISOString(),assignmentIds:getDeliveryAssignmentIds,
+      canManageHandover:hasCompanyRolePermissionAction({company:currentCompany,employee:appCurrentEmployee,currentUser},'asset_management','manage_asset_handover')});
+    checkAccess();
+    const receipt = saveAtomicDocuments(plan.key,plan.writes);
+    const confirmed = await requireSharedWriteConfirmation(receipt,ATOMIC_SAVE_COLLECTION,plan.key);
+    if (confirmed?.queued || confirmed?.success===false) throw new Error('Máy chủ chưa xác nhận tài sản. Vui lòng thử lại.');
+    return {id:plan.id,success:true,confirmed:true,queued:false};
   };
 
-  const handleDeleteAsset = async (assetId) => {
-    if (!firebaseUser || !myCompanyId || !assetId) throw new Error('Phiên làm việc hoặc tài sản không hợp lệ.');
-    await saveDataDocument('assets', assetId, {
-      isArchived: true,
-      archivedAt: new Date().toISOString(),
-      archivedByEmpId: employeeInfo?.id || currentUser?.id || ''
-    }, { merge: true });
+  const handleDeleteAsset = async (assetId, commandData = {}) => {
+    const checkAccess = () => assertAssetMutationAccess({firebaseUser,companyId:myCompanyId,currentCompany,currentUser,
+      employee:appCurrentEmployee,hasPermission:hasCompanyRolePermissionAction,
+      isCurrent:readOwnerRef.current===readOwnerKey&&activeTenantScopeRef.current===myCompanyId},'delete_asset');
+    checkAccess();
+    const plan = await prepareAssetMutation({kind:'delete',id:assetId,input:commandData,assets:rawAssets,companyId:myCompanyId,
+      actorId:currentUser.id,now:new Date().toISOString(),assignmentIds:getDeliveryAssignmentIds});
+    checkAccess();
+    const receipt = saveAtomicDocuments(plan.key,plan.writes);
+    const confirmed = await requireSharedWriteConfirmation(receipt,ATOMIC_SAVE_COLLECTION,plan.key);
+    if (confirmed?.queued || confirmed?.success===false) throw new Error('Máy chủ chưa xác nhận xóa tài sản. Vui lòng thử lại.');
+    return {id:plan.id,success:true,confirmed:true,queued:false};
   };
 
   const handleAddAssetCostLog = async (empId, logData = {}, writePlan = null) => {
-    if (!firebaseUser || !myCompanyId) throw new Error('Phiên làm việc không hợp lệ.');
-    const id = `${logData.clientMutationId || `acl_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`}`.trim();
-    const liters = parseLooseQuantityValue(logData.liters);
-    const unitPrice = parseLooseMoneyValue(logData.unitPrice);
-    const amount = parseLooseMoneyValue(logData.amount) || (liters > 0 && unitPrice > 0 ? liters * unitPrice : parseLooseMoneyValue(logData.totalAmount));
-    const nowIso = new Date().toISOString();
-    const sourceType = `${logData.sourceType || ''}`;
-    const linkedAsset = assets.find(asset => `${asset.id || ''}` === `${logData.assetId || ''}`) || {};
-    const assetName = logData.assetName || logData.assetNameSnapshot || getAssetDisplayLabel(linkedAsset);
-    const costCategory = normalizeExpenseCategoryLabel(logData.category || logData.costType || (logData.type === 'fuel' ? 'Đổ xăng/dầu' : getAssetCostTypeLabel(logData.type || 'other')));
-    const shouldSyncExpense = amount > 0
-      && !logData.skipExpenseSync
-      && !logData.expenseId
-      && !logData.relatedExpenseId
-      && !logData.relatedDeliveryReportId
-      && !sourceType.includes('delivery');
-    const expenseId = shouldSyncExpense ? `exp_asset_cost_${id}` : (logData.expenseId || logData.relatedExpenseId || '');
-    const logPayload = {
-      ...logData,
-      id,
-      companyId: myCompanyId,
-      empId: empId || '',
-      createdByEmpId: empId || '',
-      assetId: logData.assetId || '',
-      assetName,
-      assetPlate: logData.assetPlate || linkedAsset.plateNumber || linkedAsset.licensePlate || linkedAsset.plate || '',
-      driverId: logData.driverId || '',
-      type: logData.type || 'fuel',
-      date: logData.date || getTodayString(),
-      kmAt: parseLooseQuantityValue(logData.kmAt),
-      liters,
-      unitPrice,
-      amount,
-      expenseId,
-      isArchived: false,
-      createdAt: nowIso
-    };
-    const expensePayload = shouldSyncExpense ? {
-      id: expenseId,
-      companyId: myCompanyId,
-      type: 'expense',
-      amount,
-      date: logPayload.date,
-      category: costCategory,
-      note: normalizeLeadingLabel(logData.note || `${costCategory}${assetName ? ` - ${assetName}` : ''}`),
-      sourceType: 'asset_cost_log',
-      sourceLabel: 'Chi phí tài sản',
-      assetCostLogId: id,
-      relatedAssetCostLogId: id,
-      assetId: logPayload.assetId,
-      assetName: logPayload.assetName,
-      assetPlate: logPayload.assetPlate,
-      driverId: logPayload.driverId,
-      empId: empId || '',
-      createdByEmpId: empId || '',
-      createdByEmployeeId: empId || '',
-      requiresApproval: false,
-      approvalStatus: CASHFLOW_APPROVAL_STATUS.approved,
-      handoverStatus: 'confirmed',
-      isArchived: false,
-      createdAt: nowIso
-    } : null;
-
-    const writes = [
-      { collectionName: 'assetCostLogs', documentId: id, payload: logPayload, options: { merge: true } },
-      ...(expensePayload ? [{ collectionName: 'expenses', documentId: expenseId, payload: expensePayload, options: { merge: true } }] : []),
-    ];
-    if (writePlan) writePlan.push(...writes);
-    else saveAtomicDocuments(`asset_cost_${id}`, writes);
-    return id;
+    const checkAccess = () => assertAssetMutationAccess({firebaseUser,companyId:myCompanyId,currentCompany,currentUser,
+      employee:appCurrentEmployee,hasPermission:hasCompanyRolePermissionAction,
+      isCurrent:readOwnerRef.current===readOwnerKey&&activeTenantScopeRef.current===myCompanyId},'create_asset_cost_log',writePlan?'create_delivery_report':'');
+    checkAccess();
+    const plan = await prepareAssetCostMutation({kind:'create',input:logData,assets:rawAssets,logs:rawAssetCostLogs,
+      expenses:rawExpenses,companyId:myCompanyId,actorId:currentUser.id,now:new Date().toISOString(),
+      assetLabel:getAssetDisplayLabel,costLabel:value=>normalizeExpenseCategoryLabel(getAssetCostTypeLabel(value)),deliveryPlan:writePlan,
+      canUploadImages:hasCompanyRolePermissionAction({company:currentCompany,employee:appCurrentEmployee,currentUser},'asset_management','upload_asset_cost_images')});
+    checkAccess();
+    if (writePlan) { writePlan.push(...plan.writes); return plan.id; }
+    const receipt = saveAtomicDocuments(plan.key,plan.writes);
+    const confirmed = await requireSharedWriteConfirmation(receipt,ATOMIC_SAVE_COLLECTION,plan.key);
+    if (confirmed?.queued || confirmed?.success===false) throw new Error('Máy chủ chưa xác nhận chi phí. Vui lòng thử lại.');
+    return {id:plan.id,success:true,confirmed:true,queued:false};
   };
 
   const handleEditAssetCostLog = async (logId, logData = {}, empId = '', writePlan = null) => {
-    if (!firebaseUser || !logId) throw new Error('Phiên làm việc không hợp lệ.');
-    const currentLog = assetCostLogs.find(log => `${log.id || ''}` === `${logId}`);
-    if (!currentLog || currentLog.companyId !== myCompanyId) throw new Error('Không tìm thấy chi phí của công ty này.');
-    const liters = parseLooseQuantityValue(logData.liters);
-    const unitPrice = parseLooseMoneyValue(logData.unitPrice);
-    const amount = parseLooseMoneyValue(logData.amount) || (liters > 0 && unitPrice > 0 ? liters * unitPrice : parseLooseMoneyValue(logData.totalAmount));
-    const linkedAsset = assets.find(asset => `${asset.id || ''}` === `${logData.assetId || currentLog.assetId || ''}`) || {};
-    const linkedExpense = expenses.find(expense => (
-      `${expense.id || ''}` === `${logData.expenseId || currentLog.expenseId || ''}` ||
-      `${expense.assetCostLogId || ''}` === `${logId}` ||
-      `${expense.relatedAssetCostLogId || ''}` === `${logId}` ||
-      `${expense.sourceAssetCostLogId || ''}` === `${logId}`
-    ));
-    const nowIso = new Date().toISOString();
-    const assetName = logData.assetName || logData.assetNameSnapshot || currentLog.assetName || getAssetDisplayLabel(linkedAsset);
-    const logPatch = {
-      ...logData,
-      kmAt: parseLooseQuantityValue(logData.kmAt),
-      liters,
-      unitPrice,
-      amount,
-      assetName,
-      assetPlate: logData.assetPlate || currentLog.assetPlate || linkedAsset.plateNumber || linkedAsset.licensePlate || linkedAsset.plate || '',
-      updatedAt: nowIso,
-      updatedByEmpId: empId || employeeInfo?.id || currentUser?.id || ''
-    };
-    const localLogPayload = { ...currentLog, ...logPatch, id: logId, companyId: currentLog.companyId || myCompanyId };
-
-    let expensePatch = null;
-    if (linkedExpense && !linkedExpense.isArchived) {
-      const nextCategory = normalizeExpenseCategoryLabel(logData.category || linkedExpense.category || logData.costType || getAssetCostTypeLabel(logData.type || currentLog.type || 'other'));
-      expensePatch = {
-        ...linkedExpense,
-        amount,
-        date: logData.date || currentLog.date || linkedExpense.date || getTodayString(),
-        category: nextCategory,
-        note: normalizeLeadingLabel(logData.note || linkedExpense.note || `${nextCategory}${assetName ? ` - ${assetName}` : ''}`),
-        assetId: logData.assetId || currentLog.assetId || linkedExpense.assetId || '',
-        assetName,
-        assetPlate: logPatch.assetPlate,
-        driverId: logData.driverId || currentLog.driverId || linkedExpense.driverId || '',
-        assetCostLogId: logId,
-        relatedAssetCostLogId: logId,
-        updatedAt: nowIso,
-        updatedByEmpId: empId || employeeInfo?.id || currentUser?.id || ''
-      };
-    }
-    const writes = [
-      { collectionName: 'assetCostLogs', documentId: logId, payload: localLogPayload, options: { merge: true } },
-      ...(expensePatch ? [{ collectionName: 'expenses', documentId: linkedExpense.id, payload: expensePatch, options: { merge: true } }] : []),
-    ];
-    if (writePlan) { writePlan.push(...writes); return { planned: true }; }
-    return saveAtomicDocuments(`asset_cost_${logId}`, writes);
+    const checkAccess = () => assertAssetMutationAccess({firebaseUser,companyId:myCompanyId,currentCompany,currentUser,
+      employee:appCurrentEmployee,hasPermission:hasCompanyRolePermissionAction,
+      isCurrent:readOwnerRef.current===readOwnerKey&&activeTenantScopeRef.current===myCompanyId},'edit_asset_cost_log',
+      writePlan?(logData.isArchived?'delete_delivery_report':'edit_delivery_report'):'');
+    checkAccess();
+    const plan = await prepareAssetCostMutation({kind:'edit',id:logId,input:logData,assets:rawAssets,logs:rawAssetCostLogs,
+      expenses:rawExpenses,companyId:myCompanyId,actorId:currentUser.id,now:new Date().toISOString(),
+      assetLabel:getAssetDisplayLabel,costLabel:value=>normalizeExpenseCategoryLabel(getAssetCostTypeLabel(value)),deliveryPlan:writePlan,
+      canUploadImages:hasCompanyRolePermissionAction({company:currentCompany,employee:appCurrentEmployee,currentUser},'asset_management','upload_asset_cost_images')});
+    checkAccess();
+    if (writePlan) { writePlan.push(...plan.writes); return {planned:true}; }
+    const receipt = saveAtomicDocuments(plan.key,plan.writes);
+    const confirmed = await requireSharedWriteConfirmation(receipt,ATOMIC_SAVE_COLLECTION,plan.key);
+    if (confirmed?.queued || confirmed?.success===false) throw new Error('Máy chủ chưa xác nhận chi phí. Vui lòng thử lại.');
+    return {id:plan.id,success:true,confirmed:true,queued:false};
   };
 
-  const handleDeleteAssetCostLog = async (logId) => {
-    if (!firebaseUser || !logId) throw new Error('Phiên làm việc không hợp lệ.');
-    const currentLog = assetCostLogs.find(log => `${log.id || ''}` === `${logId}`);
-    if (!currentLog || currentLog.companyId !== myCompanyId) throw new Error('Không tìm thấy chi phí của công ty này.');
-    const linkedExpense = expenses.find(expense => (
-      `${expense.id || ''}` === `${currentLog.expenseId || ''}` ||
-      `${expense.assetCostLogId || ''}` === `${logId}` ||
-      `${expense.relatedAssetCostLogId || ''}` === `${logId}` ||
-      `${expense.sourceAssetCostLogId || ''}` === `${logId}`
-    ));
-    const nowIso = new Date().toISOString();
-    const archivedByEmpId = employeeInfo?.id || currentUser?.id || '';
-    const logPatch = {
-      companyId: myCompanyId,
-      isArchived: true,
-      archivedAt: nowIso,
-      archivedByEmpId
-    };
-    const expensePatch = linkedExpense ? {
-      ...linkedExpense,
-      isArchived: true,
-      archivedAt: nowIso,
-      archivedByEmpId
-    } : null;
-
-    return saveAtomicDocuments(`asset_cost_${logId}`, [
-      { collectionName: 'assetCostLogs', documentId: logId, payload: logPatch, options: { merge: true } },
-      ...(expensePatch ? [{ collectionName: 'expenses', documentId: linkedExpense.id, payload: expensePatch, options: { merge: true } }] : []),
-    ]);
+  const handleDeleteAssetCostLog = async (logId, commandData = {}) => {
+    const checkAccess = () => assertAssetMutationAccess({firebaseUser,companyId:myCompanyId,currentCompany,currentUser,
+      employee:appCurrentEmployee,hasPermission:hasCompanyRolePermissionAction,
+      isCurrent:readOwnerRef.current===readOwnerKey&&activeTenantScopeRef.current===myCompanyId},'delete_asset_cost_log');
+    checkAccess();
+    const plan = await prepareAssetCostMutation({kind:'delete',id:logId,input:commandData,assets:rawAssets,logs:rawAssetCostLogs,
+      expenses:rawExpenses,companyId:myCompanyId,actorId:currentUser.id,now:new Date().toISOString(),
+      assetLabel:getAssetDisplayLabel,costLabel:value=>normalizeExpenseCategoryLabel(getAssetCostTypeLabel(value))});
+    checkAccess();
+    const receipt = saveAtomicDocuments(plan.key,plan.writes);
+    const confirmed = await requireSharedWriteConfirmation(receipt,ATOMIC_SAVE_COLLECTION,plan.key);
+    if (confirmed?.queued || confirmed?.success===false) throw new Error('Máy chủ chưa xác nhận xóa chi phí. Vui lòng thử lại.');
+    return {id:plan.id,success:true,confirmed:true,queued:false};
   };
 
   const handleAddWarehouseDispatch = async (empId, dispatchData) => {
@@ -20556,14 +20018,33 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
           break;
         }
         case 'addPayment': await handleAddPayment(operation.payload, writes); break;
+        case 'editPayment': {
+          const previous = rawPayments.find(row => row.id === operation.id && row.companyId === myCompanyId);
+          const expectedDeliveryCashflow = assertDeliveryCashflowWrite(previous, operation.payload);
+          const start = writes.length;
+          await handleEditPayment(operation.id, operation.payload, writes);
+          writes[start].expectedDeliveryCashflow = expectedDeliveryCashflow;
+          break;
+        }
         case 'addExpense': await handleAddExpense(empId, operation.payload, writes); break;
-        case 'editExpense': await handleEditExpense(operation.id, operation.payload, writes); break;
+        case 'editExpense': {
+          const previous = rawExpenses.find(row => row.id === operation.id && row.companyId === myCompanyId);
+          const expectedDeliveryCashflow = assertDeliveryCashflowWrite(previous, operation.payload);
+          const start = writes.length;
+          await handleEditExpense(operation.id, operation.payload, writes);
+          writes[start].expectedDeliveryCashflow = expectedDeliveryCashflow;
+          break;
+        }
         case 'addCost': await handleAddAssetCostLog(empId, operation.payload, writes); break;
         case 'editCost': await handleEditAssetCostLog(operation.id, operation.payload, empId, writes); break;
         default: throw new Error('Thao tác giao hàng không hợp lệ.');
       }
     }
-    const result = saveAtomicDocuments(`delivery_${commandId}`, mergeAtomicWrites([], writes));
+    const mergedWrites = mergeAtomicWrites([], writes);
+    const deliveryCommand = { id: commandId, fingerprint: await payloadFingerprint(mergedWrites) };
+    const result = saveAtomicDocuments(`delivery_${commandId}`, mergedWrites.map(write => ({
+      ...write, deliveryCommand, payload: { ...write.payload, lastDeliveryCommand: deliveryCommand }
+    })));
     return { success: true, queued: Boolean(result.queued) };
   };
 
@@ -20765,6 +20246,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
       return { success: true, planned: true, order: updatedOrderForSync };
     }
     const writeResult = saveAtomicDocuments(`order_${orderId}`, writes);
+    await requireSharedWriteConfirmation(writeResult, ATOMIC_SAVE_COLLECTION, `order_${orderId}`);
     // Derived rewards and share assets follow server confirmation, not the Save UI.
     void flushPendingFirebaseWriteNow(ATOMIC_SAVE_COLLECTION, `order_${orderId}`, 12000, myCompanyId).then(async () => {
       if (activeTenantScopeRef.current !== myCompanyId) return;
@@ -20784,7 +20266,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
     });
     }).catch(error => recordStartupEvent('order.followup.pending', { code: error?.code || 'pending' }, 'warn'));
 
-    return { success: true, queued: writeResult.queued, order: updatedOrderForSync, shareReady: false };
+    return { success: true, queued: false, order: updatedOrderForSync, shareReady: false };
   };
 
   const getOrderCurrentPaymentDueAmount = (order = {}) => (
@@ -21387,26 +20869,42 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
       };
     }
 
-    if (!firebaseUser || !myCompanyId || !orderId) throw new Error('Phiên làm việc hoặc hóa đơn không hợp lệ.');
-    const existingOrder = rawOrders.find(order => order.companyId === myCompanyId && order.id === orderId);
+    if (!firebaseUser || !myCompanyId || !orderId || !currentUser?.id) throw new Error('Phiên làm việc hoặc hóa đơn không hợp lệ.');
+    const actorId=currentUser.id,actorUid=firebaseUser.uid,companyId=myCompanyId;
+    const isCurrent=()=>activeTenantScopeRef.current===companyId&&auth.currentUser?.uid===actorUid;
+    if(!isCurrent())throw new Error('Phiên lưu trữ hóa đơn đã thay đổi.');
+    const orderRef=doc(db,'artifacts',appId,'public','data','orders',orderId);
+    const employeeRef=doc(db,'artifacts',appId,'public','data','employees',actorId);
+    const companyRef=doc(db,'artifacts',appId,'public','data','companies',companyId);
     const archivedPayload = {
       isArchived: true,
       archivedAt: new Date().toISOString(),
       archivedByEmpId: currentUser?.id || ''
     };
-    setRawOrders(prev => (Array.isArray(prev) ? prev.map(order => (
-      order?.id === orderId ? { ...order, ...archivedPayload } : order
-    )) : prev));
-    rememberRecentLocalWrite('orders', orderId, archivedPayload);
-    const writeResult = await saveDataDocument('orders', orderId, archivedPayload, { merge: true });
-    await requireSharedWriteConfirmation(writeResult, 'orders', orderId);
-    if (existingOrder?.customerId) {
+    const archiveReceipt=await runTransaction(db,async transaction=>{
+      const [orderSnapshot,actorSnapshot,companySnapshot]=await Promise.all([transaction.get(orderRef),transaction.get(employeeRef),transaction.get(companyRef)]);
+      if(!isCurrent()||!orderSnapshot.exists()||!actorSnapshot.exists()||!companySnapshot.exists())throw new Error('Không tìm thấy hóa đơn hoặc phiên làm việc hiện tại.');
+      const order=orderSnapshot.data(),employee={...actorSnapshot.data(),id:actorId},company={...companySnapshot.data(),id:companyId};
+      if(order.companyId!==companyId||employee.companyId!==companyId||employee.isArchived
+        ||!hasCompanyRolePermissionAction({company,employee,currentUser:{...employee,accountType:'employee'}},'orders','delete_order'))throw new Error('Bạn chưa được cấp quyền lưu trữ hóa đơn này.');
+      if(order.isArchived)return {order,applied:false};
+      transaction.set(orderRef,archivedPayload,{merge:true});
+      return {order:{...order,...archivedPayload},applied:true};
+    });
+    if(!isCurrent())return {success:true,confirmed:true};
+    const existingOrder=archiveReceipt.order;
+    setRawOrders(prev=>Array.isArray(prev)?prev.map(order=>order.id===orderId?{...order,...existingOrder}:order):prev);
+    rememberRecentLocalWrite('orders',orderId,existingOrder);
+    notifyFirestoreDocumentChanged(orderRef,'set',existingOrder,{merge:true});
+    scheduleCollectionRefresh('orders');
+    if (archiveReceipt.applied&&existingOrder?.customerId) {
       syncCustomerLoyaltyPoints(existingOrder.customerId, {
         extraOrders: [{ ...existingOrder, ...archivedPayload }],
         archivedOrderIds: [orderId],
         reason: 'order_archived'
       }).catch(error => console.warn('Không thể đồng bộ tích điểm sau khi xóa đơn:', error));
     }
+    return {success:true,confirmed:true};
   };
 
   const renderZaloCampaignMessage = (template = '', customer = {}, campaign = {}) => {
@@ -22268,97 +21766,27 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
 
   const handleAddMessage = async (messageData = {}) => {
     const isCustomerPortalMessage = currentUser?.accountType === 'customer' || currentUser?.role === 'customer';
-    const trustedCustomerId = `${currentUser?.customerId || currentCustomerInfo?.id || currentCustomerInfo?.customerId || ''}`.trim();
-    const trustedCustomerCompanyId = `${currentUser?.companyId || currentCustomerInfo?.companyId || myCompanyId || ''}`.trim();
     const resolvedCompanyId = isCustomerPortalMessage
-      ? trustedCustomerCompanyId
-      : (messageData.companyId
-        || myCompanyId
-        || currentUser?.companyId
-        || currentCompany?.id
-        || '');
+      ? `${currentUser?.companyId || currentCustomerInfo?.companyId || myCompanyId || ''}`.trim()
+      : (myCompanyId || currentUser?.companyId || currentCompany?.id || '');
     if (!firebaseUser) throw new Error('Chưa kết nối Firebase để gửi tin nhắn.');
-    if (!resolvedCompanyId) throw new Error('Chưa xác định được công ty để lưu tin nhắn.');
-    if (isCustomerPortalMessage && !trustedCustomerId) {
-      throw new Error('Unable to determine the signed-in customer profile.');
-    }
-    const requestedCustomerId = isCustomerPortalMessage
-      ? trustedCustomerId
-      : `${messageData.customerId || ''}`.trim();
-    const isCustomerSupportMessage = isCustomerPortalMessage
-      || messageData.conversationType === 'customer_support'
-      || messageData.type === 'customer_to_employee'
-      || messageData.type === 'employee_to_customer';
-    const scopedCustomer = isCustomerPortalMessage
-      ? (currentCustomerInfo || rawCustomers.find(customer => customer?.id === requestedCustomerId) || null)
-      : rawCustomers.find(customer => (
-        customer?.id === requestedCustomerId
-        && `${customer?.companyId || customer?.company_id || ''}`.trim() === `${resolvedCompanyId}`.trim()
-      ));
-    const customerMessageRouting = isCustomerSupportMessage
-      ? buildCustomerMessageRouting(scopedCustomer || { id: requestedCustomerId })
-      : null;
-    const currentEmployeeId = `${employeeInfo?.id || currentUser?.employeeId || currentUser?.id || ''}`.trim();
-    const isMessageManager = isOwnerRoleValue(currentUser?.role)
-      || ['super_admin', 'admin', 'manager', 'company_owner', 'business_owner', 'accounting', 'accountant'].includes(`${currentUser?.role || ''}`.trim().toLowerCase());
-
-    if (isCustomerSupportMessage && !customerMessageRouting?.customerId) {
-      throw new Error('Không xác định được khách hàng của hội thoại này.');
-    }
-    if (
-      isCustomerSupportMessage
-      && !isCustomerPortalMessage
-      && !isMessageManager
-      && customerMessageRouting.assignedEmployeeId !== currentEmployeeId
-    ) {
-      throw new Error('Bạn không phụ trách khách hàng này nên không thể gửi tin trong hội thoại.');
-    }
-    const id = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const createdAt = Date.now();
-    const messagePayload = {
-      ...messageData,
-      id,
-      companyId: resolvedCompanyId,
-      customerId: isCustomerSupportMessage ? customerMessageRouting.customerId : requestedCustomerId,
-      conversationId: isCustomerSupportMessage
-        ? customerMessageRouting.conversationId
-        : (messageData.conversationId || ''),
-      conversationType: isCustomerSupportMessage ? 'customer_support' : (messageData.conversationType || 'internal'),
-      ...(isCustomerSupportMessage ? (
-        customerMessageRouting.assignedEmployeeId
-          ? {
-            assignedEmployeeId: customerMessageRouting.assignedEmployeeId,
-            assignmentState: 'assigned',
-            receiverEmpId: customerMessageRouting.assignedEmployeeId,
-            recipientEmpId: customerMessageRouting.assignedEmployeeId,
-            targetEmpId: customerMessageRouting.assignedEmployeeId,
-          }
-          : { assignmentState: 'unclassified' }
-      ) : {}),
-      source: isCustomerPortalMessage ? 'customer_portal' : messageData.source,
-      type: isCustomerPortalMessage ? (messageData.type || 'customer_to_employee') : messageData.type,
-      senderEmpId: isCustomerPortalMessage ? '' : currentEmployeeId,
-      senderCustomerId: isCustomerPortalMessage ? trustedCustomerId : `${messageData.senderCustomerId || ''}`.trim(),
-      senderType: isCustomerPortalMessage ? 'customer' : (messageData.senderType || 'employee'),
-      senderName: messageData.senderName || (
-        isCustomerPortalMessage
-          ? (currentUser?.name || currentUser?.phone || 'Khách hàng')
-          : (employeeInfo?.name || currentUser?.name || currentUser?.phone || 'Nhân sự')
-      ),
-      status: messageData.status || (isCustomerPortalMessage ? 'unread' : 'read'),
-      createdAt,
-      updatedAt: createdAt,
-      isArchived: false
-    };
+    const isCurrent = () => readOwnerRef.current===readOwnerKey && activeTenantScopeRef.current===resolvedCompanyId;
+    const intent = await prepareMessageMutation({input:sanitizeFirestoreWritePayload(messageData),companyId:resolvedCompanyId,
+      currentUser,employee:appCurrentEmployee||employeeInfo,currentCustomer:currentCustomerInfo,customers:rawCustomers,
+      employees:rawEmployees,company:currentCompany,hasPermission:hasCompanyRolePermissionAction,isCurrent,scopeKey:readOwnerKey});
+    const saved = await commitMessageMutation({intent,isCurrent,
+      transaction:callback=>runTransaction(db,callback),reference:doc(db,'artifacts',appId,'public','data','messages',intent.id)});
+    completeMessageMutation(intent);
+    if (!isCurrent()) messageScopeError();
     setRawMessages(prev => {
+      if (!isCurrent()) return prev;
       const list = Array.isArray(prev) ? prev : [];
-      return list.some(item => item?.id === id)
-        ? list.map(item => item?.id === id ? { ...item, ...messagePayload } : item)
-        : [messagePayload, ...list];
+      return list.some(item => item?.id === saved.id)
+        ? list.map(item => item?.id === saved.id ? { ...item, ...saved.payload } : item)
+        : [saved.payload, ...list];
     });
-    rememberRecentLocalWrite('messages', id, messagePayload);
-    await saveDataDocument('messages', id, messagePayload, {}, 4500, 'Firebase SDK phản hồi chậm khi gửi tin nhắn.');
-    return id;
+    rememberRecentLocalWrite('messages',saved.id,saved.payload);
+    return {id:saved.id,success:true,confirmed:true,queued:false,duplicate:saved.duplicate};
   };
 
   const currentCustomerInfo = isCustomerSession
@@ -23343,10 +22771,7 @@ function MainAppView({
       canRoleAction('employee_reviews', 'view_employee_reviews') ||
       canRoleAction('employee_reviews', 'view_own_employee_reviews') ||
       canRoleAction('employee_reviews', 'view_all_employee_reviews') ||
-      canRoleAction('employee_reviews', 'create_employee_review') ||
-      canRoleAction('employees', 'view_employee_evaluations') ||
-      canRoleAction('employees', 'create_employee_review') ||
-      canRoleAction('employees', 'view_all_employee_reviews')
+      canRoleAction('employee_reviews', 'create_employee_review')
     ),
     settings: canAccess('settings') || (canAccess('bank_payments') && (
       canRoleAction('bank_payments', 'view_bank_payments') ||
@@ -23734,6 +23159,7 @@ function MainAppView({
   const orderReadIdentity=JSON.stringify([currentReadOwnerKey,dashboardPrivacyScope]);
   const retryOrderSalesLedger=()=>setOrderLedgerAttempt(value=>value+1);
   const orderMutationsReady=mainLedgerReady&&orderLedgerSourcesReady;
+  const runOrderCreation=useOrderCreationAdmission({identity:activeTab==='orders'?orderReadIdentity:'',ready:orderMutationsReady,error:mainLedgerProjection.error,callback:onAddOrder});
   const runOrderMutation=useCommittedCallback((callback,args)=>runReadyOrderMutation(orderMutationsReady,callback,args));
   const debtLimitAlerts = useMemo(() => {
     if (!mainLedgerReady) return [];
@@ -25105,9 +24531,9 @@ function MainAppView({
       case 'home': return keepHomeDashboardMounted ? null : renderHomeDashboard();
       case 'executive_dashboard': return renderExecutiveDashboard();
       case 'profile': return <ProfileView employee={employee} currentUser={currentUser} currentCompany={currentCompany} isCompanyAccount={isCompanyAccount} isAccounting={canRoleAction('settings', 'edit_company_profile')} onEditEmployee={onEditEmployee} onUpdateCompanySettings={onUpdateCompanySettings} onGetIdentityToken={onGetIdentityToken} onLogout={onLogout} />;
-      case 'messages': return <MessageCenterView onPrimaryReady={onMessagePrimaryReady} primarySourcesReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:MESSAGE_PRIMARY_COLLECTIONS})} backgroundSourcesReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:getMessageWorkspaceReadCollections('',true)})} onAttachmentSourceDemandChange={onMessageAttachmentDemandChange} attachmentSourcesReady={Object.fromEntries(['order','order_request','report'].map(action=>[action,areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:getMessageAttachmentReadCollections(action)})]))} employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} products={products} messages={messages} notificationItems={notificationItems} zaloInboxMessages={zaloInboxMessages} aiReplyRules={aiReplyRules} onAddMessage={onAddMessage} onOpenNotification={handleNotificationClick} onGoBack={handleGoBack} onUpdateCompanySettings={onUpdateCompanySettings} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} canViewSupportMessages={canRoleAction('messages', 'view_support_messages')} canSendSupportMessages={canRoleAction('messages', 'send_support_messages')} canViewInternalMessages={canRoleAction('messages', 'view_internal_messages')} canSendInternalMessages={canRoleAction('messages', 'send_internal_messages')} canViewOwnNotifications={canRoleAction('messages', 'view_own_notifications')} canViewAllNotifications={canRoleAction('messages', 'view_all_notifications')} canViewZaloAiInbox={false} canSendImageAttachment={canRoleAction('messages', 'send_image_attachment')} canSendContactAttachment={canRoleAction('messages', 'send_contact_attachment')} canSendLocationAttachment={canRoleAction('messages', 'send_location_attachment')} canSendBankQrAttachment={canRoleAction('messages', 'send_bank_qr_attachment')} canSendOrderAttachment={canRoleAction('messages', 'send_order_attachment')} canSendOrderRequestAttachment={canRoleAction('messages', 'send_order_request_attachment')} canSendReportAttachment={canRoleAction('messages', 'send_report_attachment')} canCallFromMessage={canRoleAction('messages', 'call_from_message')} />;
-      case 'settings': return <SettingsView canManageEmployeeReviewSettings={canRoleAction('settings', 'manage_employee_review_settings')} currentUser={currentUser} onGetIdentityToken={onGetIdentityToken} onLogout={onLogout} isAccounting={canRoleAction('settings', 'view_settings')} employee={employee} currentCompany={currentCompany} customers={customers} products={products} onUpdateCompanySettings={onUpdateCompanySettings} onResetCompanyDemoData={onResetCompanyDemoData} onCreateCompanyBackup={onCreateCompanyBackup} onRestoreCompanyBackup={onRestoreCompanyBackup} orders={orders} payments={payments} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} onCreateZaloCampaign={onCreateZaloCampaign} onCancelZaloCampaign={onCancelZaloCampaign} onRetryZaloCampaignQueueItem={onRetryZaloCampaignQueueItem} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} onUpdateZaloOrderRequest={onUpdateZaloOrderRequest} onConvertZaloOrderRequest={onConvertZaloOrderRequest} setActiveTab={setActiveTab} canViewBankPayments={tabPermissions.bank_payments} canEditCompanyProfile={canRoleAction('settings', 'edit_company_profile')} canManageBankAccounts={canRoleAction('settings', 'manage_bank_accounts')} canManagePaymentQr={canRoleAction('settings', 'manage_payment_qr')} canManageLoyaltySettings={canRoleAction('settings', 'manage_loyalty_settings')} canManageCustomerCareSettings={canRoleAction('settings', 'manage_customer_care_reminders')} canManageAttendanceWifi={canRoleAction('settings', 'manage_attendance_wifi')} canManageWarehouseSettings={canRoleAction('settings', 'manage_warehouse_dispatch_settings')} canConfigureSalaryAdvanceLimit={canRoleAction('payroll', 'configure_salary_advance_limit')} canBackupData={canRoleAction('settings', 'backup_data') || canRoleAction('settings', 'backup_restore_data')} canRestoreData={canRoleAction('settings', 'restore_data') || canRoleAction('settings', 'backup_restore_data')} canResetCompanyData={canRoleAction('settings', 'reset_company_data')} />;
-      case 'role_permissions': return <RolePermissionView isSuperAdmin={canRoleAction('role_permissions', 'manage_role_permissions')} currentCompany={currentCompany} employees={employees} onUpdateCompanySettings={onUpdateCompanySettings} />;
+      case 'messages': return <MessageCenterView key={currentReadOwnerKey} readIdentity={currentReadOwnerKey} onPrimaryReady={onMessagePrimaryReady} primarySourcesReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:MESSAGE_PRIMARY_COLLECTIONS})} backgroundSourcesReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:getMessageWorkspaceReadCollections('',true)})} onAttachmentSourceDemandChange={onMessageAttachmentDemandChange} attachmentSourcesReady={Object.fromEntries(['order','order_request','report'].map(action=>[action,areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:getMessageAttachmentReadCollections(action)})]))} employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} orderRequests={orderRequests} payments={officialPayments} expenses={officialExpenses} products={products} messages={messages} notificationItems={notificationItems} zaloInboxMessages={zaloInboxMessages} aiReplyRules={aiReplyRules} onAddMessage={onAddMessage} onOpenNotification={handleNotificationClick} onGoBack={handleGoBack} onUpdateCompanySettings={onUpdateCompanySettings} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} canViewSupportMessages={canRoleAction('messages', 'view_support_messages')} canSendSupportMessages={canRoleAction('messages', 'send_support_messages')} canViewInternalMessages={canRoleAction('messages', 'view_internal_messages')} canSendInternalMessages={canRoleAction('messages', 'send_internal_messages')} canViewOwnNotifications={canRoleAction('messages', 'view_own_notifications')} canViewAllNotifications={canRoleAction('messages', 'view_all_notifications')} canViewZaloAiInbox={false} canSendImageAttachment={canRoleAction('messages', 'send_image_attachment')} canSendContactAttachment={canRoleAction('messages', 'send_contact_attachment')} canSendLocationAttachment={canRoleAction('messages', 'send_location_attachment')} canSendBankQrAttachment={canRoleAction('messages', 'send_bank_qr_attachment')} canSendOrderAttachment={canRoleAction('messages', 'send_order_attachment')} canSendOrderRequestAttachment={canRoleAction('messages', 'send_order_request_attachment')} canSendReportAttachment={canRoleAction('messages', 'send_report_attachment')} canCallFromMessage={canRoleAction('messages', 'call_from_message')} />;
+      case 'settings': return <SettingsView key={currentReadOwnerKey} readIdentity={currentReadOwnerKey} canManageQuickActionDefaults={canRoleAction('settings', 'manage_quick_action_defaults')} canManageEmployeeReviewSettings={canRoleAction('settings', 'manage_employee_review_settings')} currentUser={currentUser} onGetIdentityToken={onGetIdentityToken} onLogout={onLogout} isAccounting={canRoleAction('settings', 'view_settings')} employee={employee} currentCompany={currentCompany} customers={customers} products={products} onUpdateCompanySettings={onUpdateCompanySettings} onResetCompanyDemoData={onResetCompanyDemoData} onCreateCompanyBackup={onCreateCompanyBackup} onRestoreCompanyBackup={onRestoreCompanyBackup} orders={orders} payments={payments} zaloSendQueue={zaloSendQueue} zaloCampaigns={zaloCampaigns} zaloCampaignQueue={zaloCampaignQueue} zaloInboxMessages={zaloInboxMessages} zaloInboxBridgeLogs={zaloInboxBridgeLogs} zaloOrderRequests={zaloOrderRequests} aiReplyRules={aiReplyRules} onCreateZaloCampaign={onCreateZaloCampaign} onCancelZaloCampaign={onCancelZaloCampaign} onRetryZaloCampaignQueueItem={onRetryZaloCampaignQueueItem} onProcessZaloInboxMessage={onProcessZaloInboxMessage} onSendAiZaloReply={onSendAiZaloReply} onIgnoreZaloInboxMessage={onIgnoreZaloInboxMessage} onMarkNeedHumanZaloInboxMessage={onMarkNeedHumanZaloInboxMessage} onToggleCustomerAiReply={onToggleCustomerAiReply} onSaveAiReplyRule={onSaveAiReplyRule} onArchiveAiReplyRule={onArchiveAiReplyRule} onUpdateZaloOrderRequest={onUpdateZaloOrderRequest} onConvertZaloOrderRequest={onConvertZaloOrderRequest} setActiveTab={setActiveTab} canViewBankPayments={tabPermissions.bank_payments} canEditCompanyProfile={canRoleAction('settings', 'edit_company_profile')} canManageBankAccounts={canRoleAction('settings', 'manage_bank_accounts')} canManagePaymentQr={canRoleAction('settings', 'manage_payment_qr')} canManageLoyaltySettings={canRoleAction('settings', 'manage_loyalty_settings')} canManageCustomerCareSettings={canRoleAction('settings', 'manage_customer_care_reminders')} canManageAttendanceWifi={canRoleAction('settings', 'manage_attendance_wifi')} canManageWarehouseSettings={canRoleAction('settings', 'manage_warehouse_dispatch_settings')} canConfigureSalaryAdvanceLimit={canRoleAction('payroll', 'configure_salary_advance_limit')} canBackupData={canRoleAction('settings', 'backup_data') || canRoleAction('settings', 'backup_restore_data')} canRestoreData={canRoleAction('settings', 'restore_data') || canRoleAction('settings', 'backup_restore_data')} canResetCompanyData={canRoleAction('settings', 'reset_company_data')} />;
+      case 'role_permissions': return <RolePermissionView key={currentReadOwnerKey} readIdentity={currentReadOwnerKey} isSuperAdmin={canRoleAction('role_permissions', 'manage_role_permissions')} canViewRolePermissions={canRoleAction('role_permissions', 'view_role_permissions')} canManageRolePermissions={canRoleAction('role_permissions', 'manage_role_permissions')} canManageEmployeePermissionOverride={canRoleAction('role_permissions', 'manage_employee_permission_override')} currentCompany={currentCompany} employees={employees} onUpdateCompanySettings={onUpdateCompanySettings} />;
       case 'billing': return <BillingView company={currentCompany} />;
       case 'company_attendance':
         if (!hasWorkflowEmployeeData) {
@@ -25150,16 +24576,14 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
           canViewEmployeeReviews={
             canRoleAction('employee_reviews', 'view_employee_reviews') ||
             canRoleAction('employee_reviews', 'view_own_employee_reviews') ||
-            canRoleAction('employees', 'view_employee_evaluations')
+            canRoleAction('employee_reviews', 'view_all_employee_reviews')
           }
           canCreateEmployeeReview={
-            canRoleAction('employee_reviews', 'create_employee_review') ||
-            canRoleAction('employees', 'create_employee_review')
+            canRoleAction('employee_reviews', 'create_employee_review')
           }
           canViewAllEmployeeReviews={
             isSuperAdmin ||
-            canRoleAction('employee_reviews', 'view_all_employee_reviews') ||
-            canRoleAction('employees', 'view_all_employee_reviews')
+            canRoleAction('employee_reviews', 'view_all_employee_reviews')
           }
           canManageReviewCriteria={isOwnerAccount || canRoleAction('employee_reviews', 'manage_employee_review_criteria')}
           canManageReviewFeature={isOwnerAccount || currentUser?.role === 'super_admin'}
@@ -25207,9 +24631,9 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
           canEditEmployeeEarlyOvertimePolicy={canRoleAction('employees', 'edit_employee_early_overtime_policy')}
           canCreateSalesCollaborator={canRoleAction('employees', 'create_sales_collaborator')}
           canAssignSalesLeader={canRoleAction('employees', 'assign_sales_leader')}
-          canViewEmployeeReviews={isEmployeeReviewEnabled(currentCompany) && (canRoleAction('employees', 'view_employee_evaluations') || canRoleAction('employees', 'view_employees'))}
-          canCreateEmployeeReview={isEmployeeReviewEnabled(currentCompany) && canRoleAction('employees', 'create_employee_review')}
-          canViewAllEmployeeReviews={isEmployeeReviewEnabled(currentCompany) && (isSuperAdmin || canRoleAction('employees', 'view_all_employee_reviews'))}
+          canViewEmployeeReviews={isEmployeeReviewEnabled(currentCompany) && (canRoleAction('employee_reviews', 'view_employee_reviews') || canRoleAction('employee_reviews', 'view_own_employee_reviews') || canRoleAction('employee_reviews', 'view_all_employee_reviews'))}
+          canCreateEmployeeReview={isEmployeeReviewEnabled(currentCompany) && canRoleAction('employee_reviews', 'create_employee_review')}
+          canViewAllEmployeeReviews={isEmployeeReviewEnabled(currentCompany) && canRoleAction('employee_reviews', 'view_all_employee_reviews')}
           canManageHolidayConfig={isOwnerAccount || canRoleAction('employees', 'edit_employee_salary_policy') || canRoleAction('payroll', 'configure_salary_advance_limit')}
           canResetEmployeePassword={isOwnerAccount}
           onResetEmployeePassword={onResetEmployeePassword}
@@ -25238,11 +24662,11 @@ return <AttendanceView currentEmployee={employee} isCompanyAccount={isCompanyAcc
           });
         }
         return <WarehouseImportView isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} employee={employee} currentCompany={currentCompany} customers={customers} products={products} orders={orders} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} warehouseStockCounts={warehouseStockCounts} onAddWarehouseImport={(data) => onAddWarehouseImport?.(employee?.id || 'warehouse', data)} onEditWarehouseImport={onEditWarehouseImport} onDeleteWarehouseImport={onDeleteWarehouseImport} onAddWarehouseStockCount={(data) => onAddWarehouseStockCount?.(employee?.id || 'warehouse', data)} onPostInventoryOpeningBalance={(data) => onPostInventoryOpeningBalance?.(employee?.id || 'warehouse', data)} onEditWarehouseStockCount={onEditWarehouseStockCount} onDeleteWarehouseStockCount={onDeleteWarehouseStockCount} onUpdateCompanySettings={onUpdateCompanySettings} canCreateWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_warehouse_import')} canPostVpsOpeningBalance={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_inventory_balance')} canEditWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_warehouse_import')} canDeleteWarehouseImport={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_warehouse_import')} canViewActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'view_actual_inventory_stock')} canCreateActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'create_actual_inventory_stock')} canEditActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'edit_actual_inventory_stock')} canDeleteActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'delete_actual_inventory_stock')} canRecordActualStockReason={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'record_actual_inventory_reason')} canCompareActualStockCount={isOwnerAccount || hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'warehouse_import', 'compare_actual_inventory_stock')} quickActionIntent={activeTab === 'warehouse_import' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
-      case 'warehouse_dispatch': return shouldShowMissingWorkflowSetup({ canCreate: canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request'), dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('warehouse_dispatch', null, 'Chuẩn bị dữ liệu để xuất kho', 'Cần có khách hàng và sản phẩm trước khi xuất kho. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <WarehouseDispatchView isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} onAddWarehouseDispatch={onAddWarehouseDispatch} onEditWarehouseDispatch={onEditWarehouseDispatch} onDeleteWarehouseDispatch={onDeleteWarehouseDispatch} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} canViewWarehouseDispatch={canRoleAction('warehouse_dispatch', 'view_warehouse_dispatch')} canCreateWarehouseDispatch={canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canCreateDispatchWithoutOrderRequest={canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canManualSearchDispatchProduct={canRoleAction('warehouse_dispatch', 'manual_search_dispatch_product')} canEditWarehouseDispatch={canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteWarehouseDispatch={canRoleAction('warehouse_dispatch', 'delete_warehouse_dispatch')} canDeleteDispatchHistory={canRoleAction('warehouse_dispatch', 'delete_dispatch_history_detail')} canViewDispatchShortage={canRoleAction('warehouse_dispatch', 'view_dispatch_shortage')} canShareWarehouseDispatch={canRoleAction('warehouse_dispatch', 'share_warehouse_dispatch')} canAssignDispatchDriver={canRoleAction('warehouse_dispatch', 'assign_dispatch_driver') || canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteOrderRequest={isOwnerAccount || canRoleAction('order_requests', 'delete_order_request')} quickActionIntent={activeTab === 'warehouse_dispatch' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
-case 'asset_management': return <AssetManagementView employee={employee} employees={employees} assets={assets} assetCostLogs={assetCostLogs} assetExpenses={assetExpenses} onAddAsset={(data) => onAddAsset?.(employee?.id || 'asset', data)} onEditAsset={(id, data) => onEditAsset?.(id, data, employee?.id || 'asset')} onDeleteAsset={onDeleteAsset} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'asset', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'asset')} onDeleteAssetCostLog={onDeleteAssetCostLog} canViewAssets={canRoleAction('asset_management', 'view_assets')} canCreateAsset={canRoleAction('asset_management', 'create_asset')} canEditAsset={canRoleAction('asset_management', 'edit_asset')} canDeleteAsset={canRoleAction('asset_management', 'delete_asset')} canManageAssetHandover={canRoleAction('asset_management', 'manage_asset_handover')} canViewAssetCostLogs={canRoleAction('asset_management', 'view_asset_cost_logs')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} canDeleteAssetCostLog={canRoleAction('asset_management', 'delete_asset_cost_log')} canUploadAssetCostImages={canRoleAction('asset_management', 'upload_asset_cost_images')} canViewAssetDashboard={canRoleAction('asset_management', 'view_asset_dashboard')} canViewAssetWarnings={canRoleAction('asset_management', 'view_asset_warnings')} canViewDriverAssetScore={canRoleAction('asset_management', 'view_driver_asset_score')} />;
+      case 'warehouse_dispatch': return shouldShowMissingWorkflowSetup({ canCreate: canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request'), dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('warehouse_dispatch', null, 'Chuẩn bị dữ liệu để xuất kho', 'Cần có khách hàng và sản phẩm trước khi xuất kho. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <WarehouseDispatchView sourceReady={isVpsMode||isPreviewDataMode||moduleSourcesReady} isVpsMode={isVpsMode} vpsWarehouses={vpsMasterData.warehouses} vpsUnits={vpsMasterData.units} employee={employee} employees={employees} currentCompany={currentCompany} customers={customers} products={products} orderRequests={orderRequests} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} onAddWarehouseDispatch={onAddWarehouseDispatch} onEditWarehouseDispatch={onEditWarehouseDispatch} onDeleteWarehouseDispatch={onDeleteWarehouseDispatch} onEditOrderRequest={onEditOrderRequest} onDeleteOrderRequest={onDeleteOrderRequest} canViewWarehouseDispatch={canRoleAction('warehouse_dispatch', 'view_warehouse_dispatch')} canCreateWarehouseDispatch={canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canCreateDispatchWithoutOrderRequest={canRoleAction('warehouse_dispatch', 'create_dispatch_without_order_request')} canManualSearchDispatchProduct={canRoleAction('warehouse_dispatch', 'manual_search_dispatch_product')} canEditWarehouseDispatch={canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteWarehouseDispatch={canRoleAction('warehouse_dispatch', 'delete_warehouse_dispatch')} canDeleteDispatchHistory={canRoleAction('warehouse_dispatch', 'delete_dispatch_history_detail')} canViewDispatchShortage={canRoleAction('warehouse_dispatch', 'view_dispatch_shortage')} canShareWarehouseDispatch={canRoleAction('warehouse_dispatch', 'share_warehouse_dispatch')} canAssignDispatchDriver={canRoleAction('warehouse_dispatch', 'assign_dispatch_driver') || canRoleAction('warehouse_dispatch', 'create_warehouse_dispatch') || canRoleAction('warehouse_dispatch', 'edit_warehouse_dispatch')} canDeleteOrderRequest={isOwnerAccount || canRoleAction('order_requests', 'delete_order_request')} quickActionIntent={activeTab === 'warehouse_dispatch' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
+case 'asset_management': return <AssetManagementView readIdentity={currentReadOwnerKey} employee={employee} employees={employees} assets={assets} assetCostLogs={assetCostLogs} assetExpenses={assetExpenses} onAddAsset={(data) => onAddAsset?.(employee?.id || 'asset', data)} onEditAsset={(id, data) => onEditAsset?.(id, data, employee?.id || 'asset')} onDeleteAsset={onDeleteAsset} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'asset', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'asset')} onDeleteAssetCostLog={onDeleteAssetCostLog} canViewAssets={canRoleAction('asset_management', 'view_assets')} canCreateAsset={canRoleAction('asset_management', 'create_asset')} canEditAsset={canRoleAction('asset_management', 'edit_asset')} canDeleteAsset={canRoleAction('asset_management', 'delete_asset')} canManageAssetHandover={canRoleAction('asset_management', 'manage_asset_handover')} canViewAssetCostLogs={canRoleAction('asset_management', 'view_asset_cost_logs')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} canDeleteAssetCostLog={canRoleAction('asset_management', 'delete_asset_cost_log')} canUploadAssetCostImages={canRoleAction('asset_management', 'upload_asset_cost_images')} canViewAssetDashboard={canRoleAction('asset_management', 'view_asset_dashboard')} canViewAssetWarnings={canRoleAction('asset_management', 'view_asset_warnings')} canViewDriverAssetScore={canRoleAction('asset_management', 'view_driver_asset_score')} />;
       case 'delivery_reports':
         return <DeliveryReportView employee={employee} customers={customers} products={products} orderRequests={orderRequests} orders={orders} payments={payments} warehouseImports={warehouseImports} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} expenses={expenses} assets={assets} assetCostLogs={assetCostLogs} onAddDeliveryReport={(data) => onAddDeliveryReport?.(employee?.id || 'driver', data)} onUpdateDeliveryReport={onUpdateDeliveryReport} onSaveDeliveryCommand={(command) => onSaveDeliveryCommand(employee?.id || 'driver', command)} onEditOrder={onEditOrder} onAddPayment={onAddPayment} onAddExpense={(data) => onAddExpense(employee?.id || 'driver', data)} onAddAssetCostLog={(data) => onAddAssetCostLog?.(employee?.id || 'driver', data)} onEditAssetCostLog={(id, data) => onEditAssetCostLog?.(id, data, employee?.id || 'driver')} canViewDeliveryReports={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'view_delivery_reports')} canCreateDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'create_delivery_report')} canEditDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'edit_delivery_report')} canDeleteDeliveryReport={hasCompanyRolePermissionAction({ company: currentCompany, employee, currentUser }, 'delivery_reports', 'delete_delivery_report')} canRecordDeliveryIncome={canRoleAction('delivery_reports', 'record_delivery_income') || canRoleAction('finance', 'create_income')} canRecordDeliveryExpense={canRoleAction('delivery_reports', 'record_delivery_expense') || canRoleAction('finance', 'create_expense')} canCreateAssetCostLog={canRoleAction('asset_management', 'create_asset_cost_log')} canEditAssetCostLog={canRoleAction('asset_management', 'edit_asset_cost_log')} />;
-      case 'orders': return shouldShowMissingWorkflowSetup({ canCreate: canQuickCreateOrder, dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('orders', { type: 'create_order' }, 'Chuẩn bị dữ liệu để tạo đơn hàng', 'Cần có khách hàng và sản phẩm trước khi tạo hóa đơn. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderManagementView warehouseSourcesReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:['orderRequests','warehouseDispatches','deliveryReports']})} onPrimaryReady={onOrderPrimaryReady} isAccounting={isAccounting} employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} allCompanyOrders={allCompanyOrders} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} payments={payments} customerLedgerMap={orderReadLedgerMap} readIdentity={orderReadIdentity} products={products} zaloSendQueue={zaloSendQueue} onAddOrder={(...args)=>runOrderMutation(onAddOrder,args)} onEditOrder={(...args)=>runOrderMutation(onEditOrder,args)} onUpdateOrderInvoiceTemplate={(...args)=>runOrderMutation(onUpdateOrderInvoiceTemplate,args)} onApproveOrderZaloSend={(...args)=>runOrderMutation(onApproveOrderZaloSend,args)} onUpdateOrderZaloMessage={(...args)=>runOrderMutation(onUpdateOrderZaloMessage,args)} onSyncPayosPaymentStatus={(...args)=>runOrderMutation(onSyncPayosPaymentStatus,args)} onEnsureOrderPayosPayment={(...args)=>runOrderMutation(onEnsureOrderPayosPayment,args)} onToggleArchiveOrder={(...args)=>runOrderMutation(onToggleArchiveOrder,args)} onDeleteOrder={(...args)=>runOrderMutation(onDeleteOrder,args)} onAddPayment={(...args)=>runOrderMutation(onAddPayment,args)} onAddCustomer={(...args)=>runOrderMutation(onAddCustomer,args)} onAddExpense={(data) => runOrderMutation(onAddExpense,[employee?.id || 'admin',data])} onResolveDeliveryReportIssue={(...args)=>runOrderMutation(onResolveDeliveryReportIssue,args)} onOpenCustomerZaloLink={handleOpenCustomerZaloLink} canCreateManualOrder={canRoleAction('orders', 'create_manual_order')} canCreateOrderFromImage={canRoleAction('orders', 'create_order_from_image')} canCreateOrderFromWarehouse={canRoleAction('orders', 'create_order_from_warehouse')} canEditOrder={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price') || canRoleAction('orders', 'edit_order_paid_amount') || canRoleAction('orders', 'edit_order_fees')} canEditOrderQuantityPrice={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price')} canManageInvoiceTemplate={canRoleAction('settings', 'edit_company_profile') || canRoleAction('orders', 'edit_order_items')} canDeleteOrder={canRoleAction('orders', 'delete_order')} canSharePaymentQr={canRoleAction('orders', 'share_payment_qr')} canRecordOrderPayment={canRoleAction('finance', 'create_income') || canRoleAction('debt', 'record_payment') || canRoleAction('orders', 'edit_order_paid_amount')} canResolveDeliveryIssues={canRoleAction('delivery_reports', 'resolve_delivery_discrepancies')} canChargeLostDeliveryGoods={canRoleAction('delivery_reports', 'charge_lost_goods_salary')} searchStore={orderSearchStore} searchKeyword={orderSearchKeyword} setSearchKeyword={setOrderSearchKeyword} showSearchBox={orderSearchOpen} setShowSearchBox={setOrderSearchOpen} showFilterPanel={orderFilterOpen} setShowFilterPanel={setOrderFilterOpen} quickActionIntent={activeTab === 'orders' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
+      case 'orders': return shouldShowMissingWorkflowSetup({ canCreate: canQuickCreateOrder, dataReady: workflowDataReadiness.sales, hasCustomers: hasWorkflowCustomerData, hasProducts: hasWorkflowProductData }) ? renderMissingSalesSetupGuide('orders', { type: 'create_order' }, 'Chuẩn bị dữ liệu để tạo đơn hàng', 'Cần có khách hàng và sản phẩm trước khi tạo hóa đơn. App sẽ dẫn bạn tạo nhanh rồi quay lại đây.') : <OrderManagementView warehouseSourcesReady={areHomeSourcesCommitted({tenantId:currentUser?.companyId,state:serverConfirmedCollectionState,collections:['orderRequests','warehouseDispatches','deliveryReports']})} onPrimaryReady={onOrderPrimaryReady} isAccounting={isAccounting} employee={employee} currentCompany={currentCompany} employees={employees} customers={customers} orders={orders} allCompanyOrders={allCompanyOrders} orderRequests={orderRequests} warehouseDispatches={warehouseDispatches} deliveryReports={deliveryReports} payments={payments} customerLedgerMap={orderReadLedgerMap} readIdentity={orderReadIdentity} products={products} zaloSendQueue={zaloSendQueue} onAddOrder={(...args)=>runOrderCreation(args,orderReadIdentity)} onEditOrder={(...args)=>runOrderMutation(onEditOrder,args)} onUpdateOrderInvoiceTemplate={(...args)=>runOrderMutation(onUpdateOrderInvoiceTemplate,args)} onApproveOrderZaloSend={(...args)=>runOrderMutation(onApproveOrderZaloSend,args)} onUpdateOrderZaloMessage={(...args)=>runOrderMutation(onUpdateOrderZaloMessage,args)} onSyncPayosPaymentStatus={(...args)=>runOrderMutation(onSyncPayosPaymentStatus,args)} onEnsureOrderPayosPayment={(...args)=>runOrderMutation(onEnsureOrderPayosPayment,args)} onToggleArchiveOrder={(...args)=>runOrderMutation(onToggleArchiveOrder,args)} onDeleteOrder={(...args)=>runOrderMutation(onDeleteOrder,args)} onAddPayment={(...args)=>runOrderMutation(onAddPayment,args)} onAddCustomer={(...args)=>runOrderMutation(onAddCustomer,args)} onAddExpense={(data) => runOrderMutation(onAddExpense,[employee?.id || 'admin',data])} onResolveDeliveryReportIssue={(...args)=>runOrderMutation(onResolveDeliveryReportIssue,args)} onOpenCustomerZaloLink={handleOpenCustomerZaloLink} canCreateManualOrder={canRoleAction('orders', 'create_manual_order')} canCreateOrderFromImage={canRoleAction('orders', 'create_order_from_image')} canCreateOrderFromWarehouse={canRoleAction('orders', 'create_order_from_warehouse')} canEditOrder={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price') || canRoleAction('orders', 'edit_order_paid_amount') || canRoleAction('orders', 'edit_order_fees')} canEditOrderQuantityPrice={canRoleAction('orders', 'edit_order_items') || canRoleAction('orders', 'edit_order_quantity_price')} canManageInvoiceTemplate={canRoleAction('settings', 'edit_company_profile') || canRoleAction('orders', 'edit_order_items')} canDeleteOrder={canRoleAction('orders', 'delete_order')} canSharePaymentQr={canRoleAction('orders', 'share_payment_qr')} canRecordOrderPayment={canRoleAction('finance', 'create_income') || canRoleAction('debt', 'record_payment') || canRoleAction('orders', 'edit_order_paid_amount')} canResolveDeliveryIssues={canRoleAction('delivery_reports', 'resolve_delivery_discrepancies')} canChargeLostDeliveryGoods={canRoleAction('delivery_reports', 'charge_lost_goods_salary')} searchStore={orderSearchStore} searchKeyword={orderSearchKeyword} setSearchKeyword={setOrderSearchKeyword} showSearchBox={orderSearchOpen} setShowSearchBox={setOrderSearchOpen} showFilterPanel={orderFilterOpen} setShowFilterPanel={setOrderFilterOpen} quickActionIntent={activeTab === 'orders' ? quickActionIntent : null} onQuickActionHandled={handleQuickActionHandled} />;
       case 'debt': return <DebtManagementView sourceFresh={mainLedgerReady} searchStore={debtSearchStore} isAccounting={isAccounting} isDriver={isDriver} employee={employee} customers={customers} orders={orders} payments={payments} expenses={expenses} onAddRepayment={(data) => runDebtMutation(onAddExpense,[employee.id,data])} canRecordRepayment={isOwnerAccount || canRoleAction('finance', 'create_expense')} warehouseImports={warehouseImports} employees={employees} onAddPayment={(...args)=>runDebtMutation(onAddPayment,args)} onDeletePayment={(...args)=>runDebtMutation(onDeletePayment,args)} canViewAllDebt={canRoleAction('debt', 'view_all_debt')} canViewAssignedDebt={canRoleAction('debt', 'view_assigned_debt')} canRecordPayment={canRoleAction('debt', 'record_payment')} canEditDebt={canRoleAction('debt', 'edit_debt') || canRoleAction('debt', 'edit_order_payment_from_debt')} canDeleteDebt={canRoleAction('debt', 'delete_debt') || canRoleAction('debt', 'edit_payment_history')} focusCustomerId={debtFocusCustomerId} onFocusCustomerHandled={() => setDebtFocusCustomerId('')} searchKeyword={debtSearchKeyword} setSearchKeyword={setDebtSearchKeyword} showSearchBox={debtSearchOpen} setShowSearchBox={setDebtSearchOpen} showFilterPanel={debtFilterOpen} setShowFilterPanel={setDebtFilterOpen} />;
       case 'bank_payments':
         if (!hasWorkflowSepayConfig) {
@@ -32145,7 +31569,8 @@ function SettingsView(props) {
   return <PreloadedWorkspace module={deferredSettingsViewModule} viewProps={props} label={"Cài đặt"} />;
 }
 
-function RolePermissionView({ isSuperAdmin, currentCompany, employees = [], onUpdateCompanySettings }) {
+function RolePermissionView({ isSuperAdmin, currentCompany, employees = [], onUpdateCompanySettings, readIdentity = '',
+  canViewRolePermissions = isSuperAdmin, canManageRolePermissions = isSuperAdmin, canManageEmployeePermissionOverride = isSuperAdmin }) {
   const [draftPermissions, setDraftPermissions] = useState(() => getCompanyRolePermissions(currentCompany));
   const [draftPermissionActions, setDraftPermissionActions] = useState(() => getCompanyRolePermissionActions(currentCompany));
   const [draftEmployeePermissions, setDraftEmployeePermissions] = useState(() => normalizeEmployeeRolePermissions(currentCompany?.employeeRolePermissions || {}, employees));
@@ -32155,23 +31580,32 @@ function RolePermissionView({ isSuperAdmin, currentCompany, employees = [], onUp
   const [expandedPermissionModules, setExpandedPermissionModules] = useState({});
   const [saveStatus, setSaveStatus] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const permissionScope = JSON.stringify([readIdentity,currentCompany?.id,canViewRolePermissions,canManageRolePermissions,canManageEmployeePermissionOverride]);
+  const permissionSave = useSettingsSave(permissionScope,onUpdateCompanySettings);
+  const permissionBase = useRef(currentCompany);
+  const changedPermissionScopes = useRef({departments:new Set(),employees:new Set()});
+  useAppScreenBack(() => permissionSave.isBusy());
 
   useEffect(() => {
+    changedPermissionScopes.current = {departments:new Set(),employees:new Set()};
+    permissionBase.current = currentCompany;
+    setSelectedEmployeeId('');setExpandedPermissionModules({});setSaveStatus('');setIsSaving(false);
+  }, [permissionScope]);
+  useEffect(() => {
+    if (permissionSave.isBusy() || changedPermissionScopes.current.departments.size || changedPermissionScopes.current.employees.size) return;
+    permissionBase.current = currentCompany;
     setDraftPermissions(getCompanyRolePermissions(currentCompany));
     setDraftPermissionActions(getCompanyRolePermissionActions(currentCompany));
     setDraftEmployeePermissions(normalizeEmployeeRolePermissions(currentCompany?.employeeRolePermissions || {}, employees));
     setDraftEmployeePermissionActions(normalizeEmployeeRolePermissionActions(currentCompany?.employeeRolePermissionActions || {}, currentCompany?.employeeRolePermissions || {}, employees));
-    setSelectedEmployeeId('');
-    setExpandedPermissionModules({});
-    setSaveStatus('');
-  }, [currentCompany, employees]);
+  }, [currentCompany, employees, permissionScope, isSaving]);
 
   useEffect(() => {
     setSelectedEmployeeId('');
     setExpandedPermissionModules({});
   }, [selectedDepartmentKey]);
 
-  if (!isSuperAdmin) {
+  if (!canViewRolePermissions && !canManageRolePermissions && !canManageEmployeePermissionOverride) {
     return <AccessDeniedView />;
   }
 
@@ -32184,10 +31618,20 @@ function RolePermissionView({ isSuperAdmin, currentCompany, employees = [], onUp
   const selectedDepartment = ROLE_PERMISSION_DEPARTMENTS.find(department => department.key === selectedDepartmentKey) || ROLE_PERMISSION_DEPARTMENTS[0];
   const selectedIsOwner = selectedDepartment.key === 'owner';
   const departmentEmployees = employees
-    .filter(emp => !emp?.isArchived)
+    .filter(emp => emp?.companyId === currentCompany?.id && !emp.isArchived)
     .filter(emp => getEmployeeRolePermissionKey(emp, null) === selectedDepartment.key)
     .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'vi'));
   const selectedEmployee = departmentEmployees.find(emp => emp.id === selectedEmployeeId) || null;
+  const selectedEmployeeUnavailable = Boolean(selectedEmployeeId && !selectedEmployee);
+  const canEditSelectedPermissionScope = !selectedIsOwner && !selectedEmployeeUnavailable && Boolean(selectedEmployee
+    ? canManageEmployeePermissionOverride : canManageRolePermissions);
+  const markPermissionScopeChanged = () => {
+    if (!canEditSelectedPermissionScope || permissionSave.isBusy()) return false;
+    (selectedEmployee ? changedPermissionScopes.current.employees : changedPermissionScopes.current.departments)
+      .add(selectedEmployee ? selectedEmployee.id : selectedDepartment.key);
+    setSaveStatus('');
+    return true;
+  };
   const selectedScopePermissions = selectedEmployee
     ? normalizePermissionSetForDepartment(draftEmployeePermissions?.[selectedEmployee.id] || normalizedDraft[selectedDepartment.key] || {}, selectedDepartment.key)
     : normalizedDraft[selectedDepartment.key];
@@ -32210,7 +31654,7 @@ function RolePermissionView({ isSuperAdmin, currentCompany, employees = [], onUp
   };
 
   const togglePermission = (departmentKey, moduleId) => {
-    if (departmentKey === 'owner') return;
+    if (departmentKey !== selectedDepartment.key || !ROLE_PERMISSION_MODULES.some(item => item.id === moduleId) || !markPermissionScopeChanged()) return;
     const module = ROLE_PERMISSION_MODULES.find(item => item.id === moduleId);
     const actionItems = getRolePermissionActionItems(module);
     const currentlyEnabled = Boolean(selectedScopePermissions?.[moduleId]);
@@ -32221,7 +31665,7 @@ function RolePermissionView({ isSuperAdmin, currentCompany, employees = [], onUp
       return actionItems.reduce((acc, action) => {
         acc[action.id] = willEnable
           ? (hasAnyActionEnabled ? Boolean(currentActions[action.id]) : true)
-          : Boolean(currentActions[action.id]);
+          : false;
         return acc;
       }, {});
     };
@@ -32265,7 +31709,7 @@ function RolePermissionView({ isSuperAdmin, currentCompany, employees = [], onUp
   };
 
   const setDepartmentPermissions = (departmentKey, enabled) => {
-    if (departmentKey === 'owner') return;
+    if (departmentKey !== selectedDepartment.key || !markPermissionScopeChanged()) return;
     const moduleIds = enabled ? ROLE_PERMISSION_MODULES.map(module => module.id) : [];
     if (selectedEmployee) {
       setDraftEmployeePermissions(prev => ({
@@ -32295,7 +31739,7 @@ function RolePermissionView({ isSuperAdmin, currentCompany, employees = [], onUp
   };
 
   const resetDepartmentPermissions = (departmentKey) => {
-    if (departmentKey === 'owner') return;
+    if (departmentKey !== selectedDepartment.key || !markPermissionScopeChanged()) return;
     if (selectedEmployee) {
       setDraftEmployeePermissions(prev => {
         const next = { ...prev };
@@ -32327,7 +31771,8 @@ function RolePermissionView({ isSuperAdmin, currentCompany, employees = [], onUp
   };
 
   const togglePermissionAction = (departmentKey, moduleId, actionId) => {
-    if (departmentKey === 'owner') return;
+    const module = ROLE_PERMISSION_MODULES.find(item=>item.id===moduleId);
+    if (departmentKey !== selectedDepartment.key || !module || !getRolePermissionActionItems(module).some(action=>action.id===actionId) || !markPermissionScopeChanged()) return;
     const checked = Boolean(selectedScopeActions?.[moduleId]?.[actionId]);
     const nextChecked = !checked;
     if (selectedEmployee) {
@@ -32386,7 +31831,7 @@ function RolePermissionView({ isSuperAdmin, currentCompany, employees = [], onUp
   };
 
   const setModuleActionPermissions = (departmentKey, moduleId, enabled) => {
-    if (departmentKey === 'owner') return;
+    if (departmentKey !== selectedDepartment.key || !ROLE_PERMISSION_MODULES.some(item => item.id === moduleId) || !markPermissionScopeChanged()) return;
     const module = ROLE_PERMISSION_MODULES.find(item => item.id === moduleId);
     const actionItems = getRolePermissionActionItems(module);
     const nextActionSet = actionItems.reduce((acc, action) => {
@@ -32443,56 +31888,79 @@ function RolePermissionView({ isSuperAdmin, currentCompany, employees = [], onUp
   };
 
   const handleSavePermissions = async () => {
+    if (permissionSave.isBusy()) return;
+    const changes = changedPermissionScopes.current;
+    if (!changes.departments.size && !changes.employees.size) return;
+    const scope = permissionSave.scope;
     setIsSaving(true);
     setSaveStatus('');
     try {
-      if (!onUpdateCompanySettings) {
-        throw new Error('Chưa kết nối được hàm lưu cài đặt công ty.');
+      if (changes.departments.size && !canManageRolePermissions || changes.employees.size && !canManageEmployeePermissionOverride) throw new Error('Bạn chưa được cấp quyền lưu phạm vi phân quyền này.');
+      for (const employeeId of changes.employees) {
+        const target = employees.find(row => row.id === employeeId && !row.isArchived && row.companyId === currentCompany?.id);
+        if (!target || getEmployeeRolePermissionKey(target,null) === 'owner') throw new Error('Nhân sự đã thay đổi hoặc không còn thuộc công ty. Vui lòng kiểm tra lại.');
       }
       const normalizedPermissions = normalizeRolePermissions(draftPermissions);
       const normalizedEmployeePermissions = normalizeEmployeeRolePermissions(draftEmployeePermissions, employees);
       const normalizedPermissionActions = normalizeRolePermissionActions(draftPermissionActions, normalizedPermissions);
       const normalizedEmployeePermissionActions = normalizeEmployeeRolePermissionActions(draftEmployeePermissionActions, normalizedEmployeePermissions, employees);
-      const result = await withTimeout(onUpdateCompanySettings({
-        rolePermissions: normalizedPermissions,
-        rolePermissionActions: normalizedPermissionActions,
-        employeeRolePermissions: normalizedEmployeePermissions,
-        employeeRolePermissionActions: normalizedEmployeePermissionActions
-      }), 20000, 'Lưu phân quyền quá 20 giây chưa phản hồi. Kiểm tra mạng rồi bấm lưu lại.');
-      if (!result?.success) {
-        throw new Error(result?.message || 'Không thể lưu phân quyền vai trò.');
-      }
+      const mergeChanged = (key, values, ids) => {
+        const next = {...permissionBase.current?.[key]};
+        for (const id of ids) {
+          if (Object.hasOwn(values,id)) next[id] = values[id];
+          else delete next[id];
+        }
+        return next;
+      };
+      const patch = {
+        ...(changes.departments.size ? {
+          rolePermissions: mergeChanged('rolePermissions',normalizedPermissions,changes.departments),
+          rolePermissionActions: mergeChanged('rolePermissionActions',normalizedPermissionActions,changes.departments)
+        } : {}),
+        ...(changes.employees.size ? {
+          employeeRolePermissions: mergeChanged('employeeRolePermissions',normalizedEmployeePermissions,changes.employees),
+          employeeRolePermissionActions: mergeChanged('employeeRolePermissionActions',normalizedEmployeePermissionActions,changes.employees)
+        } : {})
+      };
+      await permissionSave.save(patch,permissionBase.current);
+      if (!permissionSave.isCurrent(scope)) return;
+      permissionBase.current = {...permissionBase.current,...patch};
+      changedPermissionScopes.current = {departments:new Set(),employees:new Set()};
       setDraftPermissions(normalizedPermissions);
       setDraftPermissionActions(normalizedPermissionActions);
       setDraftEmployeePermissions(normalizedEmployeePermissions);
       setDraftEmployeePermissionActions(normalizedEmployeePermissionActions);
-      setSaveStatus(`Đã lưu phân quyền cho ${selectedEmployee ? `nhân sự ${selectedEmployee.name}` : `bộ phận ${selectedDepartment.label}`}. Các tài khoản khác sẽ tự cập nhật theo dữ liệu cloud.`);
+      setSaveStatus('Đã lưu các phạm vi phân quyền đã chỉnh sửa. Các tài khoản sẽ cập nhật theo dữ liệu mới.');
     } catch (error) {
-      setSaveStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể lưu phân quyền vai trò.'));
+      if (permissionSave.isCurrent(scope)) setSaveStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể lưu phân quyền vai trò.'));
     } finally {
-      setIsSaving(false);
+      if (permissionSave.isCurrent(scope)) setIsSaving(false);
     }
   };
 
   return (
     <div className="space-y-4 animate-in fade-in pb-24">
+      <fieldset disabled={isSaving} className="contents">
       <section className="rounded-3xl border border-gray-100 bg-white p-4 shadow-sm">
-        <label className="block text-xs font-black uppercase tracking-[0.2em] text-emerald-600">Bộ phận</label>
+        <label htmlFor="role-permission-department" className="block text-xs font-black uppercase tracking-[0.2em] text-emerald-600">Bộ phận</label>
         <select
+          id="role-permission-department"
           value={selectedDepartment.key}
-          onChange={(event) => setSelectedDepartmentKey(event.target.value)}
+          onChange={(event) => {setSelectedDepartmentKey(event.target.value);setSaveStatus('');}}
           className="mt-2 w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm font-bold text-gray-900 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
         >
           {ROLE_PERMISSION_DEPARTMENTS.map(department => (
             <option key={department.key} value={department.key}>{department.label}</option>
           ))}
         </select>
-        <label className="mt-4 block text-xs font-black uppercase tracking-[0.2em] text-emerald-600">Nhân sự</label>
+        <label htmlFor="role-permission-employee" className="mt-4 block text-xs font-black uppercase tracking-[0.2em] text-emerald-600">Nhân sự</label>
         <select
+          id="role-permission-employee"
           value={selectedEmployeeId}
           onChange={(event) => {
             setSelectedEmployeeId(event.target.value);
             setExpandedPermissionModules({});
+            setSaveStatus('');
           }}
           disabled={selectedIsOwner}
           className="mt-2 w-full rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm font-bold text-gray-900 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
@@ -32502,6 +31970,8 @@ function RolePermissionView({ isSuperAdmin, currentCompany, employees = [], onUp
             <option key={emp.id} value={emp.id}>{emp.name || emp.phone || 'Chưa đặt tên'}{emp.phone ? ` - ${emp.phone}` : ''}</option>
           ))}
         </select>
+        {selectedEmployeeUnavailable && <p role="status" className="mt-2 text-sm text-amber-700">Nhân sự không còn trong bộ phận này. Vui lòng chọn lại.</p>}
+        {!selectedIsOwner && !canEditSelectedPermissionScope && <p className="mt-2 text-sm text-slate-600">Bạn có quyền xem; chưa được cấp quyền sửa phạm vi này.</p>}
         <div className="mt-3 flex flex-col gap-3 rounded-2xl bg-gray-50 p-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h3 className="text-base font-black text-gray-900">{selectedEmployee ? selectedEmployee.name : selectedDepartment.label}</h3>
@@ -32527,9 +31997,9 @@ function RolePermissionView({ isSuperAdmin, currentCompany, employees = [], onUp
             </div>
           ) : (
             <div className="flex shrink-0 flex-wrap gap-2">
-              <button type="button" onClick={() => setDepartmentPermissions(selectedDepartment.key, true)} className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[11px] font-bold text-emerald-700">Bật hết</button>
-              <button type="button" onClick={() => resetDepartmentPermissions(selectedDepartment.key)} className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 text-[11px] font-bold text-blue-700">Mặc định</button>
-              <button type="button" onClick={() => setDepartmentPermissions(selectedDepartment.key, false)} className="rounded-full border border-gray-200 bg-white px-3 py-1.5 text-[11px] font-bold text-gray-500">Tắt hết</button>
+              <button type="button" disabled={!canEditSelectedPermissionScope} onClick={() => setDepartmentPermissions(selectedDepartment.key, true)} className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[11px] font-bold text-emerald-700 disabled:opacity-40">Bật hết</button>
+              <button type="button" disabled={!canEditSelectedPermissionScope} onClick={() => resetDepartmentPermissions(selectedDepartment.key)} className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1.5 text-[11px] font-bold text-blue-700 disabled:opacity-40">Mặc định</button>
+              <button type="button" disabled={!canEditSelectedPermissionScope} onClick={() => setDepartmentPermissions(selectedDepartment.key, false)} className="rounded-full border border-gray-200 bg-white px-3 py-1.5 text-[11px] font-bold text-gray-500 disabled:opacity-40">Tắt hết</button>
             </div>
           )}
         </div>
@@ -32557,11 +32027,12 @@ function RolePermissionView({ isSuperAdmin, currentCompany, employees = [], onUp
                   const enabledActionCount = actionItems.filter(action => selectedScopeActions?.[module.id]?.[action.id]).length;
                   const moduleExpanded = Boolean(expandedPermissionModules[getPermissionModuleExpandKey(selectedDepartment.key, module.id)]);
                   return (
-                    <div key={module.id} className={`rounded-2xl border p-3 transition-colors ${moduleChecked ? 'border-emerald-200 bg-emerald-50/40' : 'border-gray-200 bg-gray-50'}`}>
+                    <div key={module.id} data-role-module={module.id} className={`rounded-2xl border p-3 transition-colors ${moduleChecked ? 'border-emerald-200 bg-emerald-50/40' : 'border-gray-200 bg-gray-50'}`}>
                       <div className="flex items-start gap-2.5">
                         <button
                           type="button"
-                          disabled={selectedIsOwner}
+                          disabled={!canEditSelectedPermissionScope}
+                          aria-label={`Quyền chức năng ${module.label}`}
                           aria-pressed={moduleChecked}
                           onClick={() => togglePermission(selectedDepartment.key, module.id)}
                           className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border transition-colors ${moduleChecked ? 'border-emerald-500 bg-emerald-500 text-white' : 'border-gray-300 bg-white text-gray-400'} ${selectedIsOwner ? 'cursor-not-allowed opacity-80' : ''}`}
@@ -32599,7 +32070,7 @@ function RolePermissionView({ isSuperAdmin, currentCompany, employees = [], onUp
                               <div className="flex gap-1.5">
                                 <button
                                   type="button"
-                                  disabled={!moduleChecked}
+                                  disabled={!canEditSelectedPermissionScope || !moduleChecked}
                                   onClick={() => setModuleActionPermissions(selectedDepartment.key, module.id, true)}
                                   className="rounded-full bg-emerald-50 px-2 py-1 text-[9px] font-bold text-emerald-700 disabled:opacity-40"
                                 >
@@ -32607,7 +32078,7 @@ function RolePermissionView({ isSuperAdmin, currentCompany, employees = [], onUp
                                 </button>
                                 <button
                                   type="button"
-                                  disabled={!moduleChecked}
+                                  disabled={!canEditSelectedPermissionScope || !moduleChecked}
                                   onClick={() => setModuleActionPermissions(selectedDepartment.key, module.id, false)}
                                   className="rounded-full bg-gray-100 px-2 py-1 text-[9px] font-bold text-gray-500 disabled:opacity-40"
                                 >
@@ -32623,7 +32094,8 @@ function RolePermissionView({ isSuperAdmin, currentCompany, employees = [], onUp
                                 <button
                                   key={action.id}
                                   type="button"
-                                  disabled={selectedIsOwner || !moduleChecked}
+                                  disabled={!canEditSelectedPermissionScope || !moduleChecked}
+                                  aria-pressed={actionChecked}
                                   onClick={() => togglePermissionAction(selectedDepartment.key, module.id, action.id)}
                                   className={`flex items-center gap-2 rounded-xl border px-2.5 py-2 text-left text-[11px] font-bold transition-colors ${actionChecked && moduleChecked ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-gray-100 bg-gray-50 text-gray-400'} disabled:cursor-not-allowed disabled:opacity-55`}
                                 >
@@ -32647,7 +32119,7 @@ function RolePermissionView({ isSuperAdmin, currentCompany, employees = [], onUp
       </section>
 
       {saveStatus && (
-        <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700">
+        <div role="status" className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700">
           {saveStatus}
         </div>
       )}
@@ -32655,11 +32127,12 @@ function RolePermissionView({ isSuperAdmin, currentCompany, employees = [], onUp
       <button
         type="button"
         onClick={handleSavePermissions}
-        disabled={isSaving}
+        disabled={isSaving || !(changedPermissionScopes.current.departments.size || changedPermissionScopes.current.employees.size)}
         className="w-full rounded-xl bg-emerald-600 py-3.5 text-sm font-black text-white shadow-md shadow-emerald-500/20 disabled:opacity-60"
       >
         {isSaving ? 'Đang lưu phân quyền...' : 'Lưu phân quyền vai trò'}
       </button>
+      </fieldset>
     </div>
   );
 }
@@ -33157,6 +32630,10 @@ function SettingsViewLegacy({ isAccounting, currentCompany, onUpdateCompanySetti
 }
 
 const getAssetFormDefaults = (asset = {}) => ({
+  expectedAssetUpdatedAt: asset.updatedAt || '',
+  clientMutationId: asset.id || `asset_${crypto.randomUUID()}`,
+  clientCommandId: `cmd_${crypto.randomUUID()}`,
+  clientMutationAt: new Date().toISOString(),
   name: asset.name || '',
   type: asset.type || '',
   assetCode: asset.assetCode || asset.code || '',
@@ -33211,6 +32688,10 @@ const getAssetFormDefaults = (asset = {}) => ({
 });
 
 const getAssetCostFormDefaults = (log = {}) => ({
+  expectedAssetUpdatedAt: log.updatedAt || '',
+  clientCommandId: `cmd_${crypto.randomUUID()}`,
+  clientMutationAt: new Date().toISOString(),
+  amountMode: log.amountMode || '',
   clientMutationId: log.clientMutationId || log.id || `acl_${crypto.randomUUID()}`,
   type: log.type || 'fuel',
   assetId: log.assetId || '',
@@ -33353,6 +32834,7 @@ const getAssetMetrics = (asset = {}, logs = []) => {
 
 function AssetManagementView({
   employee,
+  readIdentity = '',
   employees = [],
   assets = [],
   assetCostLogs: storedAssetCostLogs = [],
@@ -33378,7 +32860,7 @@ function AssetManagementView({
   canViewDriverAssetScore = true
 }) {
   const [activeSection, setActiveSection] = useState('assets');
-  const assetCostLogs = useMemo(() => projectAssetExpenses(storedAssetCostLogs, assetExpenses, employee?.companyId, isCashflowOfficial), [storedAssetCostLogs, assetExpenses, employee?.companyId]);
+  const assetCostLogs = useMemo(() => canViewAssetCostLogs ? projectAssetExpenses(storedAssetCostLogs, assetExpenses, employee?.companyId, isCashflowOfficial) : [], [storedAssetCostLogs, assetExpenses, employee?.companyId, canViewAssetCostLogs]);
   const [showAssetForm, setShowAssetForm] = useState(false);
   const [editingAsset, setEditingAsset] = useState(null);
   const [assetForm, setAssetForm] = useState(getAssetFormDefaults());
@@ -33388,6 +32870,29 @@ function AssetManagementView({
   const [isSavingAsset, setIsSavingAsset] = useState(false);
   const [isSavingCost, setIsSavingCost] = useState(false);
   const costSaveInFlightRef = useRef(false);
+  const assetSaveInFlightRef = useRef(false);
+  const formEpochRef = useRef(0);
+  const mountedRef = useRef(true);
+  const scopeKey = `${readIdentity}|${employee?.companyId || ''}|${employee?.id || ''}|${canCreateAsset}|${canEditAsset}|${canDeleteAsset}|${canCreateAssetCostLog}|${canEditAssetCostLog}|${canDeleteAssetCostLog}|${canViewAssets}|${canViewAssetCostLogs}`;
+  const scopeRef = useRef(scopeKey);
+  scopeRef.current = scopeKey;
+  const [assetSaveStatus, setAssetSaveStatus] = useState('');
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
+  useEffect(() => {
+    formEpochRef.current += 1;
+    setShowAssetForm(false);
+    setShowCostForm(false);
+    setEditingAsset(null);
+    setEditingCostLog(null);
+    setAssetSaveStatus('');
+    setCostSaveStatus('');
+    assetSaveInFlightRef.current = false;
+    costSaveInFlightRef.current = false;
+    setIsSavingAsset(false);
+    setIsSavingCost(false);
+  }, [scopeKey]);
+  const formTicket = () => ({scope: scopeRef.current, epoch: formEpochRef.current});
+  const ticketCurrent = ticket => mountedRef.current && ticket.scope === scopeRef.current && ticket.epoch === formEpochRef.current;
   const [costSaveStatus, setCostSaveStatus] = useState('');
   useModalScrollLock(showAssetForm || showCostForm);
   const [assetDocumentFiles, setAssetDocumentFiles] = useState({ registration: [], inspection: [] });
@@ -33421,6 +32926,9 @@ function AssetManagementView({
     };
   }, [assets, metricsByAsset]);
   const openAssetForm = (asset = null) => {
+    if (assetSaveInFlightRef.current || (asset ? !canEditAsset : !canCreateAsset)) return;
+    formEpochRef.current += 1;
+    setAssetSaveStatus('');
     setEditingAsset(asset);
     setAssetForm(getAssetFormDefaults(asset || {}));
     setAssetDocumentFiles({ registration: [], inspection: [] });
@@ -33430,6 +32938,8 @@ function AssetManagementView({
     setShowAssetForm(true);
   };
   const closeAssetForm = () => {
+    if (assetSaveInFlightRef.current || isReadingAssetDocuments) return;
+    formEpochRef.current += 1;
     setEditingAsset(null);
     setAssetForm(getAssetFormDefaults());
     setAssetDocumentFiles({ registration: [], inspection: [] });
@@ -33439,13 +32949,17 @@ function AssetManagementView({
     setShowAssetForm(false);
   };
   const openCostForm = (log = null) => {
-    if (log?.financeProjection) return;
+    if (costSaveInFlightRef.current || log?.financeProjection || log?.relatedDeliveryReportId || log?.sourceDeliveryReportId || (log?.id ? !canEditAssetCostLog : !canCreateAssetCostLog)) return;
+    formEpochRef.current += 1;
     setEditingCostLog(log);
     setCostForm(getAssetCostFormDefaults(log || {}));
     setShowCostForm(true);
     setCostSaveStatus('');
   };
   const closeCostForm = () => {
+    if (costSaveInFlightRef.current) return;
+    formEpochRef.current += 1;
+    setCostSaveStatus('');
     setEditingCostLog(null);
     setCostForm(getAssetCostFormDefaults());
     setShowCostForm(false);
@@ -33468,13 +32982,17 @@ function AssetManagementView({
     return false;
   });
   const handleAssetImage = async (event) => {
+    if (!canManageAssetHandover) return;
+    const ticket = formTicket();
     const file = event.target.files?.[0];
     if (!file) return;
     const imageUrl = await readImageFileAsDataUrl(file, 720, 0.78);
+    if (!ticketCurrent(ticket)) return;
     setAssetForm(prev => ({ ...prev, handoverImageUrl: imageUrl }));
     event.target.value = '';
   };
   const handleAssetDocumentImage = async (field, fileType, event) => {
+    const ticket = formTicket();
     const selectedFiles = Array.from(event.target.files || []).filter(file => file?.type?.startsWith('image/'));
     if (!selectedFiles.length) return;
     setAssetDocumentStatus('');
@@ -33490,6 +33008,7 @@ function AssetManagementView({
       return;
     }
     const imageUrls = await Promise.all(filesToRead.map(file => readImageFileAsDataUrl(file, 1200, 0.82)));
+    if (!ticketCurrent(ticket)) return;
     setAssetDocumentFiles(prev => {
       const existingFiles = Array.isArray(prev[fileType]) ? prev[fileType] : prev[fileType] ? [prev[fileType]] : [];
       return { ...prev, [fileType]: [...existingFiles, ...filesToRead] };
@@ -33510,6 +33029,7 @@ function AssetManagementView({
     return assetForm[field] ? [assetForm[field]] : [];
   };
   const handleReadAssetDocuments = async () => {
+    const ticket = formTicket();
     const docs = [
       ...(Array.isArray(assetDocumentFiles.registration) ? assetDocumentFiles.registration : []).map((file, index) => ({ type: 'registration', file, index })),
       ...(Array.isArray(assetDocumentFiles.inspection) ? assetDocumentFiles.inspection : []).map((file, index) => ({ type: 'inspection', file, index }))
@@ -33530,6 +33050,7 @@ function AssetManagementView({
       }
 
       if (!draft) {
+        if (!ticketCurrent(ticket)) return;
         setAssetDocumentStatus('OCR cục bộ chưa đủ rõ, đang thử AI đọc ảnh...');
         try {
           draft = await requestVehicleDocumentDraftFromGemini(docs);
@@ -33541,6 +33062,7 @@ function AssetManagementView({
         }
       }
 
+      if (!ticketCurrent(ticket)) return;
       setAssetForm(prev => {
         const next = { ...prev };
         [
@@ -33569,62 +33091,101 @@ function AssetManagementView({
       setShowAssetDocumentDetails(true);
       setAssetDocumentStatus('Đã đọc và tự điền thông tin giấy tờ. Bạn kiểm tra lại biển số, dòng xe và hạn đăng kiểm trước khi lưu.');
     } catch (error) {
-      setAssetDocumentStatus(getFriendlyFirebaseErrorMessage(error, 'Chưa đọc được ảnh giấy tờ. Ảnh vẫn được lưu để xuất trình khi cần.'));
+      if (ticketCurrent(ticket)) setAssetDocumentStatus(getFriendlyFirebaseErrorMessage(error, 'Chưa đọc được ảnh giấy tờ. Ảnh vẫn được lưu để xuất trình khi cần.'));
     } finally {
-      setIsReadingAssetDocuments(false);
+      if (ticketCurrent(ticket)) setIsReadingAssetDocuments(false);
     }
   };
   const handleCostImage = async (field, event) => {
+    if (!canUploadAssetCostImages) return;
+    const ticket = formTicket();
     const file = event.target.files?.[0];
     if (!file) return;
     const imageUrl = await readImageFileAsDataUrl(file, 720, 0.78);
+    if (!ticketCurrent(ticket)) return;
     setCostForm(prev => ({ ...prev, [field]: imageUrl }));
   };
   const handleAssetSubmit = async (event) => {
     event.preventDefault();
+    if (assetSaveInFlightRef.current || isReadingAssetDocuments || (editingAsset ? !canEditAsset : !canCreateAsset)) return;
+    const ticket = formTicket();
+    assetSaveInFlightRef.current = true;
     setIsSavingAsset(true);
+    setAssetSaveStatus('');
     try {
-      if (editingAsset) await onEditAsset?.(editingAsset.id, assetForm);
-      else await onAddAsset?.(assetForm);
+      const callback = editingAsset ? onEditAsset : onAddAsset;
+      if (!callback) throw new Error('Chưa thể lưu tài sản.');
+      const result = editingAsset ? await callback(editingAsset.id, assetForm) : await callback(assetForm);
+      if (result === false || result?.success === false || result?.queued) throw new Error('Máy chủ chưa xác nhận tài sản. Vui lòng thử lại.');
+      if (!ticketCurrent(ticket)) return;
+      assetSaveInFlightRef.current = false;
       closeAssetForm();
+    } catch (error) {
+      if (ticketCurrent(ticket)) setAssetSaveStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể lưu tài sản. Vui lòng thử lại.'));
     } finally {
-      setIsSavingAsset(false);
+      if (ticketCurrent(ticket) || (mountedRef.current && ticket.scope === scopeRef.current)) {
+        assetSaveInFlightRef.current = false;
+        setIsSavingAsset(false);
+      }
+    }
+  };
+  const handleAssetDelete = async () => {
+    if (assetSaveInFlightRef.current || !canDeleteAsset || !editingAsset?.id || !window.confirm('Xóa/ngừng sử dụng tài sản này?')) return;
+    const ticket = formTicket();
+    assetSaveInFlightRef.current = true;
+    setIsSavingAsset(true);
+    setAssetSaveStatus('');
+    try {
+      if (!onDeleteAsset) throw new Error('Chưa thể xóa tài sản.');
+      const result = await onDeleteAsset(editingAsset.id, {clientCommandId: assetForm.clientCommandId, clientMutationAt: assetForm.clientMutationAt, expectedAssetUpdatedAt: assetForm.expectedAssetUpdatedAt});
+      if (result === false || result?.success === false || result?.queued) throw new Error('Máy chủ chưa xác nhận xóa tài sản.');
+      if (!ticketCurrent(ticket)) return;
+      assetSaveInFlightRef.current = false;
+      closeAssetForm();
+    } catch (error) {
+      if (ticketCurrent(ticket)) setAssetSaveStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể xóa tài sản.'));
+    } finally {
+      if (mountedRef.current && ticket.scope === scopeRef.current) { assetSaveInFlightRef.current = false; setIsSavingAsset(false); }
     }
   };
   const handleCostSubmit = async (event) => {
     event.preventDefault();
-    if (costSaveInFlightRef.current) return;
-    const nextForm = {
-      ...costForm,
-      amount: parseLooseMoneyValue(costForm.amount) || (parseLooseQuantityValue(costForm.liters) * parseLooseMoneyValue(costForm.unitPrice))
-    };
+    if (costSaveInFlightRef.current || (editingCostLog?.id ? !canEditAssetCostLog : !canCreateAssetCostLog)) return;
+    const ticket = formTicket();
     costSaveInFlightRef.current = true;
     setIsSavingCost(true);
+    setCostSaveStatus('');
     try {
-      if (editingCostLog?.id) await onEditAssetCostLog?.(editingCostLog.id, nextForm);
-      else await onAddAssetCostLog?.(nextForm);
-      closeCostForm();
-      setCostSaveStatus('Đã lưu trên thiết bị. Nhật ký và phiếu chi đang chờ xác nhận đồng bộ.');
-    } catch (error) {
-      setCostSaveStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể lưu chi phí. Vui lòng thử lại.'));
-    } finally {
+      const callback = editingCostLog?.id ? onEditAssetCostLog : onAddAssetCostLog;
+      if (!callback) throw new Error('Chưa thể lưu chi phí.');
+      const result = editingCostLog?.id ? await callback(editingCostLog.id, costForm) : await callback(costForm);
+      if (result === false || result?.success === false || result?.queued) throw new Error('Máy chủ chưa xác nhận chi phí. Vui lòng thử lại.');
+      if (!ticketCurrent(ticket)) return;
       costSaveInFlightRef.current = false;
-      setIsSavingCost(false);
+      closeCostForm();
+      setCostSaveStatus('Đã lưu nhật ký và phiếu chi liên kết.');
+    } catch (error) {
+      if (ticketCurrent(ticket)) setCostSaveStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể lưu chi phí. Vui lòng thử lại.'));
+    } finally {
+      if (mountedRef.current && ticket.scope === scopeRef.current) { costSaveInFlightRef.current = false; setIsSavingCost(false); }
     }
   };
   const handleCostDelete = async () => {
-    if (costSaveInFlightRef.current || !editingCostLog?.id || !window.confirm('Xóa nhật ký chi phí này?')) return;
+    if (costSaveInFlightRef.current || !canDeleteAssetCostLog || !editingCostLog?.id || !window.confirm('Xóa nhật ký chi phí này?')) return;
+    const ticket = formTicket();
     costSaveInFlightRef.current = true;
     setIsSavingCost(true);
     try {
-      await onDeleteAssetCostLog(editingCostLog.id);
-      closeCostForm();
-      setCostSaveStatus('Đã lưu yêu cầu xóa trên thiết bị. Nhật ký và phiếu chi đang chờ xác nhận đồng bộ.');
-    } catch (error) {
-      setCostSaveStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể xóa chi phí. Vui lòng thử lại.'));
-    } finally {
+      const result = await onDeleteAssetCostLog(editingCostLog.id, {clientCommandId: costForm.clientCommandId, clientMutationAt: costForm.clientMutationAt, expectedAssetUpdatedAt: costForm.expectedAssetUpdatedAt});
+      if (result === false || result?.success === false || result?.queued) throw new Error('Máy chủ chưa xác nhận xóa chi phí.');
+      if (!ticketCurrent(ticket)) return;
       costSaveInFlightRef.current = false;
-      setIsSavingCost(false);
+      closeCostForm();
+      setCostSaveStatus('Đã xóa nhật ký và phiếu chi liên kết.');
+    } catch (error) {
+      if (ticketCurrent(ticket)) setCostSaveStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể xóa chi phí. Vui lòng thử lại.'));
+    } finally {
+      if (mountedRef.current && ticket.scope === scopeRef.current) { costSaveInFlightRef.current = false; setIsSavingCost(false); }
     }
   };
   const sectionItems = [
@@ -33638,6 +33199,7 @@ function AssetManagementView({
     <div className="space-y-4 animate-in fade-in">
       {costSaveStatus && !showCostForm && <p role="status" className="text-sm text-slate-700">{costSaveStatus}</p>}
       <AssetManagementWorkspace
+        key={scopeKey}
         backBlocked={showAssetForm || showCostForm}
         employees={employees}
         assets={assets}
@@ -33648,6 +33210,7 @@ function AssetManagementView({
         canEditAsset={canEditAsset}
         canViewAssetCostLogs={canViewAssetCostLogs}
         canCreateAssetCostLog={canCreateAssetCostLog}
+        canEditAssetCostLog={canEditAssetCostLog}
         onCreateAsset={() => openAssetForm()}
         onEditAsset={openAssetForm}
         onAddCost={(asset) => openCostForm(asset ? { assetId: asset.id, driverId: getPrimaryDeliveryAssignmentId(asset) || '' } : null)}
@@ -33845,7 +33408,7 @@ function AssetManagementView({
               </div>
               <button type="button" onClick={closeAssetForm} className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center"><X size={18} /></button>
             </div>
-            <div className="hd-modal-body space-y-3">
+            <fieldset disabled={isSavingAsset} className="hd-modal-body space-y-3">
             <div className="rounded-3xl border border-gray-100 bg-white p-3 space-y-3">
               <p className="text-xs font-black uppercase tracking-widest text-emerald-600">Thông tin chính</p>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -33971,9 +33534,10 @@ function AssetManagementView({
                 </label>
               </div>
             </div>
-            </div>
+            </fieldset>
+            {assetSaveStatus && <p role="alert" className="text-sm text-red-700">{assetSaveStatus}</p>}
             <div className="hd-modal-actions -mx-5 flex gap-2 border-t border-gray-100 bg-white px-5 pt-3">
-              {editingAsset && canDeleteAsset && <button type="button" onClick={() => { if (window.confirm('Xóa/ngừng sử dụng tài sản này?')) { onDeleteAsset?.(editingAsset.id); closeAssetForm(); } }} className="px-4 py-3 rounded-2xl bg-red-50 text-red-600 font-black">Xóa</button>}
+              {editingAsset && canDeleteAsset && <button type="button" disabled={isSavingAsset} onClick={handleAssetDelete} className="px-4 py-3 rounded-2xl bg-red-50 text-red-600 font-black">Xóa</button>}
               <button type="button" onClick={closeAssetForm} className="flex-1 py-3 rounded-2xl bg-gray-100 font-black">Hủy</button>
               <button disabled={isSavingAsset} type="submit" className="flex-1 py-3 rounded-2xl bg-emerald-500 text-white font-black">{isSavingAsset ? 'Đang lưu...' : 'Lưu'}</button>
             </div>
@@ -33991,7 +33555,7 @@ function AssetManagementView({
               </div>
               <button type="button" onClick={closeCostForm} className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center"><X size={18} /></button>
             </div>
-            <div className="hd-modal-body space-y-3">
+            <fieldset disabled={isSavingCost} className="hd-modal-body space-y-3">
             <div className="grid grid-cols-2 gap-2">
               <select value={costForm.type} onChange={e => setCostForm(prev => ({ ...prev, type: e.target.value }))} className="border border-gray-200 rounded-2xl p-3 outline-none bg-white">
                 <option value="fuel">Đổ xăng/dầu</option>
@@ -34012,8 +33576,8 @@ function AssetManagementView({
               <input type="tel" value={costForm.kmAt} onChange={e => setCostForm(prev => ({ ...prev, kmAt: e.target.value }))} className="border border-gray-200 rounded-2xl p-3 outline-none" placeholder="Km lúc phát sinh" />
               {costForm.type === 'fuel' ? (
                 <>
-                  <input type="tel" value={costForm.liters} onChange={e => setCostForm(prev => ({ ...prev, liters: e.target.value }))} className="border border-gray-200 rounded-2xl p-3 outline-none" placeholder="Số lít" />
-                  <input type="tel" value={costForm.unitPrice} onChange={e => setCostForm(prev => ({ ...prev, unitPrice: e.target.value }))} className="border border-gray-200 rounded-2xl p-3 outline-none" placeholder="Đơn giá" />
+                  <input type="tel" value={costForm.liters} onChange={e => setCostForm(prev => updateAssetCostDraft(prev, 'liters', e.target.value))} className="border border-gray-200 rounded-2xl p-3 outline-none" placeholder="Số lít" />
+                  <input type="tel" value={costForm.unitPrice} onChange={e => setCostForm(prev => updateAssetCostDraft(prev, 'unitPrice', e.target.value))} className="border border-gray-200 rounded-2xl p-3 outline-none" placeholder="Đơn giá" />
                 </>
               ) : (
                 <select value={costForm.costType} onChange={e => setCostForm(prev => ({ ...prev, costType: e.target.value }))} className="border border-gray-200 rounded-2xl p-3 outline-none bg-white">
@@ -34025,7 +33589,7 @@ function AssetManagementView({
                   <option value="other">Khác</option>
                 </select>
               )}
-              <input type="tel" value={costForm.amount} onChange={e => setCostForm(prev => ({ ...prev, amount: e.target.value }))} className="border border-gray-200 rounded-2xl p-3 outline-none" placeholder="Tổng tiền" />
+              <input type="tel" value={costForm.amount} onChange={e => setCostForm(prev => updateAssetCostDraft(prev, 'amount', e.target.value))} className="border border-gray-200 rounded-2xl p-3 outline-none" placeholder="Tổng tiền" />
               {canUploadAssetCostImages && (
                 <>
                   <label className="border border-dashed border-blue-200 rounded-2xl p-3 bg-blue-50 text-sm font-bold text-blue-700 text-center">
@@ -34043,7 +33607,7 @@ function AssetManagementView({
             </div>
             <textarea value={costForm.note} onChange={e => setCostForm(prev => ({ ...prev, note: e.target.value }))} className="w-full border border-gray-200 rounded-2xl p-3 outline-none" placeholder="Ghi chú" />
             {costSaveStatus && <p role="alert" className="text-sm text-red-700">{costSaveStatus}</p>}
-            </div>
+            </fieldset>
             <div className="hd-modal-actions flex gap-2">
               {editingCostLog?.id && canDeleteAssetCostLog && <button type="button" disabled={isSavingCost} onClick={handleCostDelete} className="px-4 py-3 rounded-2xl bg-red-50 text-red-600 font-black">Xóa</button>}
               <button type="button" onClick={closeCostForm} className="flex-1 py-3 rounded-2xl bg-gray-100 font-black">Hủy</button>
@@ -34117,8 +33681,8 @@ function BankPaymentCenterView({
   const bankPaymentRows = useMemo(() => (
     [...safePayments]
       .filter(payment => {
-        if (payment.isArchived) return false;
-        const methodText = `${payment.sourceType || payment.sourceLabel || payment.method || payment.paymentMethod || ''}`.toLowerCase();
+        if (payment.isArchived || !isCashflowOfficial(payment)) return false;
+        const methodText = [payment.sourceType, payment.sourceLabel, payment.method, payment.paymentMethod].filter(Boolean).join(' ').toLowerCase();
         return Boolean(payment.sourceBankTransactionId)
           || methodText.includes('bank')
           || methodText.includes('qr')
@@ -34128,8 +33692,13 @@ function BankPaymentCenterView({
       .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0))
   ), [safePayments]);
 
+  const bankPaymentPage = usePagedList(bankPaymentRows, JSON.stringify([currentCompany?.id, 'bank-payment-history']));
+
   const transactionStatusMeta = (transaction = {}) => {
     const status = `${transaction.autoReconcileStatus || transaction.reconciliationStatus || transaction.status || ''}`.toLowerCase();
+    if (isBankTransactionIgnored(transaction)) {
+      return { label: 'Đã bỏ qua', className: 'bg-slate-50 text-slate-600 border-slate-100' };
+    }
     if (transaction.reconciledPaymentId || status === 'matched' || status === 'paid') {
       return { label: 'Đã đối soát', className: 'bg-emerald-50 text-emerald-700 border-emerald-100' };
     }
@@ -34276,12 +33845,13 @@ function BankPaymentCenterView({
           <p className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">Lịch sử QR</p>
           <h3 className="text-lg font-black text-slate-900">Thanh toán đã ghi nhận</h3>
         </div>
+        <ListPagination pagination={bankPaymentPage} label="Trang lịch sử thanh toán ngân hàng" />
         <div className="mt-4 space-y-3">
           {!paymentDataAvailable ? <p role="status">Đang tải lịch sử thanh toán…</p> : bankPaymentRows.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-slate-200 p-4 text-sm font-semibold text-slate-500">
               Chưa có khoản thanh toán QR/chuyển khoản nào được ghi nhận.
             </div>
-          ) : bankPaymentRows.slice(0, 10).map(payment => {
+          ) : bankPaymentPage.items.map(payment => {
             const order = orderMap.get(payment.orderId || payment.matchedOrderId);
             const customer = customerMap.get(payment.customerId || order?.customerId);
             const amount = parseLooseMoneyValue(payment.amount ?? payment.totalAmount ?? payment.paidAmount ?? payment.value);
@@ -34291,7 +33861,7 @@ function BankPaymentCenterView({
                   <div className="min-w-0">
                     <p className="truncate text-sm font-black text-slate-900">{getCustomerDisplayName(customer) || payment.customerName || order?.customerName || 'Khách hàng'}</p>
                     <p className="mt-1 text-xs font-bold text-emerald-700">{formatCurrency(amount)} đ</p>
-                    <p className="mt-1 text-[11px] font-semibold text-slate-500">{order?.orderCode || order?.code || payment.orderCode || payment.orderId || 'Chưa gắn đơn'} • {formatDateTimeLabel(getPaymentDateSource(payment) || payment.date || payment.createdAt || getEntityTimestamp(payment))}</p>
+                    <p className="mt-1 text-[11px] font-semibold text-slate-500">{order?.orderCode || order?.code || payment.matchedOrderCode || payment.orderCode || payment.matchedOrderId || payment.orderId || 'Chưa gắn đơn'} • {formatDateTimeLabel(getPaymentDateSource(payment) || payment.date || payment.createdAt || getEntityTimestamp(payment))}</p>
                   </div>
                   <span className="shrink-0 rounded-full border border-emerald-100 bg-white px-2.5 py-1 text-[11px] font-black text-emerald-700">Đã ghi nhận</span>
                 </div>
@@ -36241,26 +35811,67 @@ function SimplePricingEngineView({
   });
   const pricingDraftRevisionRef = useRef(createDraftRevision());
   const pricingSaveInFlightRef = useRef(false);
-  const [rulesDraft, replaceRulesDraft] = useState(normalizedSavedRules);
+  const [rulesDraft, replaceRulesDraftState] = useState(normalizedSavedRules);
+  const rulesDraftRef = useRef(rulesDraft);
+  // Blur and Save can share a render. Publish drafts to refs before scheduling state.
+  const replaceRulesDraft = useCallback(next => {
+    const value = typeof next === 'function' ? next(rulesDraftRef.current) : next;
+    rulesDraftRef.current = value;
+    replaceRulesDraftState(value);
+  }, []);
   const setRulesDraft = useCallback(next => {
     pricingDraftRevisionRef.current.edit();
     replaceRulesDraft(next);
+  }, [replaceRulesDraft]);
+  const [activeLossGroupKey, replaceActiveLossGroupKey] = useState(normalizedSavedRules.activeLossGroupKey || 'duck');
+  const activeLossGroupKeyRef = useRef(activeLossGroupKey);
+  const setActiveLossGroupKey = useCallback(next => {
+    const value = typeof next === 'function' ? next(activeLossGroupKeyRef.current) : next;
+    activeLossGroupKeyRef.current = value;
+    replaceActiveLossGroupKey(value);
   }, []);
-  const [activeLossGroupKey, setActiveLossGroupKey] = useState(normalizedSavedRules.activeLossGroupKey || 'duck');
-  const [lossStageGroupsDraft, replaceLossStageGroupsDraft] = useState(
+  const [lossStageGroupsDraft, replaceLossStageGroupsDraftState] = useState(
     normalizePricingLossStageGroups(normalizedSavedRules.lossStageGroups, normalizedSavedRules.lossStages),
   );
-  const setLossStageGroupsDraft = useCallback(next => {
-    pricingDraftRevisionRef.current.edit();
-    replaceLossStageGroupsDraft(next);
+  const lossStageGroupsDraftRef = useRef(lossStageGroupsDraft);
+  const replaceLossStageGroupsDraft = useCallback(next => {
+    const value = typeof next === 'function' ? next(lossStageGroupsDraftRef.current) : next;
+    lossStageGroupsDraftRef.current = value;
+    replaceLossStageGroupsDraftState(value);
   }, []);
-  const [cutPartGroupsDraft, replaceCutPartGroupsDraft] = useState(
+  const setLossStageGroupsDraftRef = useCallback(next => {
+    const previous = lossStageGroupsDraftRef.current;
+    const value = typeof next === 'function' ? next(previous) : next;
+    if (value !== previous) {
+      pricingDraftRevisionRef.current.edit();
+      lossStageGroupsDraftRef.current = value;
+    }
+    return value;
+  }, []);
+  const setLossStageGroupsDraft = useCallback(next => {
+    replaceLossStageGroupsDraft(setLossStageGroupsDraftRef(next));
+  }, [replaceLossStageGroupsDraft, setLossStageGroupsDraftRef]);
+  const [cutPartGroupsDraft, replaceCutPartGroupsDraftState] = useState(
     normalizePricingCutPartGroups(normalizedSavedRules.cutPartGroups, normalizedSavedRules.cutParts),
   );
-  const setCutPartGroupsDraft = useCallback(next => {
-    pricingDraftRevisionRef.current.edit();
-    replaceCutPartGroupsDraft(next);
+  const cutPartGroupsDraftRef = useRef(cutPartGroupsDraft);
+  const replaceCutPartGroupsDraft = useCallback(next => {
+    const value = typeof next === 'function' ? next(cutPartGroupsDraftRef.current) : next;
+    cutPartGroupsDraftRef.current = value;
+    replaceCutPartGroupsDraftState(value);
   }, []);
+  const setCutPartGroupsDraftRef = useCallback(next => {
+    const previous = cutPartGroupsDraftRef.current;
+    const value = typeof next === 'function' ? next(previous) : next;
+    if (value !== previous) {
+      pricingDraftRevisionRef.current.edit();
+      cutPartGroupsDraftRef.current = value;
+    }
+    return value;
+  }, []);
+  const setCutPartGroupsDraft = useCallback(next => {
+    replaceCutPartGroupsDraft(setCutPartGroupsDraftRef(next));
+  }, [replaceCutPartGroupsDraft, setCutPartGroupsDraftRef]);
   const latestWarehouseInputsByGroup = useMemo(
     () => buildLatestPricingInputsByGroup(warehouseImports),
     [warehouseImports],
@@ -36343,26 +35954,28 @@ function SimplePricingEngineView({
     [rulesDraft.todayInputPriceOverrides],
   );
 
-  const parsedRules = useMemo(() => ({
-    ...rulesDraft,
-    targetMargin: parseLooseQuantityValue(rulesDraft.targetMargin),
-    standardMargin: parseLooseQuantityValue(rulesDraft.standardMargin),
-    minMargin: parseLooseQuantityValue(rulesDraft.minMargin),
-    maxMargin: parseLooseQuantityValue(rulesDraft.maxMargin),
-    autoAdjustPercent: parseLooseQuantityValue(rulesDraft.autoAdjustPercent),
-    todayInputPriceOverrides,
-    marginByGroup: Object.fromEntries(pricingGroupRows.map(group => {
-      const groupMargin = rulesDraft.marginByGroup?.[group.key] || {};
+  const pricingSaveContextRef = useRef(null);
+  pricingSaveContextRef.current = { pricingGroupRows, latestWarehouseInputsByGroup };
+  const buildPricingRulesFromDrafts = useCallback((draftRules, draftLossGroups, draftCutGroups, groupKey) => ({
+    ...draftRules,
+    targetMargin: parseLooseQuantityValue(draftRules.targetMargin),
+    standardMargin: parseLooseQuantityValue(draftRules.standardMargin),
+    minMargin: parseLooseQuantityValue(draftRules.minMargin),
+    maxMargin: parseLooseQuantityValue(draftRules.maxMargin),
+    autoAdjustPercent: parseLooseQuantityValue(draftRules.autoAdjustPercent),
+    todayInputPriceOverrides: normalizeTodayInputPriceOverrides(draftRules.todayInputPriceOverrides),
+    marginByGroup: Object.fromEntries(pricingSaveContextRef.current.pricingGroupRows.map(group => {
+      const groupMargin = draftRules.marginByGroup?.[group.key] || {};
       return [
         group.key,
         {
-          minMargin: parseLooseQuantityValue(groupMargin.minMargin ?? rulesDraft.minMargin),
-          targetMargin: parseLooseQuantityValue(groupMargin.targetMargin ?? rulesDraft.targetMargin),
-          maxMargin: parseLooseQuantityValue(groupMargin.maxMargin ?? rulesDraft.maxMargin),
+          minMargin: parseLooseQuantityValue(groupMargin.minMargin ?? draftRules.minMargin),
+          targetMargin: parseLooseQuantityValue(groupMargin.targetMargin ?? draftRules.targetMargin),
+          maxMargin: parseLooseQuantityValue(groupMargin.maxMargin ?? draftRules.maxMargin),
         },
       ];
     })),
-    marginByProduct: Object.fromEntries(Object.entries(rulesDraft.marginByProduct || {}).map(([productKey, productMargin]) => [
+    marginByProduct: Object.fromEntries(Object.entries(draftRules.marginByProduct || {}).map(([productKey, productMargin]) => [
       productKey,
       {
         minMargin: parseLooseQuantityValue(productMargin?.minMargin),
@@ -36370,23 +35983,40 @@ function SimplePricingEngineView({
         maxMargin: parseLooseQuantityValue(productMargin?.maxMargin),
       },
     ])),
-    lossStages: pricingLossStageDraftsToRules(effectiveLossStageDrafts),
+    lossStages: pricingLossStageDraftsToRules(applyPricingInputWeightToLossStages(
+      draftLossGroups[groupKey] || EMPTY_PRICING_DRAFT_ROWS,
+      pricingSaveContextRef.current.latestWarehouseInputsByGroup?.[groupKey] || {},
+    )),
     lossStageGroups: Object.fromEntries(
-      Object.entries(lossStageGroupsDraft).map(([key, rows]) => [
+      Object.entries(draftLossGroups).map(([key, rows]) => [
         key,
-        pricingLossStageDraftsToRules(applyPricingInputWeightToLossStages(rows, latestWarehouseInputsByGroup?.[key] || {})),
+        pricingLossStageDraftsToRules(applyPricingInputWeightToLossStages(rows, pricingSaveContextRef.current.latestWarehouseInputsByGroup?.[key] || {})),
       ]),
     ),
-    activeLossGroupKey,
-    cutParts: pricingCutPartDraftsToRules(cutPartDrafts),
+    activeLossGroupKey: groupKey,
+    cutParts: pricingCutPartDraftsToRules(draftCutGroups[groupKey] || EMPTY_PRICING_DRAFT_ROWS),
     cutPartGroups: Object.fromEntries(
-      Object.entries(cutPartGroupsDraft).map(([key, rows]) => [
+      Object.entries(draftCutGroups).map(([key, rows]) => [
         key,
         pricingCutPartDraftsToRules(rows),
       ]),
     ),
-    productFormulas: normalizePricingProductFormulas(rulesDraft.productFormulas),
-  }), [rulesDraft, todayInputPriceOverrides, pricingGroupRows, effectiveLossStageDrafts, lossStageGroupsDraft, latestWarehouseInputsByGroup, activeLossGroupKey, cutPartDrafts, cutPartGroupsDraft]);
+    productFormulas: normalizePricingProductFormulas(draftRules.productFormulas),
+  }), []);
+  const parsedRules = useMemo(() => buildPricingRulesFromDrafts(
+    rulesDraft, lossStageGroupsDraft, cutPartGroupsDraft, activeLossGroupKey,
+  ), [buildPricingRulesFromDrafts, rulesDraft, lossStageGroupsDraft, cutPartGroupsDraft, activeLossGroupKey, pricingGroupRows, latestWarehouseInputsByGroup]);
+  const buildCurrentPricingRulesForSave = () => {
+    const lossGroups = lossStageGroupsDraftRef.current;
+    assertPricingLossStandards({ lossStageGroups: Object.fromEntries(Object.entries(lossGroups).map(([key, rows]) => [
+      key, applyPricingInputWeightToLossStages(rows, pricingSaveContextRef.current.latestWarehouseInputsByGroup?.[key] || {}),
+    ])) });
+    const currentRules = buildPricingRulesFromDrafts(
+      rulesDraftRef.current, lossGroups, cutPartGroupsDraftRef.current, activeLossGroupKeyRef.current,
+    );
+    assertPricingLossStandards(currentRules);
+    return currentRules;
+  };
 
   const pricingSnapshot = useMemo(() => buildPricingEngineSnapshot({
     currentCompany,
@@ -36660,13 +36290,16 @@ function SimplePricingEngineView({
     activeGroupMarginPercent,
   ]);
 
-  const updateCutPartDraft = (index, field, value) => {
-    setCutPartGroupsDraft(prev => ({
-      ...prev,
-      [activeLossGroupKey]: (prev[activeLossGroupKey] || []).map((row, rowIndex) => (
-        rowIndex === index ? { ...row, [field]: value } : row
-      )),
-    }));
+  const updateCutPartDraft = (index, field, value, refOnly = false) => {
+    const setDraft = refOnly ? setCutPartGroupsDraftRef : setCutPartGroupsDraft;
+    setDraft(prev => {
+      const rows = prev[activeLossGroupKey] || [];
+      if (!rows[index] || rows[index][field] === value) return prev;
+      return {
+        ...prev,
+        [activeLossGroupKey]: rows.map((row, rowIndex) => rowIndex === index ? { ...row, [field]: value } : row),
+      };
+    });
   };
 
   const addCutPartDraft = () => {
@@ -36693,47 +36326,56 @@ function SimplePricingEngineView({
     });
   };
 
-  const commitCutPartCellDraft = (index, field, value) => {
-    updateCutPartDraft(index, field, value ?? '');
+  const commitCutPartCellDraft = (index, field, value, refOnly = false) => {
+    updateCutPartDraft(index, field, value ?? '', refOnly);
   };
 
-  const updateLossStageDraft = (index, field, value) => {
-    setLossStageGroupsDraft(prev => ({
-      ...prev,
-      [activeLossGroupKey]: (prev[activeLossGroupKey] || []).map((row, rowIndex) => (
-        rowIndex === index ? { ...row, [field]: value } : row
-      )),
-    }));
+  const updateLossStageDraft = (index, field, value, refOnly = false) => {
+    const setDraft = refOnly ? setLossStageGroupsDraftRef : setLossStageGroupsDraft;
+    setDraft(prev => {
+      const rows = prev[activeLossGroupKey] || [];
+      const currentRow = rows[index];
+      if (!currentRow) return prev;
+      const outputWeight = field === 'inputWeight' && `${currentRow.lossWeight ?? ''}`.trim() !== ''
+        ? Number(Math.max(parseLooseQuantityValue(value) - parseLooseQuantityValue(currentRow.lossWeight), 0).toFixed(3))
+        : currentRow.outputWeight;
+      if (currentRow[field] === value && currentRow.outputWeight === outputWeight) return prev;
+      return {
+        ...prev,
+        [activeLossGroupKey]: rows.map((row, rowIndex) => rowIndex === index ? { ...row, [field]: value, outputWeight } : row),
+      };
+    });
   };
 
-  const updateLossWeightDraft = (index, value) => {
-    const currentRow = effectiveLossStageDrafts[index] || lossStageDrafts[index] || {};
+  const updateLossWeightDraft = (index, value, refOnly = false) => {
+    const currentRow = applyPricingInputWeightToLossStages(
+      lossStageGroupsDraftRef.current[activeLossGroupKey] || EMPTY_PRICING_DRAFT_ROWS,
+      pricingSaveContextRef.current.latestWarehouseInputsByGroup?.[activeLossGroupKey] || {},
+    )[index] || {};
     const inputWeight = parseLooseQuantityValue(currentRow.inputWeight);
     const lossWeight = parseLooseQuantityValue(value);
     const nextOutputWeight = value === ''
       ? ''
       : Math.max(inputWeight - lossWeight, 0);
 
-    setLossStageGroupsDraft(prev => ({
-      ...prev,
-      [activeLossGroupKey]: (prev[activeLossGroupKey] || []).map((row, rowIndex) => (
-        rowIndex === index
-          ? {
-              ...row,
-              lossWeight: value,
-              outputWeight: nextOutputWeight === '' ? '' : Number(nextOutputWeight.toFixed(3)),
-            }
-          : row
-      )),
-    }));
+    const outputWeight = nextOutputWeight === '' ? '' : Number(nextOutputWeight.toFixed(3));
+    const setDraft = refOnly ? setLossStageGroupsDraftRef : setLossStageGroupsDraft;
+    setDraft(prev => {
+      const rows = prev[activeLossGroupKey] || [];
+      if (!rows[index] || (rows[index].lossWeight === value && rows[index].outputWeight === outputWeight)) return prev;
+      return {
+        ...prev,
+        [activeLossGroupKey]: rows.map((row, rowIndex) => rowIndex === index ? { ...row, lossWeight: value, outputWeight } : row),
+      };
+    });
   };
 
-  const commitLossCellDraft = (index, field, value) => {
+  const commitLossCellDraft = (index, field, value, refOnly = false) => {
     const nextValue = value ?? '';
     if (field === 'lossWeight') {
-      updateLossWeightDraft(index, nextValue);
+      updateLossWeightDraft(index, nextValue, refOnly);
     } else {
-      updateLossStageDraft(index, field, nextValue);
+      updateLossStageDraft(index, field, nextValue, refOnly);
     }
   };
 
@@ -36781,12 +36423,18 @@ function SimplePricingEngineView({
     }));
   };
 
-  const buildSeedProductMargins = () => Object.fromEntries(pricingProductMarginRows.map(row => [
+  const buildSeedProductMargins = (draftRules = rulesDraftRef.current) => Object.fromEntries(buildPricingProductMarginRows({
+    products: activePricingProducts,
+    getGroupKey: getPricingProductGroupKey,
+    getGroupLabel: getPricingProductGroupLabel,
+    marginByProduct: draftRules.marginByProduct,
+    legacyMarginByGroup: draftRules.marginByGroup,
+  }).map(row => [
     row.productKey,
     {
-      minMargin: rulesDraft.marginByGroup?.[row.groupKey]?.minMargin ?? 0,
+      minMargin: draftRules.marginByGroup?.[row.groupKey]?.minMargin ?? 0,
       targetMargin: row.targetMargin,
-      maxMargin: rulesDraft.marginByGroup?.[row.groupKey]?.maxMargin ?? 0,
+      maxMargin: draftRules.marginByGroup?.[row.groupKey]?.maxMargin ?? 0,
     },
   ]));
 
@@ -36814,13 +36462,13 @@ function SimplePricingEngineView({
     setOpenMarginGroupKeys(prev => ({ ...prev, [groupKey]: !prev[groupKey] }));
   };
 
-  const setTodayPriceGroupHidden = (groupKey, shouldHide) => {
-    if (!groupKey) return;
+  const setTodayPriceGroupHidden = async (groupKey, shouldHide) => {
+    if (!groupKey || !pricingActivityReady || pricingSaveInFlightRef.current) return;
     if (!canModifyTodayPriceGroups) {
       setStatusText('Tài khoản này chưa có quyền ẩn/hiện nhóm trong bảng giá.');
       return;
     }
-    const nextHiddenSet = new Set(hiddenTodayPriceGroupKeys);
+    const nextHiddenSet = new Set(rulesDraftRef.current.hiddenTodayPriceGroupKeys || []);
     if (shouldHide) nextHiddenSet.add(groupKey);
     else nextHiddenSet.delete(groupKey);
     const nextHiddenKeys = Array.from(nextHiddenSet);
@@ -36833,25 +36481,33 @@ function SimplePricingEngineView({
       setStatusText(`${shouldHide ? 'Đã ẩn' : 'Đã hiện'} ${groupLabel}. Bấm Lưu công thức giá để lưu cố định.`);
       return;
     }
+    pricingSaveInFlightRef.current = true;
     setIsSavingPricing(true);
-    Promise.resolve(onSavePricingRules({
-      ...parsedRules,
-      hiddenTodayPriceGroupKeys: nextHiddenKeys,
-      id: 'pricing_engine_rules',
-      operationMode: 'assistant',
-    }))
-      .then(() => setStatusText(`${shouldHide ? 'Đã ẩn' : 'Đã hiện'} ${groupLabel} trong bảng giá hôm nay.`))
-      .catch(error => setStatusText(`Lưu ẩn/hiện nhóm lỗi: ${getFriendlyFirebaseErrorMessage(error, 'Vui lòng thử lại.')}`))
-      .finally(() => setIsSavingPricing(false));
+    try {
+      const currentRules = buildCurrentPricingRulesForSave();
+      const submittedRevision = pricingDraftRevisionRef.current.capture();
+      await onSavePricingRules({
+        ...currentRules,
+        id: 'pricing_engine_rules',
+        operationMode: 'assistant',
+      });
+      pricingDraftRevisionRef.current.saved(submittedRevision);
+      setStatusText(`${shouldHide ? 'Đã ẩn' : 'Đã hiện'} ${groupLabel} trong bảng giá hôm nay.`);
+    } catch (error) {
+      setStatusText(`Lưu ẩn/hiện nhóm lỗi: ${getFriendlyFirebaseErrorMessage(error, 'Vui lòng thử lại.')}`);
+    } finally {
+      pricingSaveInFlightRef.current = false;
+      setIsSavingPricing(false);
+    }
   };
 
-  const setTodayPriceProductHidden = (productKey, shouldHide) => {
-    if (!productKey) return;
+  const setTodayPriceProductHidden = async (productKey, shouldHide) => {
+    if (!productKey || !pricingActivityReady || pricingSaveInFlightRef.current) return;
     if (!canModifyTodayPriceProducts) {
       setStatusText('Tài khoản này chưa có quyền ẩn/hiện sản phẩm trong bảng giá.');
       return;
     }
-    const nextHiddenSet = new Set(hiddenTodayPriceProductKeys);
+    const nextHiddenSet = new Set(rulesDraftRef.current.hiddenTodayPriceProductKeys || []);
     if (shouldHide) nextHiddenSet.add(productKey);
     else nextHiddenSet.delete(productKey);
     const nextHiddenKeys = Array.from(nextHiddenSet);
@@ -36864,16 +36520,24 @@ function SimplePricingEngineView({
       setStatusText(`${shouldHide ? 'Đã ẩn' : 'Đã hiện'} ${productLabel}. Bấm Lưu công thức giá để lưu cố định.`);
       return;
     }
+    pricingSaveInFlightRef.current = true;
     setIsSavingPricing(true);
-    Promise.resolve(onSavePricingRules({
-      ...parsedRules,
-      hiddenTodayPriceProductKeys: nextHiddenKeys,
-      id: 'pricing_engine_rules',
-      operationMode: 'assistant',
-    }))
-      .then(() => setStatusText(`${shouldHide ? 'Đã ẩn' : 'Đã hiện'} ${productLabel} trong bảng giá hôm nay.`))
-      .catch(error => setStatusText(`Lưu ẩn/hiện sản phẩm lỗi: ${getFriendlyFirebaseErrorMessage(error, 'Vui lòng thử lại.')}`))
-      .finally(() => setIsSavingPricing(false));
+    try {
+      const currentRules = buildCurrentPricingRulesForSave();
+      const submittedRevision = pricingDraftRevisionRef.current.capture();
+      await onSavePricingRules({
+        ...currentRules,
+        id: 'pricing_engine_rules',
+        operationMode: 'assistant',
+      });
+      pricingDraftRevisionRef.current.saved(submittedRevision);
+      setStatusText(`${shouldHide ? 'Đã ẩn' : 'Đã hiện'} ${productLabel} trong bảng giá hôm nay.`);
+    } catch (error) {
+      setStatusText(`Lưu ẩn/hiện sản phẩm lỗi: ${getFriendlyFirebaseErrorMessage(error, 'Vui lòng thử lại.')}`);
+    } finally {
+      pricingSaveInFlightRef.current = false;
+      setIsSavingPricing(false);
+    }
   };
 
   const buildProductFormulaFromProduct = (product = null) => {
@@ -37034,14 +36698,15 @@ function SimplePricingEngineView({
   const handleSavePricingRules = async () => {
     if (!pricingActivityReady || !canEditRules || !onSavePricingRules || pricingSaveInFlightRef.current) return;
     pricingSaveInFlightRef.current = true;
-    const submittedRevision = pricingDraftRevisionRef.current.capture();
     setIsSavingPricing(true);
     try {
-      const savedProductMargins = Object.keys(parsedRules.marginByProduct || {}).length
-        ? parsedRules.marginByProduct
-        : buildSeedProductMargins();
+      const currentRules = buildCurrentPricingRulesForSave();
+      const submittedRevision = pricingDraftRevisionRef.current.capture();
+      const savedProductMargins = Object.keys(currentRules.marginByProduct || {}).length
+        ? currentRules.marginByProduct
+        : buildSeedProductMargins(currentRules);
       const receipt = await onSavePricingRules({
-        ...parsedRules,
+        ...currentRules,
         marginByProduct: savedProductMargins,
         id: 'pricing_engine_rules',
         operationMode: 'assistant',
@@ -37573,7 +37238,7 @@ function SimplePricingEngineView({
                     <div className="rounded-2xl bg-white px-2 py-2 shadow-sm">
                       <p className="text-[10px] font-black uppercase text-gray-400">Lãi ước tính</p>
                       <p className={`mt-1 text-sm font-black ${(summary?.estimatedProfit || 0) >= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>
-                        {pricingFormulaReady ? formatPricingVnd(summary?.estimatedProfit || 0) : formulaPendingLabel}
+                        {pricingFormulaReady ? (summary?.inputCostPerKg > 0 ? formatPricingVnd(summary?.estimatedProfit || 0) : 'Chưa có giá vốn') : formulaPendingLabel}
                       </p>
                     </div>
                     <div className="rounded-2xl bg-white px-2 py-2 shadow-sm">
@@ -37641,7 +37306,7 @@ function SimplePricingEngineView({
                             <div className="mt-2 flex flex-wrap gap-2 text-[11px] font-bold text-gray-500">
                               <span className="rounded-full bg-slate-50 px-2 py-1">Bán: {pricingFormulaReady ? formatPricingVnd(childSummary?.revenue || 0) : formulaPendingLabel}</span>
                               <span className="rounded-full bg-slate-50 px-2 py-1">SL: {pricingFormulaReady ? formatPricingNumber(childSummary?.quantity || 0) : formulaPendingLabel}</span>
-                              <span className="rounded-full bg-slate-50 px-2 py-1">Vốn ước: {pricingFormulaReady ? formatPricingVnd(childSummary?.estimatedCost || 0) : formulaPendingLabel}</span>
+                              <span className="rounded-full bg-slate-50 px-2 py-1">Vốn ước: {pricingFormulaReady ? (summary?.inputCostPerKg > 0 ? formatPricingVnd(childSummary?.estimatedCost || 0) : 'Chưa có giá vốn') : formulaPendingLabel}</span>
                             </div>
                           </div>
                         );
@@ -37797,6 +37462,9 @@ function SimplePricingEngineView({
                         inputMode="decimal"
                         key={`loss-input-${activeLossGroupKey}-${index}-${autoLossInputStats.averageKg > 0 ? inputWeightValue : (row.inputWeight ?? '')}`}
                         defaultValue={inputWeightValue}
+                        onInput={e => {
+                          if (autoLossInputStats.averageKg <= 0) commitLossCellDraft(index, 'inputWeight', e.target.value, true);
+                        }}
                         onBlur={e => {
                           if (autoLossInputStats.averageKg <= 0) commitLossCellDraft(index, 'inputWeight', e.target.value);
                         }}
@@ -37818,6 +37486,7 @@ function SimplePricingEngineView({
                         inputMode="decimal"
                         key={`loss-weight-${activeLossGroupKey}-${index}-${row.lossWeight ?? ''}`}
                         defaultValue={lossWeightValue}
+                        onInput={e => commitLossCellDraft(index, 'lossWeight', e.target.value, true)}
                         onBlur={e => commitLossCellDraft(index, 'lossWeight', e.target.value)}
                         onKeyDown={e => {
                           if (e.key === 'Enter') {
@@ -37889,6 +37558,7 @@ function SimplePricingEngineView({
                           inputMode="decimal"
                           key={`cut-ratio-${activeLossGroupKey}-${index}-${part.ratioPercent ?? ''}`}
                           defaultValue={part.ratioPercent ?? ''}
+                          onInput={e => commitCutPartCellDraft(index, 'ratioPercent', e.target.value, true)}
                           onBlur={e => commitCutPartCellDraft(index, 'ratioPercent', e.target.value)}
                           onKeyDown={e => {
                             if (e.key === 'Enter') {
@@ -37907,6 +37577,7 @@ function SimplePricingEngineView({
                           inputMode="decimal"
                           key={`cut-loss-${activeLossGroupKey}-${index}-${part.lossPercent ?? ''}`}
                           defaultValue={part.lossPercent ?? ''}
+                          onInput={e => commitCutPartCellDraft(index, 'lossPercent', e.target.value, true)}
                           onBlur={e => commitCutPartCellDraft(index, 'lossPercent', e.target.value)}
                           onKeyDown={e => {
                             if (e.key === 'Enter') {
@@ -37925,6 +37596,7 @@ function SimplePricingEngineView({
                           inputMode="decimal"
                           key={`cut-factor-${activeLossGroupKey}-${index}-${part.valueFactor ?? ''}`}
                           defaultValue={part.valueFactor ?? ''}
+                          onInput={e => commitCutPartCellDraft(index, 'valueFactor', e.target.value, true)}
                           onBlur={e => commitCutPartCellDraft(index, 'valueFactor', e.target.value)}
                           onKeyDown={e => {
                             if (e.key === 'Enter') {
@@ -38091,23 +37763,23 @@ const toggleBatchCustomer = (customerId) => {
     setIsApplyingBatchPrice(true);
     setQuoteStatus(`Đang áp giá ${product.name} cho ${targetCustomers.length} khách...`);
     try {
-      const receipts = await Promise.all(targetCustomers.map(customer => {
+      const results = await Promise.allSettled(targetCustomers.map(async customer => {
         const currentOverrides = normalizeCustomerPriceOverrides(customer);
-        const currentProductIds = normalizeCustomerProductIds(customer, activeProducts);
-        const currentConfig = currentOverrides[product.id] || {};
-        const nextConfig = {
-          price: cleanPrice > 0 ? cleanPrice : currentConfig.price || 0,
-          size: cleanSize || currentConfig.size || '',
-          attributeLabel: currentConfig.attributeLabel || ''
-        };
-        return onEditCustomer(customer.id, {
-          priceOverrides: {
-            ...currentOverrides,
-            [product.id]: nextConfig
-          },
-          customerProductIds: currentProductIds
-        });
+        const receipt = await onEditCustomer(customer.id, buildCustomerBatchPricePatch({
+          customer, product, price: cleanPrice, size: cleanSize,
+          normalizedOverrides: currentOverrides, fingerprint: configScopeFingerprint(customer),
+        }));
+        if (!receipt) throw new Error('Chưa nhận được xác nhận cập nhật giá cho khách hàng.');
+        return receipt;
       }));
+      const failed = targetCustomers.filter((_, index) => results[index].status === 'rejected');
+      const receipts = results.filter(result => result.status === 'fulfilled').map(result => result.value);
+      if (failed.length) {
+        setSelectedBatchCustomerIds(failed.map(customer => customer.id));
+        const firstError = results.find(result => result.status === 'rejected').reason;
+        setQuoteStatus(`Đã cập nhật ${receipts.length}/${targetCustomers.length} khách. Chưa cập nhật: ${failed.map(customer => customer.name || customer.id).join(', ')}. ${getFriendlyFirebaseErrorMessage(firstError, 'Vui lòng tải lại cấu hình và thử lại các khách còn được chọn.')}`);
+        return;
+      }
       setQuoteStatus(receipts.some(receipt => receipt?.queued)
         ? `Đã lưu tạm giá ${product.name} cho ${targetCustomers.length} khách. Đang đồng bộ với máy chủ.`
         : `Đã áp giá ${product.name} cho ${targetCustomers.length} khách. Khi lên đơn hoặc gửi báo giá, app sẽ tự lấy giá riêng này.`);
@@ -38223,6 +37895,7 @@ return (
                 onChange={(productId) => {
                   setBatchPriceProductId(productId);
                   setSelectedBatchCustomerIds([]);
+                  setQuoteStatus('');
                 }}
               />
             </div>
@@ -38301,6 +37974,7 @@ return (
                   <button
                     key={customer.id}
                     type="button"
+                    aria-pressed={isSelected}
                     onClick={() => toggleBatchCustomer(customer.id)}
                     className={`flex w-full items-start gap-2 rounded-2xl border px-3 py-2 text-left transition-colors ${
                       isSelected ? 'border-emerald-300 bg-emerald-50' : 'border-gray-100 bg-gray-50 hover:bg-gray-100'
@@ -42748,7 +42422,7 @@ function FinanceViewLegacy({ isAccounting, employee, expenses, payments, onAddEx
 }
 
 const deferredMessageCenterViewModule = createPreloadableModule(() => import('./features/legacy/MessageCenterView.jsx')
-  .then(({createMessageCenterView}) => ({default:createMessageCenterView(Object.freeze({APP_SCREEN_BACK_EVENT,buildCompanyMonogram,chatListMonthDayFormatter,chatListTimeFormatter,collapseLookupText,formatCurrency,formatDateLabel,formatDateTimeLabel,formatNumber,getCompanyDisplayName,getCompanyLogoUrl,getCustomerDisplayName,getEmployeeAvatarUrl,getEmployeePositionLabel,getEntityTimestamp,getFriendlyFirebaseErrorMessage,getInvoiceTransferProfile,getProductShortName,getTodayString,isSameLoginPhone,markAppBackHandled,normalizeCustomerPhone,parseLooseQuantityValue,useDismissSearchOnOutsideClick,vietnamDateFormatter}))})));
+  .then(({createMessageCenterView}) => ({default:createMessageCenterView(Object.freeze({APP_SCREEN_BACK_EVENT,buildCompanyMonogram,buildCustomerLedger,chatListMonthDayFormatter,chatListTimeFormatter,collapseLookupText,formatCurrency,formatDateLabel,formatDateTimeLabel,formatNumber,getCompanyDisplayName,getCompanyLogoUrl,getCustomerDisplayName,getEmployeeAvatarUrl,getEmployeePositionLabel,getEntityTimestamp,getFriendlyFirebaseErrorMessage,getInvoiceTransferProfile,getProductShortName,getTodayString,isSameLoginPhone,markAppBackHandled,normalizeCustomerPhone,parseLooseQuantityValue,useDismissSearchOnOutsideClick,vietnamDateFormatter}))})));
 function MessageCenterView(props) {
   return <PreloadedWorkspace module={deferredMessageCenterViewModule} viewProps={props} label={"Tin nhắn"} />;
 }
@@ -42787,6 +42461,9 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
   const [showDesktopCreateMenu, setShowDesktopCreateMenu] = useState(false);
   const [editingCashflowTransaction, setEditingCashflowTransaction] = useState(null);
   const [rejectingCashflowTransaction, setRejectingCashflowTransaction] = useState(null);
+  const [cashflowRejectSaving, setCashflowRejectSaving] = useState(false);
+  const [cashflowRejectError, setCashflowRejectError] = useState('');
+  const cashflowRejectSubmitRef = useRef(false);
   const [cashflowEditForm, setCashflowEditForm] = useState({
     amount: '',
     date: getTodayString(),
@@ -43356,6 +43033,7 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
 
   const openRejectCashflowModal = (transaction) => {
     if (!transaction || !canApproveCashflow) return;
+    setCashflowRejectError('');
     setRejectingCashflowTransaction(transaction);
     setCashflowRejectForm({
       amount: transaction.amount || '',
@@ -43367,36 +43045,41 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
   };
 
   const closeRejectCashflowModal = () => {
+    if (cashflowRejectSubmitRef.current) return;
+    setCashflowRejectError('');
     setRejectingCashflowTransaction(null);
     setCashflowRejectForm({ amount: '', category: '', note: '' });
   };
 
   const handleRejectTransactionSubmit = async (event) => {
     event.preventDefault();
-    if (!rejectingCashflowTransaction || !canApproveCashflow) return;
+    if (!rejectingCashflowTransaction || !canApproveCashflow || cashflowRejectSubmitRef.current) return;
     const amount = parseLooseMoneyValue(cashflowRejectForm.amount);
-    if (amount <= 0) {
-      window.alert('Số tiền thực tế phải lớn hơn 0.');
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setCashflowRejectError('Số tiền thực tế phải lớn hơn 0.');
       return;
     }
-    const patch = {
-      amount,
-      approvalStatus: CASHFLOW_APPROVAL_STATUS.rejected
-    };
-    if (rejectingCashflowTransaction.transactionType === 'expense') {
-      const category = normalizeExpenseCategoryLabel(cashflowRejectForm.category || 'Chi phí khác');
-      await onEditExpense?.(rejectingCashflowTransaction.id, {
-        ...patch,
-        category,
-        note: normalizeLeadingLabel(cashflowRejectForm.note || category)
-      });
-    } else {
-      await onEditPayment?.(rejectingCashflowTransaction.id, {
-        ...patch,
-        note: capitalizeFirst(cashflowRejectForm.note || 'Khoản thu chưa đúng')
-      });
+    cashflowRejectSubmitRef.current = true;
+    setCashflowRejectSaving(true);
+    setCashflowRejectError('');
+    try {
+      const patch = {amount, approvalStatus: CASHFLOW_APPROVAL_STATUS.rejected};
+      if (rejectingCashflowTransaction.transactionType === 'expense') {
+        if (!onEditExpense) throw new Error('Không thể cập nhật phiếu chi.');
+        const category = normalizeExpenseCategoryLabel(cashflowRejectForm.category || 'Chi phí khác');
+        await onEditExpense(rejectingCashflowTransaction.id, {...patch, category, note: normalizeLeadingLabel(cashflowRejectForm.note || category)});
+      } else {
+        if (!onEditPayment) throw new Error('Không thể cập nhật phiếu thu.');
+        await onEditPayment(rejectingCashflowTransaction.id, {...patch, note: capitalizeFirst(cashflowRejectForm.note || 'Khoản thu chưa đúng')});
+      }
+      cashflowRejectSubmitRef.current = false;
+      closeRejectCashflowModal();
+    } catch (error) {
+      setCashflowRejectError(getFriendlyFirebaseErrorMessage(error, 'Không thể lưu không duyệt. Bản nhập vẫn được giữ.'));
+    } finally {
+      cashflowRejectSubmitRef.current = false;
+      setCashflowRejectSaving(false);
     }
-    closeRejectCashflowModal();
   };
 
   const canEditCashflowTransaction = (transaction) => {
@@ -43692,8 +43375,8 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
                               <div className="mt-2 flex flex-wrap gap-2">
                                 {isOfficialTransaction ? (
                                   <>
-                                    <span className="rounded-full bg-emerald-50 px-2 py-1 text-[11px] font-bold text-emerald-600">Đã trừ nợ {formatCurrency(transaction.appliedAmount || 0)} đ</span>
-                                    {(transaction.overpaidAmount || 0) > 0 && <span className="rounded-full bg-blue-50 px-2 py-1 text-[11px] font-bold text-blue-600">Khách dư {formatCurrency(transaction.overpaidAmount)} đ</span>}
+                                    <span className="rounded-full bg-emerald-50 px-2 py-1 text-[11px] font-bold text-emerald-600">Trừ nợ khi thu {formatCurrency(transaction.appliedAmount || 0)} đ</span>
+                                    {(transaction.overpaidAmount || 0) > 0 && <span className="rounded-full bg-blue-50 px-2 py-1 text-[11px] font-bold text-blue-600">Dư tại lúc thu {formatCurrency(transaction.overpaidAmount)} đ</span>}
                                   </>
                                 ) : (
                                   <span className="rounded-full bg-amber-50 px-2 py-1 text-[11px] font-bold text-amber-700">Chờ xác nhận để trừ công nợ</span>
@@ -43842,6 +43525,29 @@ function FinanceView({ isAccounting, isDriver = false, employee, expenses, payme
               </div>
             </form>
           </div>
+        </div>
+      )}
+
+      {rejectingCashflowTransaction && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <form role="dialog" aria-modal="true" aria-label="Không duyệt thu chi" onSubmit={handleRejectTransactionSubmit} className="w-full max-w-sm space-y-3 rounded-[28px] bg-white p-5 shadow-2xl">
+            <h3 className="text-xl font-black text-slate-900">{rejectingCashflowTransaction.transactionType === 'expense' ? 'Chỉnh khoản chi sai' : 'Chỉnh khoản thu sai'}</h3>
+            <p className="text-xs text-slate-500">Khoản không duyệt không trừ công nợ và không vào chi phí chính thức.</p>
+            <label className="block text-sm font-bold">Số tiền thực tế
+              <input required aria-label="Số tiền thực tế" type="tel" disabled={cashflowRejectSaving} value={formatInputCurrency(cashflowRejectForm.amount)} onChange={event => setCashflowRejectForm(previous => ({...previous,amount:parseInputCurrency(event.target.value)}))} className="mt-1 w-full rounded-xl border p-3" />
+            </label>
+            {rejectingCashflowTransaction.transactionType === 'expense' && <label className="block text-sm font-bold">Loại chi
+              <input required aria-label="Loại chi" disabled={cashflowRejectSaving} value={cashflowRejectForm.category} onChange={event => setCashflowRejectForm(previous => ({...previous,category:event.target.value}))} className="mt-1 w-full rounded-xl border p-3" />
+            </label>}
+            <label className="block text-sm font-bold">Ghi chú
+              <input aria-label="Ghi chú không duyệt" disabled={cashflowRejectSaving} value={cashflowRejectForm.note} onChange={event => setCashflowRejectForm(previous => ({...previous,note:event.target.value}))} className="mt-1 w-full rounded-xl border p-3" />
+            </label>
+            {cashflowRejectError && <p role="alert" className="text-sm text-red-600">{cashflowRejectError}</p>}
+            <div className="flex gap-2 pt-2">
+              <button type="button" disabled={cashflowRejectSaving} onClick={closeRejectCashflowModal} className="flex-1 rounded-xl bg-slate-100 py-3 font-bold">Hủy</button>
+              <button type="submit" disabled={cashflowRejectSaving} className="flex-1 rounded-xl bg-rose-500 py-3 font-bold text-white">{cashflowRejectSaving ? 'Đang lưu...' : 'Lưu không duyệt'}</button>
+            </div>
+          </form>
         </div>
       )}
 
@@ -44196,7 +43902,7 @@ const warehouseShortageProjectionCache=createProjectionCache();
 const warehouseOrderRowsCache=createProjectionCache({maxScopes:1});
 const warehouseHistoryProjectionCache=createProjectionCache();
 const EMPTY_DISPATCH_SHORTAGE=Object.freeze({issueLines:Object.freeze([]),totalRequiredLines:0});
-function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits = [], employee, employees = [], currentCompany, customers, products, orderRequests, warehouseImports = [], warehouseDispatches, deliveryReports = [], onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onEditOrderRequest, onDeleteOrderRequest, canViewWarehouseDispatch = true, canCreateWarehouseDispatch = false, canCreateDispatchWithoutOrderRequest = false, canManualSearchDispatchProduct = false, canEditWarehouseDispatch = false, canDeleteWarehouseDispatch = false, canDeleteDispatchHistory = false, canViewDispatchShortage = false, canShareWarehouseDispatch = false, canAssignDispatchDriver = false, canDeleteOrderRequest = false, quickActionIntent = null, onQuickActionHandled = () => {} }) {
+function WarehouseDispatchView({ sourceReady = true, isVpsMode = false, vpsWarehouses = [], vpsUnits = [], employee, employees = [], currentCompany, customers, products, orderRequests, warehouseImports = [], warehouseDispatches, deliveryReports = [], onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onEditOrderRequest, onDeleteOrderRequest, canViewWarehouseDispatch = true, canCreateWarehouseDispatch = false, canCreateDispatchWithoutOrderRequest = false, canManualSearchDispatchProduct = false, canEditWarehouseDispatch = false, canDeleteWarehouseDispatch = false, canDeleteDispatchHistory = false, canViewDispatchShortage = false, canShareWarehouseDispatch = false, canAssignDispatchDriver = false, canDeleteOrderRequest = false, quickActionIntent = null, onQuickActionHandled = () => {} }) {
   const isOwner = isOwnerPosition(employee?.position);
   const isOwnerAccount = isOwner || employee?.role === 'super_admin';
   const isAccounting = isAccountingPosition(employee?.position);
@@ -44380,7 +44086,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
     cooperative: true
   }), [autoCancelAfterDays, customers, orderRequests, products, warehouseDispatches, workingDate,dispatchProjectionAttempt]);
   const dispatchShortageProjection=useCooperativeProjection(prepareDispatchShortageSummary,shortageProjectionEntry);
-  const dispatchShortageReady=!dispatchShortageProjection.pending && !dispatchShortageProjection.error;
+  const dispatchShortageReady=sourceReady && !dispatchShortageProjection.pending && !dispatchShortageProjection.error;
   const dispatchShortageSummary=dispatchShortageReady ? dispatchShortageProjection.value : EMPTY_DISPATCH_SHORTAGE;
   const normalizeDispatchQuantityUnit = (unit = '') => {
     const normalized = normalizeLookupText(unit || '');
@@ -45427,7 +45133,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
       {(dispatchShortageProjection.error || historyProjection.error) && <p role="alert" className="p-3 text-sm text-amber-800">Chưa tính xong đối chiếu hoặc lịch sử.
         <button type="button" onClick={()=>setDispatchProjectionAttempt(n=>n+1)} className="ml-3 font-bold underline">Thử lại</button>
       </p>}
-      {(dispatchShortageProjection.pending || historyProjection.pending) && <p role="status" className="p-3 text-sm text-slate-500">Đang đối chiếu đơn đặt và chuẩn bị lịch sử…</p>}
+      {(!sourceReady || dispatchShortageProjection.pending || historyProjection.pending) && <p role="status" className="p-3 text-sm text-slate-500">Đang đối chiếu đơn đặt và chuẩn bị lịch sử…</p>}
       {dispatchActionError && <div role="alert" className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-600">{dispatchActionError}</div>}
       {dispatchListWeightEditor && (
         <WarehouseWeightEntriesModal
@@ -45681,7 +45387,7 @@ function WarehouseDispatchView({ isVpsMode = false, vpsWarehouses = [], vpsUnits
         </div>
       ) : (
         <div className="order-3 bg-white rounded-2xl border border-dashed border-slate-200 shadow-sm p-6 text-center text-sm font-medium text-slate-500">
-          Chua co dong xuat kho nao trong ngay.
+          {sourceReady ? 'Chua co dong xuat kho nao trong ngay.' : 'Đang mở phiếu xuất kho…'}
         </div>
       )}
 
@@ -47113,11 +46819,42 @@ function EmployeeReviewModuleView({
   const [saveMessage, setSaveMessage] = useState('');
   const [isSavingReview, setIsSavingReview] = useState(false);
   const [editingReviewId, setEditingReviewId] = useState('');
+  const reviewAccountScope = JSON.stringify([
+    currentCompany?.id || currentCompany?.companyId || '', currentEmployee?.id || '',
+    currentEmployee?.identityId || '', currentEmployee?.account || '', currentEmployee?.role || '',
+    isEmployeeReviewEnabled(currentCompany), canCreateEmployeeReview, canViewAllEmployeeReviews, isSuperAdmin
+  ]);
+  const reviewScope = JSON.stringify([reviewAccountScope, selectedEmployeeId, monthKey]);
+  const reviewScopeRef = useRef(null);
+  const reviewSubmitRef = useRef(null);
+  const reviewIntentRef = useRef(null);
+  if (reviewScopeRef.current?.key !== reviewScope) {
+    reviewScopeRef.current = { key: reviewScope, mounted: true };
+    reviewSubmitRef.current = null;
+    reviewIntentRef.current = null;
+  }
+  const reviewScopeOwner = reviewScopeRef.current;
+  const [reviewDraftAccountScope, setReviewDraftAccountScope] = useState(reviewAccountScope);
+  const reviewDraftIsCurrent = reviewDraftAccountScope === reviewAccountScope;
+  const reviewIsBusy = isSavingReview && reviewSubmitRef.current === reviewScopeOwner;
   const [editingCriteriaId, setEditingCriteriaId] = useState('');
   const [criteriaDraft, setCriteriaDraft] = useState(() => criteriaList.reduce((acc, criteria) => {
     acc[criteria.id] = criteria.label;
     return acc;
   }, {}));
+
+  useEffect(() => {
+    setReviewDraftAccountScope(reviewAccountScope);
+    setReviewScores(buildDefaultEmployeeReviewCriteriaScores(0));
+    setReviewReason('');
+    setEditingReviewId('');
+    setSaveMessage('');
+    setIsSavingReview(false);
+  }, [reviewAccountScope]);
+  useEffect(() => {
+    reviewScopeRef.current.mounted = true;
+    return () => { reviewScopeRef.current.mounted = false; };
+  }, []);
 
   useEffect(() => {
     if (!visibleEmployees.some(emp => emp.id === selectedEmployeeId)) {
@@ -47235,7 +46972,8 @@ function EmployeeReviewModuleView({
     return Boolean(currentEmployeeId && reviewerId === currentEmployeeId);
   };
   const handleEditReviewHistory = (review = {}) => {
-    if (!canEditReviewHistory(review)) return;
+    if (reviewSubmitRef.current || !reviewDraftIsCurrent || reviewScopeRef.current !== reviewScopeOwner || !canEditReviewHistory(review)) return;
+    reviewIntentRef.current = null;
     const targetId = `${review.targetEmployeeId || selectedEmployeeId || ''}`.trim();
     const safeScores = normalizeEmployeeReviewCriteriaScores(
       review.criteriaScores || review.criteria || {},
@@ -47249,6 +46987,8 @@ function EmployeeReviewModuleView({
     setSaveMessage('Đang chỉnh sửa đánh giá đã lưu. Bấm lưu để cập nhật lại danh sách.');
   };
   const handleCancelReviewEdit = () => {
+    if (reviewSubmitRef.current) return;
+    reviewIntentRef.current = null;
     setEditingReviewId('');
     setReviewScores(buildDefaultEmployeeReviewCriteriaScores(0));
     setReviewReason('');
@@ -47279,34 +47019,66 @@ function EmployeeReviewModuleView({
   };
 
   const handleSubmitPeerReview = async () => {
+    const isCurrent = () => reviewScopeRef.current === reviewScopeOwner && reviewScopeOwner.mounted;
     const targetEmployeeId = selectedEmployee?.id || selectedEmployeeId;
-    if (!canCreateEmployeeReview || !targetEmployeeId || !onAddEmployeeReview) return;
+    if (!isCurrent() || !reviewDraftIsCurrent || reviewSubmitRef.current || !isEmployeeReviewEnabled(currentCompany)
+      || !canCreateEmployeeReview || !targetEmployeeId || !onAddEmployeeReview) return;
+    if (!companyId || (currentEmployee?.companyId && currentEmployee.companyId !== companyId)
+      || !visibleEmployees.some(emp => emp.id === targetEmployeeId && emp.companyId === companyId)) {
+      setSaveMessage('Nhân sự không thuộc công ty hiện tại. Vui lòng mở lại mục Đánh giá.');
+      return;
+    }
     const editingReview = editingReviewId
-      ? (employeeReviews || []).find(review => review?.id === editingReviewId)
+      ? (employeeReviews || []).find(review => review?.id === editingReviewId && review?.companyId === companyId
+        && review.targetEmployeeId === targetEmployeeId
+        && normalizeEmployeeReviewMonthKey(review.monthKey || review.date || review.createdAt) === monthKey)
       : null;
+    if (editingReviewId && (!editingReview || !canEditReviewHistory(editingReview))) {
+      setSaveMessage('Đánh giá đã thay đổi hoặc bạn không có quyền sửa. Vui lòng mở lại đánh giá.');
+      return;
+    }
+    const intentFingerprint = JSON.stringify([reviewScope, editingReviewId,
+      Object.keys(reviewScores).sort().map(key => [key, reviewScores[key]]), reviewReason]);
+    if (reviewIntentRef.current?.fingerprint !== intentFingerprint) {
+      reviewIntentRef.current = {
+        fingerprint: intentFingerprint,
+        clientMutationId: `review-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+        createdAt: editingReview?.createdAt || new Date().toISOString(),
+        date: editingReview?.date || getTodayString()
+      };
+    }
+    const intent = reviewIntentRef.current;
+    reviewSubmitRef.current = reviewScopeOwner;
     setIsSavingReview(true);
     setSaveMessage('');
     try {
       const result = await onAddEmployeeReview({
         id: editingReviewId || undefined,
+        clientMutationId: intent.clientMutationId,
         targetEmployeeId,
-        reviewerEmployeeId: editingReview?.reviewerEmployeeId || currentEmployee?.id || '',
-        source: 'peer',
+        reviewerEmployeeId: editingReview ? (editingReview.reviewerEmployeeId || '') : (currentEmployee?.id || ''),
+        source: editingReview?.source || 'peer',
         criteriaScores: reviewScores,
         rating: getEmployeeReviewCriteriaAverage(reviewScores),
         reason: reviewReason,
         monthKey,
-        date: editingReview?.date || getTodayString(),
-        createdAt: editingReview?.createdAt
+        date: intent.date,
+        createdAt: intent.createdAt
       });
+      if (result?.success === false || result?.queued) throw new Error(result?.message || 'Máy chủ chưa xác nhận đánh giá. Vui lòng thử lại.');
+      if (!isCurrent()) return;
+      reviewIntentRef.current = null;
       setReviewScores(buildDefaultEmployeeReviewCriteriaScores(0));
       setReviewReason('');
       setEditingReviewId('');
       setSaveMessage(editingReviewId ? 'Đã cập nhật đánh giá trong danh sách.' : (result?.message || 'Cảm ơn bạn đã đánh giá. Kết quả đã được ghi ẩn danh.'));
     } catch (error) {
-      setSaveMessage(`Lưu đánh giá bị lỗi: ${error?.message || error}`);
+      if (isCurrent()) setSaveMessage(`Lưu đánh giá bị lỗi: ${error?.message || error}`);
     } finally {
-      setIsSavingReview(false);
+      if (reviewSubmitRef.current === reviewScopeOwner) {
+        reviewSubmitRef.current = null;
+        if (isCurrent()) setIsSavingReview(false);
+      }
     }
   };
 
@@ -47320,12 +47092,14 @@ function EmployeeReviewModuleView({
             <select
               value={selectedEmployeeId}
               onChange={event => {
+                if (reviewSubmitRef.current) return;
+                handleCancelReviewEdit();
                 setSelectedEmployeeId(event.target.value);
                 setEditingReviewId('');
                 setSaveMessage('');
               }}
               className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-center text-sm font-bold text-slate-800 outline-none"
-              disabled={!isSuperAdmin && !canViewAllEmployeeReviews && !canCreateEmployeeReview}
+              disabled={reviewIsBusy || (!isSuperAdmin && !canViewAllEmployeeReviews && !canCreateEmployeeReview)}
             >
               {visibleEmployees.map(emp => <option key={emp.id} value={emp.id}>{emp.name || emp.phone || 'Nhân sự'}</option>)}
             </select>
@@ -47338,7 +47112,10 @@ function EmployeeReviewModuleView({
                 type="month"
                 value={monthKey}
                 aria-label="Chọn tháng đánh giá"
+                disabled={reviewIsBusy}
                 onChange={event => {
+                  if (reviewSubmitRef.current) return;
+                  handleCancelReviewEdit();
                   setMonthKey(normalizeEmployeeReviewMonthKey(event.target.value || getTodayString()));
                   setEditingReviewId('');
                   setSaveMessage('');
@@ -47350,7 +47127,7 @@ function EmployeeReviewModuleView({
         </div>
       </section>
 
-      {canCreateEmployeeReview && (
+      {canCreateEmployeeReview && reviewDraftIsCurrent && (
         <section className="rounded-[2rem] bg-white p-5 shadow-sm ring-1 ring-slate-100">
           <div>
             <EmployeeReviewRadarChart
@@ -47363,7 +47140,9 @@ function EmployeeReviewModuleView({
                 fill: 'rgba(245,158,11,.14)'
               }]}
               interactiveScores={reviewScores}
-              onScoreChange={(criteriaId, score) => setReviewScores(prev => ({ ...prev, [criteriaId]: score }))}
+              onScoreChange={reviewIsBusy ? null : (criteriaId, score) => {
+                if (!reviewSubmitRef.current && reviewScopeRef.current === reviewScopeOwner) setReviewScores(prev => ({ ...prev, [criteriaId]: score }));
+              }}
               interactiveLabel=""
               canEditLabels={canManageReviewCriteria}
               editingCriteriaId={editingCriteriaId}
@@ -47380,22 +47159,26 @@ function EmployeeReviewModuleView({
           </div>
           <textarea
             value={reviewReason}
-            onChange={event => setReviewReason(event.target.value)}
+            disabled={reviewIsBusy}
+            onChange={event => {
+              if (!reviewSubmitRef.current && reviewScopeRef.current === reviewScopeOwner) setReviewReason(event.target.value);
+            }}
             placeholder="Lý do / góp ý thêm (không bắt buộc)"
             className="mt-4 min-h-[90px] w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm font-semibold outline-none focus:border-emerald-400"
           />
           <button
             type="button"
             onClick={handleSubmitPeerReview}
-            disabled={isSavingReview || !selectedEmployeeId}
+            disabled={reviewIsBusy || !selectedEmployeeId}
             className="mt-4 w-full rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-500 px-4 py-3 text-sm font-black text-white shadow-lg shadow-emerald-100 disabled:opacity-60"
           >
-            {isSavingReview ? 'Đang lưu đánh giá...' : editingReviewId ? 'Lưu chỉnh sửa đánh giá' : 'Gửi đánh giá ẩn danh'}
+            {reviewIsBusy ? 'Đang lưu đánh giá...' : editingReviewId ? 'Lưu chỉnh sửa đánh giá' : 'Gửi đánh giá ẩn danh'}
           </button>
           {editingReviewId && (
             <button
               type="button"
               onClick={handleCancelReviewEdit}
+              disabled={reviewIsBusy}
               className="mt-2 w-full rounded-2xl bg-slate-100 px-4 py-3 text-sm font-black text-slate-600"
             >
               Hủy sửa đánh giá
@@ -47404,8 +47187,8 @@ function EmployeeReviewModuleView({
         </section>
       )}
 
-      {saveMessage && (
-        <div className="rounded-2xl bg-sky-50 px-4 py-3 text-sm font-bold text-sky-700 ring-1 ring-sky-100">
+      {saveMessage && reviewDraftIsCurrent && (
+        <div role="status" className="rounded-2xl bg-sky-50 px-4 py-3 text-sm font-bold text-sky-700 ring-1 ring-sky-100">
           {saveMessage}
         </div>
       )}
@@ -48573,8 +48356,8 @@ function DebtManagementView({ sourceFresh=true, searchStore = null, isAccounting
         matchedOrderId: matchedOrder?.id || '',
         matchedOrderCode,
         sourceOrderId: matchedOrder?.id || '',
-        allocateOldestFirst: true,
-        allocationMode: 'oldest_first',
+        allocateOldestFirst: !matchedOrder,
+        allocationMode: matchedOrder ? 'matched_order_first' : 'oldest_first',
         sourceType: matchedOrder ? 'debt_order_payment' : sourceType,
         sourceLabel: matchedOrder
           ? (newPayment.method === 'Tiền mặt' ? 'Thu nợ tiền mặt tại sổ nợ' : 'Thu nợ chuyển khoản tại sổ nợ')

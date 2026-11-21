@@ -21,7 +21,8 @@ const unmarkedSearchInputs = searchInputs.filter((tag) => !/data-hd-search-input
 
 // Two dispatch inputs share one extracted picker. The permanently hidden
 // quote-recipient search was removed with its unused preview/ledger work.
-assert(searchInputs.length >= 27, `Expected the parent search inventory, found only ${searchInputs.length} controls.`);
+// Home search and the hidden quote recipient search were removed by request.
+assert(searchInputs.length >= 25, `Expected the current search inventory, found only ${searchInputs.length} controls.`);
 assert.doesNotMatch(app, /placeholder="Tìm khách trong danh sách nhận"/);
 assert.match(app, /placeholder="2\. Tìm và tick nhiều khách hàng"/);
 assert.match(dispatchPicker, /<input\s+data-hd-search-input="true"[\s\S]*?role="combobox"/);

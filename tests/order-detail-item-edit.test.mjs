@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 import { updateTransactionBillingItem } from '../src/services/customerProductBilling.js';
 
 const countPricedItem = {
@@ -66,7 +66,7 @@ const directItem = updateTransactionBillingItem({
 assert.equal(directItem.quantity, 70, 'direct orders update their persisted quantity');
 assert.equal(directItem.amount, 10640000, 'direct order amount recalculates from edited quantity and price');
 
-const appSource = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const appSource = readApplicationSource();
 assert.match(appSource, /canEditOrderQuantityPrice = false/);
 assert.match(appSource, /canEditOrderQuantityPrice=\{canRoleAction\('orders', 'edit_order_items'\) \|\| canRoleAction\('orders', 'edit_order_quantity_price'\)\}/);
 assert.match(appSource, /const canEditOrderItemRecord = \(order\) =>/);

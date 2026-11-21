@@ -52,7 +52,7 @@ const employeeViewSource = appSource.slice(
   appSource.indexOf('function EmployeeView'),
   appSource.indexOf('function SalaryViewLegacy'),
 );
-assert.match(appSource, /employeeDepartments:\s*settingsData\.employeeDepartments/);
+assert.match(appSource, /employeeDepartments:\s*normalizeCompanyDepartments/);
 assert.match(appSource, /onUpdateCompanySettings=\{handleUpdateCompanySettings\}/);
 assert.match(employeeViewSource, /aria-label="Bộ phận"/);
 assert.match(employeeViewSource, /companyDepartmentId/);

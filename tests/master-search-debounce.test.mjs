@@ -128,5 +128,5 @@ test('prepared product/dispatch/debt searches have no fixed positive debounce; u
   assert.match(app,/const debtSearchQuery = searchKeyword;/);
   assert.match(app,/usePreparedSearch\(debtBaseCustomers,getCustomerSearchFields,debtSearchQuery/);
   assert.ok(calls.every(call=>!/^searchKeyword,/.test(call)));
-  assert.ok(calls.includes('customerSearch, 160'));
+  assert.ok(calls.some(call => call.replace(/\s/g, '') === "localCustomerSource?.queryManaged?'':customerSearch,160"), 'Remote customer search retains debounce; the local query manager owns its own scheduling');
 });

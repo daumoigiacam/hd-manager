@@ -18,7 +18,9 @@ import {
   where
 } from 'firebase/firestore';
 
-const projectId = 'hd-manager-customer-messaging-rules-test';
+const configuredHost=process.env.FIRESTORE_EMULATOR_HOST||'127.0.0.1:8185';
+if(!/^(?:127\.0\.0\.1|localhost):8185$/.test(configuredHost))throw Error('Only the loopback Firestore emulator on port 8185 is allowed');
+const projectId = `demo-customer-messaging-rules-${process.pid}`;
 const appId = 'test-app';
 const companyId = 'company-a';
 const customerA = 'customer-a';
@@ -31,7 +33,7 @@ const pathFor = (collectionName, id) => (
 
 const environment = await initializeTestEnvironment({
   projectId,
-  firestore: { rules }
+  firestore: { host:'127.0.0.1',port:8185,rules }
 });
 
 let passed = 0;

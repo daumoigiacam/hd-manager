@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
-import { isCustomerDebtRepayment } from '../src/utils/expenseClassification.js';
+import { isCustomerDebtRepayment, isPayrollLiabilitySettlement } from '../src/utils/expenseClassification.js';
 import { buildExecutiveDashboardSnapshot } from '../src/services/executiveDashboardService.js';
 
 const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
@@ -31,6 +31,7 @@ test('home direct costs exclude repayments and inventory purchases but retain or
   const result = vm.runInNewContext(`${source.slice(start, end)}; directExpense`, {
     datedExpenses: [{ amount: 100, sourceType: 'warehouse_import_purchase' }, { amount: 80, sourceType: 'customer_debt_repayment' }, { amount: 20 }],
     isCustomerDebtRepayment,
+    isPayrollLiabilitySettlement,
     isInventoryPurchaseExpense: item => item.sourceType === 'warehouse_import_purchase',
   });
   assert.equal(result, 20);

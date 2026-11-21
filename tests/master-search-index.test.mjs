@@ -145,7 +145,11 @@ test('domain fields, aliases, initials and existing search wrappers match the or
   const domainQueries = [...queries, 'v', 'vm', '89385', 'HDSANDYN', 'nguyen duc', 'emp 12', 'linked name', 'historical'];
   for (const [records, fieldsName, searchName] of cases) {
     for (const record of records) {
-      assert.deepEqual(JSON.parse(JSON.stringify(engine[fieldsName](record))), JSON.parse(JSON.stringify(reference[fieldsName](record))));
+      // Product numeric tokens match each actual value; preserve every pinned
+      // alias, text field, ranking and result oracle below.
+      const expected = JSON.parse(JSON.stringify(reference[fieldsName](record)));
+      if (fieldsName === 'getProductSearchFields') for (const field of expected) field.numericMatch = 'values';
+      assert.deepEqual(JSON.parse(JSON.stringify(engine[fieldsName](record))), expected);
     }
     const allQueries = [...domainQueries, ...records.flatMap(record => Array.from(reference.buildSearchIndexTokens(record, reference[fieldsName])))];
     assertParity(records, allQueries, engine[fieldsName], reference[fieldsName]);

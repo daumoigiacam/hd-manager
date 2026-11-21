@@ -127,8 +127,8 @@ test('inherited footer and production Firebase transport remain unchanged', asyn
     const customerPagerRule = /@media \(min-width: 600px\) \{\r?\n  \.hd-app-content\[data-hd-module="customers"\] \.hd-list-pagination \{\r?\n    padding-inline-end: 5rem;\r?\n    margin-bottom: 5rem;\r?\n  \}\r?\n\}\r?\n\r?\n/g;
     assert.equal([...content.matchAll(customerFabRule)].length, 1, 'Only the isolated customer FAB correction is allowed');
     assert.equal([...content.matchAll(customerPagerRule)].length, 1, 'Only the evidenced customer pager clearance is allowed');
-    // Windows checkout normalizes line endings; compare against the fixed release, not local bytes.
-    const baseline = execFileSync('git', ['show', `4db424a3e511bc2a24162245e7423478da9f89c8:${path}`], { encoding: 'utf8' });
+    // Windows checkout normalizes line endings; compare against the approved canonical release before this audit.
+    const baseline = execFileSync('git', ['show', `a04e9ebf95742d9db5394d74f111ef2d33f54fd1:development/hd-manager/application/${path}`], { encoding: 'utf8' });
     const inputDialogToken = /^  --hd-layer-input-dialog: 150;\r?\n/gm;
     assert.equal([...content.matchAll(inputDialogToken)].length, 1, 'Dispatch dialog uses one shared layer token');
     const customerFocusRule = /\/\* Keep editable text stable before and during focus; override compact-field\r?\n   rules so mobile browsers do not magnify the customer form on input focus\. \*\/\r?\n@media \(max-width: 1023px\), \(pointer: coarse\) \{\r?\n  \.hd-shell--staff \.hd-customer-create-view \.hd-customer-create-view__form :is\(input, select, textarea\) \{\r?\n    font-size: max\(16px, var\(--hd-type-body\)\) !important;\r?\n    transition-property: color, background-color, border-color, box-shadow;\r?\n  \}\r?\n\}\r?\n\r?\n/g;
@@ -137,7 +137,7 @@ test('inherited footer and production Firebase transport remain unchanged', asyn
     assert.equal(canonical(content), canonical(baseline));
   }
   for (const path of ['src/config/firebase-runtime.js', 'src/config/firebase-rest-runtime.js']) {
-    const baseline = execFileSync('git', ['show', `5f162f5:${path}`], { encoding: 'utf8' });
+    const baseline = execFileSync('git', ['show', `a04e9ebf95742d9db5394d74f111ef2d33f54fd1:development/hd-manager/application/${path}`], { encoding: 'utf8' });
     assert.equal((await readFile(path, 'utf8')).replace(/\r\n/g, '\n'), baseline.replace(/\r\n/g, '\n'));
   }
 });

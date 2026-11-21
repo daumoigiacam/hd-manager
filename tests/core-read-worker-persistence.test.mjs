@@ -1,8 +1,7 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {getReadWorkerCacheAppName,clearReadWorkerPersistentCache,canPersistReadCollection} from '../src/services/readWorkerPersistence.js';
 import {prioritizePersistentReadSources} from '../src/services/readWorkerPolicy.js';
-import {appFunction,appObject} from './helpers/app-source-function.mjs';
-import {readFileSync} from 'node:fs';
+import {appFunction,appExpression} from './helpers/app-source-function.mjs';
 const scope={projectId:'demo-cache',appId:'fixture-app',uid:'synthetic-a',companyId:'company-a',accountType:'employee',appName:'[DEFAULT]',apiKey:'synthetic-api'};
 
 test('persistent read namespace is deterministic, opaque and isolated across every scope boundary',async()=>{
@@ -28,8 +27,7 @@ test('persistent source prioritization changes only order and keeps every requir
 });
 
 test('actual app cache opt-in requires the feature flag AND matching remembered native identity',()=>{
- const node=appObject('persistentReadCache'),source=readFileSync(new URL('../src/App.jsx',import.meta.url),'utf8');
- const expression=source.slice(node.start,node.end).replace('import.meta.env','env');
+ const expression=appExpression('persistentReadCache').replace('import.meta.env','env');
  const run=(flag,native,remembered)=>new Function('env','isNativeRuntime','rememberedNativeUid','firebaseUser',`return (${expression})`)
   ({VITE_READ_WORKER_PERSISTENCE:flag},()=>native,()=>remembered,{uid:'approved'});
  assert.equal(run('server-validated-native',true,'approved'),true);
@@ -41,7 +39,7 @@ test('actual logout and customer-login switch purge the old cache without blocki
   const calls=[];let rejectPurge;
   const pending=new Promise((_resolve,reject)=>{rejectPurge=reject});
   const noop=()=>{};
-  const fn=appFunction(name,{readWorkerControllerRef:{current:{clearPersistentCache:()=>{calls.push('purge');return pending}}},
+  const fn=appFunction(name,{offlineWorkspace:{controller:{logout:async()=>{}}},readWorkerControllerRef:{current:{clearPersistentCache:()=>{calls.push('purge');return pending}}},
    recordStartupEvent:(event,details)=>{assert.deepEqual(details,{});calls.push(event)},forgetNativeSession:()=>calls.push('forget'),
    suppressBiometricAutoLoginForSession:noop,biometricVerifiedIdentityRef:{current:'fixture'},setBiometricUnlockState:noop,isVpsStagingMode:false,
    auth:{currentUser:{uid:'synthetic'}},startIdentityLogoutAudit:async()=>{},signOut:async()=>{},

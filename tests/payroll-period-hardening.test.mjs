@@ -266,7 +266,14 @@ test('the locked UI dependency graph exits before live policy and formula calcul
 test('company payroll summary uses the current month and row data in the redesigned workspace', () => {
   const source = readApplicationSource();
   const workspace = readFileSync(new URL('../src/features/payroll/PayrollWorkspace.jsx', import.meta.url), 'utf8');
-  assert.match(source, /<PayrollWorkspace[\s\S]*?rows=\{salaryRows\}[\s\S]*?monthKey=\{currentMonth\}[\s\S]*?onMonthChange=\{setSalaryMonth\}/);
+  const workspaceProps = source.match(/<PayrollWorkspace\s[\s\S]*?\/>/)?.[0] || '';
+  assert.match(workspaceProps, /rows=\{(?:salaryRows|displaySalaryRows)\}/);
+  assert.match(workspaceProps, /monthKey=\{currentMonth\}/);
+  assert.match(workspaceProps, /onMonthChange=\{setSalaryMonth\}/);
+  if (/rows=\{displaySalaryRows\}/.test(workspaceProps)) {
+    assert.match(source, /const displaySalaryRows\s*=\s*isPayrollLocked\s*\?\s*lockedSnapshotRows/,
+      'Retained presentation must never replace the immutable locked snapshots');
+  }
   assert.match(workspace, /<MonthControl monthKey=\{monthKey\} onChange=\{onMonthChange\}/);
   assert.match(workspace, /money\(summary\.payable\)/);
   assert.match(workspace, /summarizePayrollWorkspace\(rows\)/);

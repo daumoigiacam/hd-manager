@@ -10,6 +10,11 @@ const parseTimestamp = (value) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+export const isBankTransactionIgnored = (transaction = {}) => (
+  [transaction.autoReconcileStatus, transaction.reconciliationStatus, transaction.status]
+    .some(value => ['ignored', 'cancelled', 'canceled'].includes(String(value || '').trim().toLowerCase()))
+);
+
 const getFallbackTimestamp = (transaction = {}) => [
   transaction.createdAt,
   transaction.updatedAt,

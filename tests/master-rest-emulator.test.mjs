@@ -12,7 +12,7 @@ import { createMockUserToken } from '@firebase/util';
 import { initializeTestEnvironment } from '@firebase/rules-unit-testing';
 import { doc, writeBatch, setDoc } from 'firebase/firestore';
 import { collectTenantRestQuery, consumeTenantRestQuery } from '../src/services/firestoreRestPagination.js';
-import { appObject } from './helpers/app-source-function.mjs';
+import { appExpression } from './helpers/app-source-function.mjs';
 
 const enabled = process.env.MASTER_REST_EMULATOR === '1';
 const projectId = 'demo-master-rest-pagination';
@@ -26,10 +26,8 @@ const queryBody = { structuredQuery: {
     field: { fieldPath: 'companyId' }, op: 'EQUAL', value: { stringValue: companyId },
   } },
 } };
-const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
 const extractedDecoder = ['fromFirestoreRestValue', 'fromFirestoreRestFields'].map(name => {
-  const node = appObject(name);
-  return `const ${name} = ${source.slice(node.start, node.end)};`;
+  return `const ${name} = ${appExpression(name)};`;
 }).join('\n');
 const decodeFields = new Function(`${extractedDecoder}\nreturn fromFirestoreRestFields;`)();
 const data = index => ({ companyId, amount: index + 1, note: `fixture-${index}` });

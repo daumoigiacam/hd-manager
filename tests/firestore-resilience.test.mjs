@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import {readFileSync} from 'node:fs';
+import {readApplicationSource} from '../scripts/helpers/application-source.cjs';
 import test from 'node:test';
 import {
   hasActiveRealtimeListener,
   runResilientFirestoreWrite
 } from '../src/services/firestoreResilience.js';
 
-const appSource = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const appSource = readApplicationSource().replace(/\r\n/g, '\n');
 
 test('a synchronous Firestore assertion falls back to REST exactly once', async () => {
   let restCalls = 0;
@@ -93,11 +94,12 @@ test('active realtime listeners suppress overlapping transient refreshes', () =>
 });
 
 test('App prevents the known ca9/b815 trigger and never exposes its raw stack in warehouse UI', () => {
-  assert.match(appSource, /experimentalAutoDetectLongPolling:\s*false/);
+  const firebaseRuntime = readFileSync(new URL('../development/hd-manager/application/src/services/firebaseClientRuntime.js', import.meta.url), 'utf8');
+  assert.ok(/experimentalAutoDetectLongPolling:\s*false/.test(firebaseRuntime), 'Actual Firebase initialization disables automatic long-poll detection');
   assert.doesNotMatch(appSource, /firebaseEnableNetwork|requestFirestoreNetworkEnable|enableNetwork\(db\)/);
-  assert.match(appSource, /readTenantCollectionViaRest/);
-  assert.match(appSource, /hasActiveRealtimeListener\(activeRealtimeCollectionsRef\.current, collectionName\)/);
-  assert.match(appSource, /runResilientFirestoreWrite\(\{/);
-  assert.match(appSource, /setDispatchError\(getFriendlyFirebaseErrorMessage\(/);
+  assert.ok(/readTenantCollectionViaRest/.test(appSource), 'Canonical read fallback remains wired');
+  assert.ok(/hasActiveRealtimeListener\(activeRealtimeCollectionsRef\.current, collectionName\)/.test(appSource), 'Realtime listeners suppress overlapping refreshes');
+  assert.ok(/runResilientFirestoreWrite\(\{/.test(appSource), 'Canonical writes use the resilience policy');
+  assert.ok(/setDispatchError\(getFriendlyFirebaseErrorMessage\(/.test(appSource), 'Warehouse errors use the friendly formatter');
   assert.doesNotMatch(appSource, /setDispatchError\(error\?\.message \|\| 'Không thể lưu phiếu xuất kho/);
 });

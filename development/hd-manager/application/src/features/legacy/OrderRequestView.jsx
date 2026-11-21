@@ -1156,7 +1156,7 @@ export function createOrderRequestView(runtime) {
   // Cache only completed immutable source projections. A pending warehouse
   // check, draft or form never enters this shared, four-scope bounded cache.
   const requestTableEntry=requestProjectionReady?getReadOnlyModuleProjectionEntry('requestTableRows',
-    [employee,employees,customers,products,orderRequests,warehouseDispatches],requestTableScope):undefined;
+    [employee,employees,customers,products,orderRequests,warehouseDispatches,orderRequestWarehouseStatusMaps],requestTableScope):undefined;
   const editableCurrentDayRows = useMemo(() => !requestRowsReady ? [] : readCompletedModuleProjection(requestTableEntry,()=>sortEditableRequestRows(filteredRequests.flatMap((request) => {
     const requestWarehouseStatus = orderRequestWarehouseStatusMaps.byRequestId.get(request.id) || null;
     const requestCustomer = request.customer || customerLookup.get(request.customerId) || null;

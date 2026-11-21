@@ -4,6 +4,8 @@ import test from 'node:test';
 import vm from 'node:vm';
 import { parse } from '@babel/parser';
 import { createCooperativeTaskQueue } from '../src/services/cooperativeTaskQueue.js';
+import {QUOTE_PRIMARY_COLLECTIONS} from '../src/services/quoteWorkspaceReadPlan.js';
+import {getMessageWorkspaceReadCollections} from '../src/services/messageWorkspaceReadPlan.js';
 
 function fakeTimers() {
   let now = 0;
@@ -191,8 +193,9 @@ function appHarness({ idle = false } = {}) {
   document.visibilityState = 'visible';
   document.activeElement = null;
   document.createElement = () => { throw new Error('automatic downloads are forbidden in this harness'); };
-  const foregroundCollections=appRuntime.declaration('FOREGROUND_REALTIME_COLLECTIONS_BY_TAB',{});
+  const foregroundCollections=appRuntime.declaration('FOREGROUND_REALTIME_COLLECTIONS_BY_TAB',{QUOTE_PRIMARY_COLLECTIONS,getMessageWorkspaceReadCollections});
   const bindings = {
+    QUOTE_PRIMARY_COLLECTIONS,getMessageWorkspaceReadCollections,
     window: browser, document, navigator: { onLine: true }, Date: RuntimeDate,
     console: { warn: (...args) => errors.push(args) },
     Capacitor: { getPlatform: () => 'web' },
@@ -231,6 +234,7 @@ function appHarness({ idle = false } = {}) {
     getFriendlyFirebaseErrorMessage: error => error.message,
   };
   bindings.moduleNavigation = { getSnapshot: () => bindings.activeTab };
+  bindings.activeTabForSyncRef={get current(){return bindings.activeTab;}};
   for (const name of [
     'isNativeAppShellRuntime', 'getIdleScheduler', 'cancelIdleScheduler', 'scheduleMaintenanceWork',
     'cancelMaintenanceWork', 'AUTO_BACKUP_DELAY_MS', 'LOYALTY_ELIGIBILITY_SCAN_KEY', 'LOYALTY_MAINTENANCE_COLLECTION_NAMES',

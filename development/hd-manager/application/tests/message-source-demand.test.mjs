@@ -12,7 +12,7 @@ test('chat opening omits five attachment histories, keeps existing background se
  assert.deepEqual(MESSAGE_PRIMARY_COLLECTIONS,['employees','customers','messages']);
  for(const name of ['orders','orderRequests','products','payments','expenses'])assert(!plan().includes(name));
  for(const name of ['zalo_send_queue','zalo_campaigns','zalo_campaign_queue','zalo_inbox_messages','zalo_inbox_bridge_logs','order_requests','ai_reply_rules','orders','payments','expenses','orderRequests','products']){assert(!plan().includes(name));assert(plan('',true).includes(name));}
- assert.deepEqual(sources('report'),['orders','payments','expenses']);assert.deepEqual(sources('order'),['orders','products']);assert.deepEqual(sources('order_request'),['orderRequests','products']);
+ assert.deepEqual(sources('report'),['orders','payments','expenses']);assert.deepEqual(sources('order'),['orders','products','payments']);assert.deepEqual(sources('order_request'),['orderRequests','products']);
  assert(!plan('order').includes('expenses'));assert.equal(plan('unknown'),plan());assert(Object.isFrozen(plan('report')));assert.equal(new Set(plan('report')).size,plan('report').length);
  for(const invalid of ['constructor','__proto__','prototype']){assert.deepEqual(sources(invalid),[]);assert.equal(plan(invalid),plan());}
 });

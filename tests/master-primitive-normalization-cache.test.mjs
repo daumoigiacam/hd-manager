@@ -5,7 +5,7 @@ import test from 'node:test';
 import { parse } from '@babel/parser';
 
 const revision = '5f162f5ce85fd4dc746382f13a6a4170e4a29775';
-const currentSource = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const currentSource = readFileSync(new URL('../development/hd-manager/application/src/features/customers/productCRMShared.jsx', import.meta.url), 'utf8');
 const baselineSource = execFileSync('git', ['show', `${revision}:src/App.jsx`], {
   cwd: new URL('..', import.meta.url), encoding: 'utf8', maxBuffer: 30 * 1024 * 1024,
 });

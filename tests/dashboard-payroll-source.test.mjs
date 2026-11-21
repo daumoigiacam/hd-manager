@@ -1,15 +1,12 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { getLockedPayrollPeriod } from '../src/utils/payrollPeriodLock.js';
 import { buildEmployeeReviewSourceIndexes } from '../src/utils/employeeReviewSourceIndex.js';
-const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
-const body = source.slice(source.indexOf('const buildDashboardPayrollCostSteps ='), source.indexOf('const compareLedgerItems ='));
+import { appFunction } from './helpers/app-source-function.mjs';
 const toDateInputString = value => {
   const d = new Date(value);
   return Number.isNaN(d.getTime()) ? '' : `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 };
-const dateHelperBody = source.slice(source.indexOf('const getDateKeyFromAnyValue ='), source.indexOf('const getDaysBetweenDateKeys ='));
-const dateKey = new Function('toDateInputString', 'parseEntityTimestampValue', 'parseVietnameseDateTimeString', `${dateHelperBody}; return getDateKeyFromAnyValue;`)(toDateInputString, () => null, () => null);
+const dateKey = appFunction('getDateKeyFromAnyValue', {toDateInputString, parseEntityTimestampValue: () => null, parseVietnameseDateTimeString: () => null});
 assert.equal(dateKey(new Date(2026, 9, 1)), '2026-10-01');
 assert.equal(dateKey(new Date(NaN)), '');
 assert.equal(dateKey({ toDate: () => new Date(2026, 9, 1) }), '2026-10-01');
@@ -28,7 +25,8 @@ const bindings = {
   applyEvaluationBonusToSalaryDetails: d => d && ({ ...d, grossSalary: d.grossSalary + 20 }),
   roundMoneyValue: Math.round,
 };
-const build = new Function(...Object.keys(bindings), `${body}; return buildDashboardPayrollCostRows;`)(...Object.values(bindings));
+const steps = appFunction('buildDashboardPayrollCostSteps', bindings);
+const build = options => { const iterator = steps(options); for (;;) {const row = iterator.next(); if (row.done) return row.value;} };
 const base = { company: { id: 'a' }, employees: [{ id: 'e', name: 'A' }], now: new Date(2026,0,31) };
 assert.equal(build(base).reduce((s,r)=>s+r.amount,0), 110);
 const periods = [{companyId:'a', monthKey:'2026-01', status:'locked'}];

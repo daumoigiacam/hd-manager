@@ -5,11 +5,12 @@ import test from 'node:test';
 import { parse } from '@babel/parser';
 import { createCooperativeTaskQueue } from '../src/services/cooperativeTaskQueue.js';
 
-function extract(source) {
+function extract(source, extraSource = '') {
   const declarations = new Map();
   const assignments = new Map();
   const effects = [];
-  const text = node => source.slice(node.start, node.end);
+  let activeSource=source;
+  const text = node => activeSource.slice(node.start, node.end);
   function walk(node) {
     if (!node || typeof node !== 'object') return;
     if (node.type === 'VariableDeclarator' && node.id?.name && node.init) {
@@ -28,6 +29,12 @@ function extract(source) {
     }
   }
   walk(parse(source, { sourceType: 'module', plugins: ['jsx'] }));
+  if(extraSource){
+    activeSource=extraSource;
+    for(const statement of parse(extraSource,{sourceType:'module',plugins:['jsx']}).program.body){
+      if(statement.type==='VariableDeclaration')walk(statement);
+    }
+  }
   const evaluate = (expression, bindings) => new Function(...Object.keys(bindings), `return (${expression});`)(...Object.values(bindings));
   const effect = anchor => {
     const matches = effects.filter(item => item.callback.includes(anchor));
@@ -48,7 +55,7 @@ function extract(source) {
   };
 }
 
-const runtime = extract(readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8'));
+const runtime = extract(readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8'),readFileSync(new URL('../development/hd-manager/application/src/features/customers/productCRMShared.jsx',import.meta.url),'utf8'));
 // Independent old effects, not a duplicate of the queue implementation under test.
 const reference = extract(execFileSync('git', ['show', '5f162f5ce85fd4dc746382f13a6a4170e4a29775:src/App.jsx'], {
   cwd: new URL('..', import.meta.url), encoding: 'utf8', maxBuffer: 8 * 1024 * 1024,

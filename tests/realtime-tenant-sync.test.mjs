@@ -91,7 +91,7 @@ test('realtime keeps only baseline data at startup and scopes business listeners
   assert.deepEqual(admitted(baseline, bindings, {}), [['companies'], ['employees']], 'Only notifications waits behind the startup barrier');
   assert.deepEqual(admitted(baseline, bindings, null), baseline.map(name => [name]), 'Customer/preview path keeps its existing subscriptions');
   assert.equal(properties.find(property => property.key.name === 'coreNames').value.name, 'CORE_DATA_COLLECTION_NAMES');
-  assert.match(appSource, /if \(!canStartBusinessSubscriptions\(currentUser\?\.accountType, isCoreDataLoaded\)\) return undefined/);
+  assert.match(appSource, /if \(!canStartBusinessSubscriptions\(currentUser\?\.accountType, isCoreDataLoaded \|\| startupWorkspaceReady\)\) return undefined/);
   assert.match(appSource, /return activateForegroundRealtimeRef\.current\(collectionNames\)/);
   assert.match(appSource, /if \(!force && hasActiveRealtimeListener\(activeRealtimeCollectionsRef\.current, colName\)\)/);
   assert.doesNotMatch(appSource, /const refreshAllCollections = async/);

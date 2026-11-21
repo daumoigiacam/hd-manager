@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import test from 'node:test';
 
-const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const source = readFileSync(new URL('../development/hd-manager/application/src/features/customers/productCRMShared.jsx', import.meta.url), 'utf8')+'\n'
+  +readFileSync(new URL('../src/App.jsx',import.meta.url),'utf8');
 const names = ['VIETNAM_TIME_ZONE', 'VIETNAM_DATE_FORMAT_OPTIONS', 'VIETNAM_TIME_FORMAT_OPTIONS', 'vietnamDateFormatter', 'vietnamTimeFormatter', 'vietnamNumericCollator'];
 const declarations = names.map(name => source.match(new RegExp(`const ${name} = [^;]+;`))[0]).join('\n');
 const formatters = vm.runInNewContext(`${declarations}\n({vietnamDateFormatter, vietnamTimeFormatter, vietnamNumericCollator, VIETNAM_DATE_FORMAT_OPTIONS, VIETNAM_TIME_FORMAT_OPTIONS})`);

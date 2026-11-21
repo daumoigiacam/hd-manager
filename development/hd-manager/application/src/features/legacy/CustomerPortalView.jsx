@@ -1,4 +1,5 @@
 import InstantHome,{InstantHomeNavigation} from '../../layout/InstantHome.jsx';
+import {createMessageSendController} from '../../services/messageSendController.js';
 import { useState, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { filterCustomerVisibleProducts, isCustomerVisibleProduct } from "../../utils/customerProductVisibility.js";
 import { buildVietQrBankAppDeeplink, isVietQrBankAppSupported, launchBankPaymentAndCopyReference, resolveVietQrBankAppId } from "../../utils/bankAppDeeplink.js";
@@ -116,6 +117,9 @@ export function createCustomerPortalView(runtime) {
   const [selectedCustomerConversationId, setSelectedCustomerConversationId] = useState('');
   const [customerMessageText, setCustomerMessageText] = useState('');
   const [isSendingCustomerMessage, setIsSendingCustomerMessage] = useState(false);
+  const customerSendContextRef = useRef({active:false,scope:''});
+  const customerSendControllerRef = useRef(null);
+  if (!customerSendControllerRef.current) customerSendControllerRef.current = createMessageSendController({isCurrent:scope=>customerSendContextRef.current.active&&customerSendContextRef.current.scope===scope});
   const customerInboxReadInFlightRef = useRef(new Set());
   const [confirmingReceivedTrackingId, setConfirmingReceivedTrackingId] = useState('');
   const [isCustomerProfileEditorOpen, setIsCustomerProfileEditorOpen] = useState(false);
@@ -245,6 +249,15 @@ export function createCustomerPortalView(runtime) {
     () => buildCustomerSupportConversationId(customerProfile?.id || currentUser?.customerId || ''),
     [currentUser?.customerId, customerProfile?.id]
   );
+  const customerSendScope = JSON.stringify([firebaseUser?.uid||'',currentUser?.id||'',customerProfile?.companyId||'',customerInboxCustomerId,
+    customerResponsibleConversationId,responsibleEmployeeId,selectedCustomerConversationId]);
+  useLayoutEffect(()=>{
+    customerSendContextRef.current={active:true,scope:customerSendScope};
+    customerSendControllerRef.current.clearExcept(customerSendScope);
+    setCustomerMessageText('');setIsSendingCustomerMessage(false);
+    return()=>{customerSendContextRef.current.active=false;};
+  },[customerSendScope]);
+  const isCurrentCustomerSendScope = scope => customerSendContextRef.current.active&&customerSendContextRef.current.scope===scope;
   const customerResponsibleMessages = useMemo(() => (
     safeMessages
       .filter(message => isCustomerScopedMessage(message, customerInboxCustomerId))
@@ -1535,6 +1548,7 @@ export function createCustomerPortalView(runtime) {
   };
 
   const handleSendCustomerMessage = async () => {
+    if (isSendingCustomerMessage || customerSendControllerRef.current.isBusy(customerSendScope)) return;
     const cleanText = customerMessageText.trim();
     if (!cleanText) {
       setSubmitMessage('Vui lòng nhập nội dung tin nhắn.');
@@ -1545,10 +1559,10 @@ export function createCustomerPortalView(runtime) {
       return;
     }
 
-    setCustomerMessageText('');
+    const scope = customerSendScope;
     setIsSendingCustomerMessage(true);
     try {
-      await onAddMessage({
+      const result = await customerSendControllerRef.current.send({scope,action:'text',save:onAddMessage,payload:{
         source: 'customer_portal',
         type: 'customer_to_employee',
         conversationType: 'customer_support',
@@ -1571,15 +1585,17 @@ export function createCustomerPortalView(runtime) {
         text: cleanText,
         message: cleanText,
         status: 'unread'
-      });
+      }});
+      if (!result.success || !isCurrentCustomerSendScope(scope)) return;
+      setCustomerMessageText('');
       setSubmitMessage(responsibleEmployeeId
         ? 'Đã gửi tin nhắn cho nhân viên phụ trách.'
         : 'Đã gửi tin nhắn vào hàng chờ phân loại.');
     } catch (error) {
-      setCustomerMessageText(prev => prev || cleanText);
+      if (!isCurrentCustomerSendScope(scope)) return;
       setSubmitMessage(getFriendlyFirebaseErrorMessage(error, 'Chưa gửi được tin nhắn, vui lòng thử lại.'));
     } finally {
-      setIsSendingCustomerMessage(false);
+      if (isCurrentCustomerSendScope(scope)) setIsSendingCustomerMessage(false);
     }
   };
 
@@ -1824,6 +1840,7 @@ export function createCustomerPortalView(runtime) {
                 <div className="flex items-end gap-2">
                   <textarea
                     value={customerMessageText}
+                    disabled={isSendingCustomerMessage}
                     onChange={event => setCustomerMessageText(event.target.value)}
                     onKeyDown={event => {
                       if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent?.isComposing) {

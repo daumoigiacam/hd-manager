@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 import test from 'node:test';
 import { parse } from '@babel/parser';
+import {readFileSync} from 'node:fs';
 
 const baseline = execFileSync('git', ['show', '5f162f5:src/App.jsx'], { encoding: 'utf8', maxBuffer: 30 * 1024 * 1024 });
 const current = readApplicationSource();
@@ -23,7 +24,10 @@ function declarations(source) {
 }
 const before = declarations(baseline);
 const after = declarations(current);
-const text = (source, node) => source.slice(node.start, node.end).replace(/\r\n/g, '\n');
+const helperSource=readFileSync(new URL('../development/hd-manager/application/src/features/customers/productCRMShared.jsx',import.meta.url),'utf8');
+const helperNodes=declarations(helperSource),nodeSources=new WeakMap();
+for(const [name,node]of helperNodes)if(!after.has(name)){after.set(name,node);nodeSources.set(node,helperSource);}
+const text = (source, node) => (nodeSources.get(node)||source).slice(node.start, node.end).replace(/\r\n/g, '\n');
 const execute = (source, node, bindings) => new Function(...Object.keys(bindings), `return (${text(source, node)});`)(...Object.values(bindings));
 const globalBindings = {};
 const baselineBindings = {};

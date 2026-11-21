@@ -16,7 +16,9 @@ import {
   where,
 } from 'firebase/firestore';
 
-const projectId = 'hd-manager-employee-customer-messaging-rules-test';
+const configuredHost=process.env.FIRESTORE_EMULATOR_HOST||'127.0.0.1:8185';
+if(!/^(?:127\.0\.0\.1|localhost):8185$/.test(configuredHost))throw Error('Only the loopback Firestore emulator on port 8185 is allowed');
+const projectId = `demo-employee-customer-messaging-rules-${process.pid}`;
 const appId = 'test-app';
 const companyId = 'company-a';
 const rules = readFileSync(new URL('../firestore.rules', import.meta.url), 'utf8');
@@ -27,7 +29,7 @@ const pathFor = (collectionName, id) => (
 
 const environment = await initializeTestEnvironment({
   projectId,
-  firestore: { rules },
+  firestore: { host:'127.0.0.1',port:8185,rules },
 });
 
 let passed = 0;
@@ -87,6 +89,12 @@ try {
     );
 
     await Promise.all([
+      // This suite exercises assigned-support routing, not default catalog
+      // eligibility. Actual App requires an explicit support grant for sales
+      // and for this legacy manager position (normalized to production).
+      seed('companies', companyId, { name: 'Isolated messaging Rules company',
+        rolePermissionActions:{sales:{messages:{view_support_messages:true,send_support_messages:true}},
+          production:{messages:{view_support_messages:true}}} }),
       seed('employees', 'employee-a', { companyId, position: 'Kinh doanh', role: 'sales' }),
       seed('employees', 'employee-b', { companyId, position: 'Kinh doanh', role: 'sales' }),
       seed('employees', 'manager-a', { companyId, position: 'Quản lý', role: 'manager' }),

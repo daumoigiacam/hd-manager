@@ -12,6 +12,13 @@ import { mergeAtomicWrites } from '../src/utils/atomicSave.js';
 import { replayShareCanvas } from '../src/utils/shareCanvasCommands.js';
 import { createDraftRevision } from '../src/utils/draftRevision.js';
 import { preserveCommandInputFocus, createCommandFocusGuard, createCommandClickGuard } from '../src/layout/commandFocus.js';
+import {assertPricingLossStandards} from '../src/utils/pricingLossValidation.js';
+import * as assetIntegrity from '../src/utils/assetMutationIntegrity.js';
+import {buildCustomerBatchPricePatch} from '../src/utils/customerBatchPricePatch.js';
+import {configScopeFingerprint,syncError} from '../src/utils/customerProductAutoSync.js';
+import {normalizeProductPricingUnit,normalizeUnitPriceMap} from '../src/services/productPricingUnits.js';
+import {pricingDraftContext,assetSaveContext,pricingHelpers} from './helpers/save-integrity-context.mjs';
+import {roleDomain} from '../development/hd-manager/application/tests/helpers/role-permission-domain.mjs';
 
 test('IME focus is released after the command click, never between pointerdown and pointerup', () => {
   let blurred = false;
@@ -94,69 +101,93 @@ test('double submit cannot revalidate a cleared form, while repeated stepper cli
 });
 
 test('pricing snapshots and an earlier save receipt cannot overwrite a newer unsaved draft', async () => {
-  const guard = createDraftRevision();
-  const pricingDraftRevisionRef = { current: guard };
-  let draft = { price: 60 };
-  const replaceRulesDraft = next => { draft = typeof next === 'function' ? next(draft) : next; };
-  const edit = appFunction('setRulesDraft', { pricingDraftRevisionRef, replaceRulesDraft }, { scope: 'SimplePricingEngineView', memoCallback: true });
-  const hydrate = appFunction('syncPricingDraftFromSavedRules', {
-    pricingDraftRevisionRef, savedRules: { price: 60 }, normalizePricingRuleDraft: value => value,
-    normalizePricingLossStageGroups: () => ({ duck: [] }), normalizePricingCutPartGroups: () => ({}),
-    replaceRulesDraft, setActiveLossGroupKey() {}, replaceLossStageGroupsDraft() {}, replaceCutPartGroupsDraft() {},
-  }, { scope: 'SimplePricingEngineView' });
-  edit({ price: 63 });
-  hydrate();
-  assert.equal(draft.price, 63, 'an earlier realtime ACK must not reset the input');
-  let complete;
+  const f=pricingDraftContext(),guard=createDraftRevision();f.guard.current=guard;
+  const edit=f.env.setRulesDraft,hydrate=f.env.hydrate;
+  edit(draft=>({...draft,targetMargin:63}));hydrate();
+  assert.equal(f.rulesDraftRef.current.targetMargin,63,'an earlier realtime ACK must not reset the input');
+  let complete,submitted,status='';
   const pricingSaveInFlightRef = { current: false };
   const save = appFunction('handleSavePricingRules', {
-    pricingActivityReady: true, canEditRules: true, pricingSaveInFlightRef, pricingDraftRevisionRef,
-    onSavePricingRules: () => new Promise(resolve => { complete = resolve; }),
-    parsedRules: { price: 63, marginByProduct: {} }, buildSeedProductMargins: () => ({}),
-    setIsSavingPricing() {}, setStatusText() {}, getFriendlyFirebaseErrorMessage: error => error.message,
+    ...f.env,pricingActivityReady: true, canEditRules: true, pricingSaveInFlightRef,
+    onSavePricingRules: payload => {submitted=payload;return new Promise(resolve => { complete = resolve; });},
+    buildSeedProductMargins: () => ({}),setIsSavingPricing() {}, setStatusText:value=>{status=value;}, getFriendlyFirebaseErrorMessage: error => error.message,
   }, { scope: 'SimplePricingEngineView' });
   const pending = save();
   await save();
   assert.equal(pricingSaveInFlightRef.current, true, 'duplicate submit must not release the first save lock');
-  edit({ price: 64 });
+  assert.equal(submitted.targetMargin,63,'save uses the latest real draft refs and parser');
+  edit(draft=>({...draft,targetMargin:64}));
   complete({ queued: true });
   await pending;
+  assert.match(status,/^Đã lưu tạm/,'queued persistence cannot be presented as shared confirmation');
   assert.equal(guard.isDirty(), true, 'only the submitted revision was persisted');
   hydrate();
-  assert.equal(draft.price, 64);
+  assert.equal(f.rulesDraftRef.current.targetMargin,64);
   assert.equal(pricingSaveInFlightRef.current, false);
   guard.saved(guard.capture());
   hydrate();
-  assert.equal(draft.price, 60, 'idle drafts can accept a real remote update');
+  assert.equal(f.rulesDraftRef.current.targetMargin,60,'idle drafts can accept a real remote update');
 });
 
-test('bulk quote save distinguishes queued receipts, rejects failures and locks duplicate submissions', async () => {
-  let finish, calls = 0, status = '';
+test('bulk quote save waits for real customer configuration ACK, retains metadata, distinguishes local receipts and locks duplicates', async () => {
+  let finish, calls = 0, status = '',mode='hold',selected=['c'];
+  const customer={id:'c',companyId:'a',name:'Customer',phone:'0900000001',customerProductIds:['p'],priceOverrides:{
+    p:{price:60,unitPrice:60,pricingUnit:'Kg',defaultOrderUnit:'Con',unitPrices:{Kg:60,Con:150},unitConversions:'Con=2.5',qaMetadata:{retain:true},
+      variants:[{id:'large',price:70,qaMetadata:{variant:true}}]},other:{price:80,qaMetadata:{unrelated:true}}}};
+  const original=structuredClone(customer);
+  let server=structuredClone(customer);const patches=[],publications=[];
+  const normalizer=appFunction('normalizeCustomerPriceOverrides',{
+    parseLooseMoneyValue:pricingHelpers.parseLooseMoneyValue,normalizeProductPricingUnit,normalizeUnitPriceMap,
+    hasCustomerOrderConfigurationValue:appFunction('hasCustomerOrderConfigurationValue'),
+  });
+  const editCustomer=()=>appFunction('handleEditCustomer',{
+    isVpsStagingMode:false,firebaseUser:{uid:'u'},myCompanyId:'a',rawCustomers:[server],currentUser:{id:'e'},
+    getCustomerHonorific:()=>'',buildCustomerPhoneDuplicateKey:String,doc:()=> 'c',db:{},appId:'unit',configScopeFingerprint,syncError,
+    sanitizeFirestoreWritePayload:structuredClone,activeTenantScopeRef:{current:'a'},setRawCustomers(){},rememberRecentLocalWrite(){},
+    upsertLocalListRecord:(_setter,value)=>publications.push(value),
+    saveDataDocument(){assert.fail('Bulk configuration must never fall back to a queued profile save');},
+    runTransaction:async(_db,callback)=>{
+      if(mode==='fail')throw Error('permission-denied');
+      const staged=[];const result=await callback({get:async()=>({exists:()=>true,data:()=>structuredClone(server)}),update:(_id,value)=>staged.push(value)});
+      if(mode==='hold')await new Promise(resolve=>{finish=resolve;});
+      for(const patch of staged){server={...server,...structuredClone(patch)};patches.push(patch);}return result;
+    },
+  });
   const applyingBatchPriceRef = { current: false };
   const bindings = {
-    applyingBatchPriceRef, onEditCustomer: () => { calls++; return new Promise(resolve => { finish = resolve; }); },
+    dataFresh:true, applyingBatchPriceRef,onEditCustomer: (...args) => {calls++;return editCustomer()(...args);},
     activeProducts: [{ id: 'p', name: 'Product' }], batchPriceProductId: 'p', batchPriceValue: '63', batchPriceSize: '',
-    parseLooseMoneyValue: Number, getBatchPriceTargetCustomers: () => [{ id: 'c' }],
-    normalizeCustomerPriceOverrides: () => ({}), normalizeCustomerProductIds: () => ['p'],
-    setIsApplyingBatchPrice() {}, setSelectedProductIds() {}, setQuoteStatus: text => { status = text; },
+    parseLooseMoneyValue: pricingHelpers.parseLooseMoneyValue, getBatchPriceTargetCustomers: () => [customer],
+    normalizeCustomerPriceOverrides: normalizer,buildCustomerBatchPricePatch,configScopeFingerprint,
+    setIsApplyingBatchPrice() {}, setSelectedBatchCustomerIds:value=>{selected=value;}, setQuoteStatus: text => { status = text; },
     getFriendlyFirebaseErrorMessage: error => error.message,
   };
   const save = appFunction('handleApplyBatchCustomerPrice', bindings, { scope: 'PriceQuoteBroadcastView' });
   const first = save();
   await save();
+  for(let turn=0;turn<8&&!finish;turn++)await Promise.resolve();
   assert.equal(calls, 1);
   assert.equal(applyingBatchPriceRef.current, true);
-  finish({ queued: true });
+  assert.equal(patches.length,0);assert.equal(publications.length,0);
+  finish();
   await first;
-  assert.match(status, /^Đã lưu tạm giá/);
+  assert.match(status,/^Đã áp giá/);assert.equal(patches.length,1);assert.equal(publications.length,1);
+  assert.equal(server.priceOverrides.p.unitPrice,63);assert.deepEqual(server.priceOverrides.p.unitPrices,{Kg:63,Con:150});
+  assert.equal(server.priceOverrides.p.unitConversions,'Con=2.5');assert.deepEqual(server.priceOverrides.p.variants,customer.priceOverrides.p.variants);
+  assert.deepEqual(server.priceOverrides.other,customer.priceOverrides.other);assert.equal(Object.hasOwn(server,'__customerConfigBase'),false);
   assert.equal(applyingBatchPriceRef.current, false);
-  bindings.onEditCustomer = async () => ({ queued: false });
+  bindings.onEditCustomer = async () => ({ queued: true });
   await appFunction('handleApplyBatchCustomerPrice', bindings, { scope: 'PriceQuoteBroadcastView' })();
-  assert.match(status, /^Đã áp giá/);
-  bindings.onEditCustomer = async () => { throw new Error('permission-denied'); };
+  assert.match(status,/^Đã lưu tạm giá/);assert.doesNotMatch(status,/^Đã áp giá/);
+  mode='fail';bindings.onEditCustomer=(...args)=>editCustomer()(...args);
   await appFunction('handleApplyBatchCustomerPrice', bindings, { scope: 'PriceQuoteBroadcastView' })();
-  assert.equal(status, 'permission-denied');
+  assert.match(status,/Đã cập nhật 0\/1.*permission-denied/);assert.deepEqual(selected,['c']);
   assert.equal(applyingBatchPriceRef.current, false);
+  assert.equal(patches.length,1);assert.equal(publications.length,1);assert.deepEqual(customer,original);
+  const beforeCalls=calls;bindings.dataFresh=false;
+  await appFunction('handleApplyBatchCustomerPrice',bindings,{scope:'PriceQuoteBroadcastView'})();
+  assert.equal(calls,beforeCalls,'unverified source context must not start another customer transaction');
+  assert.match(status,/đang được xác minh/);assert.deepEqual(selected,['c']);
 });
 
 test('a modal action retains input focus and cannot be retargeted to backdrop dismissal', () => {
@@ -233,7 +264,9 @@ test('save handlers reject expired authentication or missing tenant instead of r
     'handleCheckIn', 'handleCheckOut',
   ];
   const bindings = {
-    isVpsStagingMode: false, firebaseUser: null, myCompanyId: 'a', currentCompany: {},
+    ...assetIntegrity,isVpsStagingMode: false, firebaseUser: null, myCompanyId: 'a', currentCompany: {},
+    currentUser:{id:'e'},appCurrentEmployee:{id:'e',companyId:'a',role:'owner'},hasCompanyRolePermissionAction:roleDomain.hasCompanyRolePermissionAction,
+    readOwnerRef:{current:'read-a'},readOwnerKey:'read-a',activeTenantScopeRef:{current:'a'},
     rawOrders: [], employees: [], attendanceRecords: {}, currentDate: '2026-09-30',
     getTodayString: () => '2026-09-30', getWarehouseDispatchIds: () => [],
     resolveAttendanceActionDateForShift: () => '2026-09-30',
@@ -243,7 +276,8 @@ test('save handlers reject expired authentication or missing tenant instead of r
   for (const handler of handlers) {
     const args = handler === 'handleSaveCustomerProductPreference' ? [{ customerId: 'c', productId: 'p', inputUnit: 'kg' }] : ['record', {}];
     for (const session of [{ firebaseUser: null, myCompanyId: 'a' }, { firebaseUser: { uid: 'u' }, myCompanyId: '' }]) {
-      await assert.rejects(appFunction(handler, { ...bindings, ...session })(...args), /Phiên.*không hợp lệ/, handler);
+      await assert.rejects(appFunction(handler, { ...bindings, ...session })(...args),
+        error=>['handleAddAsset','handleEditAsset','handleDeleteAsset'].includes(handler)?error.code==='asset/scope':/Phiên.*không hợp lệ/.test(error.message),handler);
     }
   }
 });
@@ -252,6 +286,7 @@ test('pricing save publishes through the persistence boundary and preserves pend
   const writes = [];
   let queued = true, failure = false;
   const save = appFunction('handleSavePricingRules', {
+    assertPricingLossStandards,
     firebaseUser: { uid: 'u' }, myCompanyId: 'a', employeeInfo: { id: 'e' }, currentUser: { id: 'u' },
     setRawPricingRules() { assert.fail('Do not publish an extra optimistic update before persistence'); },
     rememberRecentLocalWrite() { assert.fail('The persistence boundary owns cache updates'); },
@@ -268,6 +303,9 @@ test('pricing save publishes through the persistence boundary and preserves pend
   assert.deepEqual(await save({ targetMargin: 25 }), { id: 'pricing_engine_rules', queued: false });
   failure = true;
   await assert.rejects(save({ targetMargin: 30 }), /storage-full/);
+  const count=writes.length;
+  await assert.rejects(save({lossStages:[{inputWeight:1,outputWeight:0,lossWeight:2}]}),{code:'pricing_invalid_loss_standard'});
+  assert.equal(writes.length,count,'invalid loss must fail before persistence');
 });
 
 test('customer and order-request edits cannot use a record belonging to another tenant', async () => {
@@ -365,7 +403,7 @@ test('debt share text uses each payment, not a fabricated invoice repeated as hi
     currentCompany: { name: 'Test Company' }, getCustomerDisplayName: customer => customer.name,
     formatCurrency: String, formatOrderCode: value => value, formatDateLabel: value => value,
     getPaymentDateKey: value => value.date, getPaymentMethodLabel: value => value.method,
-  });
+  }, {scope:'CustomerCRMView'});
   const text = format({ name: 'Test Customer', currentDebt: 40, orders: [{ id: 'order-actual', date: '2026-09-29', amount: 100, outstandingAmount: 40 }], payments: [{ date: '2026-09-30', amount: 60, appliedAmount: 60, method: 'Cash' }] });
   assert.equal((text.match(/BẢNG ĐỐI SOÁT/g) || []).length, 1);
   assert.ok(text.includes('2026-09-30 - Cash - Đã thu 60 đ - Đã phân bổ 60 đ'));
@@ -512,7 +550,7 @@ test('delivery compound save stages reports, payment, expense and cost without a
   assert.equal(costId, 'acl_stable_3');
   const accepted = [];
   const bindings = {
-    firebaseUser: { uid: 'u' }, myCompanyId: 'a', isVpsStagingMode: false, mergeAtomicWrites,
+    firebaseUser: { uid: 'u' }, myCompanyId: 'a', isVpsStagingMode: false, mergeAtomicWrites, payloadFingerprint: async () => 'a'.repeat(64),
     handleAddDeliveryReport: async (_, payload, writes) => writes.push({ collectionName: 'deliveryReports', documentId: payload.id, payload }),
     handleAddPayment: async (payload, writes) => writes.push({ collectionName: 'payments', documentId: payload.id, payload }),
     handleAddExpense: async (_, payload, writes) => writes.push({ collectionName: 'expenses', documentId: payload.id, payload }),
@@ -652,32 +690,29 @@ test('warehouse submit does not await secondary company settings and debt errors
   assert.ok(submit.includes('if (debtPaymentSubmitRef.current) return;'));
 });
 
-test('asset cost create/edit/archive submit log and linked expense as one durable command', async () => {
-  const commands = [];
-  const bindings = {
-    firebaseUser: { uid: 'u' }, myCompanyId: 'a', assets: [{ id: 'truck' }],
-    assetCostLogs: [], expenses: [], employeeInfo: { id: 'e' }, currentUser: { id: 'e' },
-    parseLooseQuantityValue: Number, parseLooseMoneyValue: value => Number(value) || 0,
-    getAssetDisplayLabel: () => 'Truck', getAssetCostTypeLabel: () => 'Fuel',
-    normalizeExpenseCategoryLabel: value => value, normalizeLeadingLabel: value => value,
-    getTodayString: () => '2026-09-30', CASHFLOW_APPROVAL_STATUS: { approved: 'approved' },
-    saveAtomicDocuments: (key, writes) => { commands.push({ key, writes }); return { queued: true }; },
-  };
-  const add = appFunction('handleAddAssetCostLog', bindings);
-  assert.equal(await add('e', { clientMutationId: 'log', assetId: 'truck', liters: 10, unitPrice: 20000 }), 'log');
-  assert.equal(commands[0].writes.length, 2);
-  assert.equal(commands[0].writes[1].payload.amount, 200000);
-  assert.equal(commands[0].writes[0].payload.expenseId, commands[0].writes[1].documentId);
-  bindings.assetCostLogs.push(commands[0].writes[0].payload);
-  bindings.expenses.push(commands[0].writes[1].payload);
-  await appFunction('handleEditAssetCostLog', bindings)('log', { amount: 230000 });
-  await appFunction('handleDeleteAssetCostLog', bindings)('log');
-  assert.deepEqual(commands.map(command => command.key), ['asset_cost_log', 'asset_cost_log', 'asset_cost_log']);
-  assert.deepEqual(commands[1].writes.map(write => write.payload.amount), [230000, 230000]);
-  assert.equal(commands[2].writes.every(write => write.payload.isArchived), true);
-  await assert.rejects(appFunction('handleEditAssetCostLog', bindings)('missing', {}));
-  const denied = appFunction('handleAddAssetCostLog', { ...bindings, saveAtomicDocuments: () => { throw new Error('Storage full'); } });
-  await assert.rejects(denied('e', { clientMutationId: 'not-saved', amount: 60 }), /Storage full/);
+test('asset cost create/edit/archive atomically pair log and expense, and require the exact server ACK before success', async () => {
+  const f=assetSaveContext(),metadata=id=>({clientCommandId:id,clientMutationAt:'2026-11-22T00:00:00.000Z'});
+  let settled=false;
+  const adding=f.call('handleAddAssetCostLog','e',{clientMutationId:'log',assetId:'truck',type:'fuel',liters:10,unitPrice:20000,...metadata('cost-create')})
+    .then(value=>{settled=true;return value;});
+  await f.ready(0);assert.equal(settled,false,'a durable local queue is not shared server confirmation');
+  assert.equal(f.commands[0].writes.length,2);assert.equal(f.commands[0].writes[1].payload.amount,200000);
+  assert.equal(f.commands[0].writes[0].payload.expenseId,f.commands[0].writes[1].documentId);
+  assert.deepEqual(f.acks[0].args.slice(0,2),[ATOMIC_SAVE_COLLECTION,f.commands[0].key]);
+  await f.confirm(0);assert.deepEqual(await adding,{id:'log',success:true,confirmed:true,queued:false});f.refresh();
+  const editing=f.call('handleEditAssetCostLog','log',{amount:230000,...metadata('cost-edit')});
+  await f.confirm(1);assert.equal((await editing).confirmed,true);f.refresh();
+  const archiving=f.call('handleDeleteAssetCostLog','log',metadata('cost-archive'));
+  await f.confirm(2);assert.equal((await archiving).confirmed,true);f.refresh();
+  assert.deepEqual(f.commands.map(command=>command.key),['asset_cost-create','asset_cost-edit','asset_cost-archive']);
+  assert.deepEqual(f.commands[1].writes.map(write=>write.payload.amount),[230000,230000]);
+  assert.equal(f.commands[2].writes.every(write=>write.payload.isArchived),true);
+  await assert.rejects(f.call('handleEditAssetCostLog','missing',{}));
+  const queued=f.call('handleAddAssetCostLog','e',{clientMutationId:'pending',assetId:'truck',amount:60,...metadata('cost-pending')});
+  await f.ready(3);f.acks[3].resolve({queued:true});await assert.rejects(queued);
+  assert.equal(f.documents.has('assetCostLogs/pending'),false);
+  const denied=appFunction('handleAddAssetCostLog',{...f.env,saveAtomicDocuments:()=>{throw Error('Storage full');}});
+  await assert.rejects(denied('e',{clientMutationId:'not-saved',assetId:'truck',amount:60,...metadata('storage-fail')}),/Storage full/);
 });
 
 test('conditional atomic payment retry never resets read/sent status and rejects command reuse with another amount', async () => {

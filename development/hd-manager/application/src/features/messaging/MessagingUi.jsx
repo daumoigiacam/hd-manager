@@ -152,7 +152,7 @@ function MessageBubble({ message, conversation }) {
   </div>;
 }
 
-export function MessageList({ conversation, messages, status = '', onOpenNotice }) {
+export function MessageList({ conversation, messages, status = '', emptyTitle = 'Chưa có tin nhắn', onOpenNotice }) {
   const scrollRef = useRef(null);
   const [limit, setLimit] = useState(40);
   useEffect(() => { setLimit(40); }, [conversation.id]);
@@ -162,7 +162,7 @@ export function MessageList({ conversation, messages, status = '', onOpenNotice 
     {limit < messages.length && <button type="button" className="hd-chat-load-older" onClick={() => setLimit((count) => count + 40)}>Xem tin nhắn cũ</button>}
     {conversation.type === 'notice' && conversation.sourceItem && <button type="button" className="hd-chat-notice-link" onClick={onOpenNotice}>Mở chi tiết thông báo <ChevronRight size={16} /></button>}
     {visible.map((message) => <MessageBubble key={message.id} message={message} conversation={conversation} />)}
-    {!messages.length && <ChatState state="empty" />}
+    {!messages.length && <ChatState state="empty" title={emptyTitle} />}
     {status && <div className="hd-chat-inline-status" role="status">{status}</div>}
   </div>;
 }

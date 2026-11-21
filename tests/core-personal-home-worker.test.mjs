@@ -14,10 +14,10 @@ const clientBundle=await build({entryPoints:['src/services/personalHomeProjectio
  plugins:[{name:'personal-worker-fixture-factory',setup(b){b.onResolve({filter:/^@hd\/personal-home-worker$/},()=>({path:'fixture',namespace:'stub'}));
   b.onLoad({filter:/.*/,namespace:'stub'},()=>({contents:'export const createPersonalHomeWorker=()=>{throw Error("Inject test transport")}'}))}}]});
 const {runPersonalHomeProjection}=await import('data:text/javascript;base64,'+Buffer.from(clientBundle.outputFiles[0].text).toString('base64'));
-const domainSource=extractEmployeeHomeDomain(source,path.resolve('src'));
-const built=await build({stdin:{contents:domainSource,resolveDir:path.resolve('src')},bundle:true,write:false,platform:'node',format:'esm'});
+const domainSource=extractEmployeeHomeDomain(source,path.resolve('development/hd-manager/application/src'));
+const built=await build({stdin:{contents:domainSource,resolveDir:path.resolve('development/hd-manager/application/src')},bundle:true,write:false,platform:'node',format:'esm'});
 const domain=await import('data:text/javascript;base64,'+Buffer.from(built.outputFiles[0].text).toString('base64'));
-const selectionBundle=await build({stdin:{contents:extractEmployeeHomeDomain(source,path.resolve('src'),['preparePersonalHomeProjectionInput']),resolveDir:path.resolve('src')},bundle:true,write:false,platform:'node',format:'esm'});
+const selectionBundle=await build({stdin:{contents:extractEmployeeHomeDomain(source,path.resolve('development/hd-manager/application/src'),['preparePersonalHomeProjectionInput']),resolveDir:path.resolve('development/hd-manager/application/src')},bundle:true,write:false,platform:'node',format:'esm'});
 const {preparePersonalHomeProjectionInput}=await import('data:text/javascript;base64,'+Buffer.from(selectionBundle.outputFiles[0].text).toString('base64'));
 const calculate=input=>({details:domain.buildSalaryDetails(input.employee.id,input.employees,input.attendance,input.financials,input.performance,input.customers,input.orders,input.payments,input.holidays,input.monthKey),
  reviewSummary:domain.buildEmployeeReviewSummary(input.employee,{attendance:input.attendance,orders:input.orders,deliveryReports:input.deliveryReports,reviews:input.employeeReviews,monthKey:input.monthKey})});
@@ -77,7 +77,7 @@ test('cancellation and worker failure terminate the calculation without persisti
 
 test('formula extraction is closed over existing pure bindings and refuses UI or unexpected globals',()=>{
  assert(domainSource.includes('export {buildSalaryDetails,buildEmployeeReviewSummary}'));
- assert.throws(()=>extractEmployeeHomeDomain(source.replace('const buildSalaryDetails = (','const buildSalaryDetails = (...args) => window.fetch(args); const replacedSalaryDetails = ('),path.resolve('src')),/Unapproved.*window/);
+ assert.throws(()=>extractEmployeeHomeDomain(source.replace('const buildSalaryDetails = (','const buildSalaryDetails = (...args) => window.fetch(args); const replacedSalaryDetails = ('),path.resolve('development/hd-manager/application/src')),/Unapproved.*window/);
  assert.doesNotMatch(domainSource,/PersonalHomeProjectionGate|function MainApp|initializeFirestore/);
  const factory=readFileSync('src/services/personalHomeWorkerFactory.js','utf8');
  assert.match(factory,/import HomeWorker from '\.\/personalHomeWorker\.js\?worker'/);

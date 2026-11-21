@@ -28,5 +28,5 @@ test('history projection preserves stable chronology, snapshot precedence and le
   assert.equal(items[0].id, 'b');
   assert.equal(rows[0].customerName, 'Snapshot');
   assert.equal(rows[0].productName, 'Old product');
-  assert.equal(rows[1].weightKg, 3, 'Preserve prior parseFloat semantics; no business conversion in this refactor');
+  assert.equal(rows[1].weightKg, 3.5, 'A decimal comma preserves the complete saved weight');
 });

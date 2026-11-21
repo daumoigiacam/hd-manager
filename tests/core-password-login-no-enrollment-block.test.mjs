@@ -4,13 +4,14 @@ import { readFileSync } from 'node:fs';
 import { parse } from '@babel/parser';
 
 const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
-const app = parse(source, { sourceType: 'module', plugins: ['jsx'] }).program.body
-  .find(node => node.type === 'ExportDefaultDeclaration' && node.declaration.id?.name === 'App').declaration;
+const declarations = parse(source, { sourceType: 'module', plugins: ['jsx'] }).program.body;
+const app = declarations.find(node => node.type === 'FunctionDeclaration' && node.id?.name === 'ApplicationView')
+  || declarations.find(node => node.type === 'ExportDefaultDeclaration' && node.declaration.id?.name === 'App').declaration;
 const login = app.body.body.flatMap(node => node.declarations || [])
   .find(node => node.id.name === 'handleIdentityLogin').init;
 const dependencies = ['isVpsStagingMode', 'normalizeEmployeeLoginPhone', 'recordStartupEvent', 'identityLogin',
   'isNativeRuntime', 'getBiometricAutoLoginProfile', 'biometricVerifiedIdentityRef', 'getIdentityAccountScope',
-  'setBiometricUnlockState', 'logLoginStep', 'identitySetupPendingRef', 'establishIdentitySession', 'appId'];
+  'setBiometricUnlockState', 'logLoginStep', 'identitySetupPendingRef', 'establishIdentitySession', 'appId', 'auth'];
 const createLogin = new Function(...dependencies, `return (${source.slice(login.start, login.end)});`);
 
 test('actual password handler never requires optional enrollment, and still enforces existing-device unlock and setup', async () => {
@@ -23,7 +24,7 @@ test('actual password handler never requires optional enrollment, and still enfo
       apiCalls++; return session;
     }, () => native, () => enrolled ? { accountScope: 'fixture-scope' } : null,
     verified, () => 'fixture-scope', value => unlock.push(value), () => {}, pending,
-    async (value, options) => { assert.equal(value, session); activations.push(options.activate); return { success: true, identity: session.identity }; }, 'fixture-app');
+    async (value, options) => { assert.equal(value, session); activations.push(options.activate); return { success: true, identity: session.identity }; }, 'fixture-app', {currentUser:null});
     const result = await handler('0900000000', 'fixture-password');
     assert.equal(result.success, true);
     assert.equal(apiCalls, 1);

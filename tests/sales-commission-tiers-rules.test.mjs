@@ -1,8 +1,10 @@
 import fs from'node:fs';import{initializeTestEnvironment,assertSucceeds,assertFails}from'@firebase/rules-unit-testing';import{doc,setDoc,updateDoc,getDoc}from'firebase/firestore';
 import {hdSampleCommissionPolicy,commissionPolicyFromDraft} from '../development/hd-manager/application/src/utils/commissionPolicy.js';
-const projectId='demo-hdmanager-commission-'+process.pid,appId='commission-local-test',endpoint=new URL('http://'+(process.env.FIRESTORE_EMULATOR_HOST||'127.0.0.1:8285'));
-if(!['127.0.0.1','localhost','[::1]'].includes(endpoint.hostname))throw Error('Commission tests require a loopback Firestore Emulator');
-const env=await initializeTestEnvironment({projectId,firestore:{host:endpoint.hostname,port:Number(endpoint.port),rules:fs.readFileSync('firestore.rules','utf8')}});
+const projectId='demo-hdmanager-commission-'+process.pid,appId='commission-local-test',endpoint=new URL('http://'+(process.env.FIRESTORE_EMULATOR_HOST||'127.0.0.1:8185'));
+if(!['127.0.0.1','localhost'].includes(endpoint.hostname)||endpoint.port!=='8185')throw Error('Commission tests require loopback Firestore port 8185');
+const rules=fs.readFileSync(new URL('../firestore.rules',import.meta.url),'utf8');
+console.log(`FENCE project=${projectId} emulator=${endpoint.host}`);
+const env=await initializeTestEnvironment({projectId,firestore:{host:endpoint.hostname,port:Number(endpoint.port),rules}});
 const path=(collection,id)=>`artifacts/${appId}/public/data/${collection}/${id}`;
 const actor=(id,company='a',role='employee')=>env.authenticatedContext(id,{identityId:'identity-'+id,companyId:company,appUserId:id,accountType:'employee',role}).firestore();
 const owner=actor('owner-a','a','owner'),accounting=actor('accounting-a','a','accounting'),staff=actor('staff-a'),revoked=actor('revoked-a','a','accounting'),other=actor('owner-b','b','owner');
@@ -38,6 +40,10 @@ try{
   const policy={...commissionPolicyFromDraft(hdSampleCommissionPolicy('2026-11-01')),status:'active'};
   for(const tiers of [[{...policy.tiers[0],from:1},...policy.tiers.slice(1)],[policy.tiers[0],{...policy.tiers[1],from:500000001},policy.tiers[2]]])await assertFails(updateDoc(doc(owner,path('employees','staff-a')),{commissionPolicy:{...policy,tiers}}));
   await assertFails(updateDoc(doc(owner,path('employees','staff-a')),{commissionPolicyDraft:policy}));
+  for(const patch of [{rate:-0.01},{rate:1.01},{fixedBonus:-1},{fixedBonus:0.5},{fixedBonus:9007199254740992},{enabled:'true'},{to:0}]){
+    const tiers=policy.tiers.map((row,index)=>index===0?{...row,...patch}:row);
+    await assertFails(updateDoc(doc(owner,path('employees','staff-a')),{commissionPolicy:{...policy,tiers}}));
+  }
  });
  await check('explicit employee-level salary grant works and revocation immediately blocks the next write',async()=>{await env.withSecurityRulesDisabled(context=>updateDoc(doc(context.firestore(),path('companies','a')),{'employeeRolePermissions.staff-a':{employees:true},'employeeRolePermissionActions.staff-a':{employees:{edit_employee_salary_policy:true}}}));await assertSucceeds(updateDoc(doc(staff,path('employees','staff-a')),{commissionTiers:[tier]}));await env.withSecurityRulesDisabled(context=>updateDoc(doc(context.firestore(),path('companies','a')),{'employeeRolePermissionActions.staff-a.employees.edit_employee_salary_policy':false}));await assertFails(updateDoc(doc(staff,path('employees','staff-a')),{commissionTiers:[{...tier,rate:0.03}]}));});
  console.log(JSON.stringify({status:'PASS_LOCAL_FIRESTORE_EMULATOR_ONLY',tests:passed,projectId,productionTouched:false}));

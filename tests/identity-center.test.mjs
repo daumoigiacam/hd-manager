@@ -143,6 +143,10 @@ delete globalThis.window;
 const firebaseConfig = JSON.parse(await readFile(new URL('../firebase.json', import.meta.url), 'utf8'));
 const identityClientSource = await readFile(new URL('../src/services/identityCenter.js', import.meta.url), 'utf8');
 const appSource = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const firebaseClientRuntimeSource = await readFile(new URL('../src/services/firebaseClientRuntime.js', import.meta.url), 'utf8').catch(error => {
+  if (error.code !== 'ENOENT') throw error;
+  return appSource;
+});
 const identityFunctionSource = await readFile(new URL('../functions/identityCenter.js', import.meta.url), 'utf8');
 const functionsIndexSource = await readFile(new URL('../functions/index.js', import.meta.url), 'utf8');
 const identityRewriteSources = firebaseConfig.hosting.rewrites
@@ -200,12 +204,12 @@ assert.match(appSource, /firebaseAuthenticated: isSessionRevocationDataReady/);
 assert.doesNotMatch(appSource, /auth\.bootstrap\.anonymous/);
 assert.doesNotMatch(appSource, /if \(false\) return undefined;/);
 assert.match(
-  appSource,
+  firebaseClientRuntimeSource,
   /auth = initializeAuth\(app, \{[\s\S]*?persistence: Capacitor\.isNativePlatform\(\) \? \(rememberedNativeUid\(\) \? NativeSessionPersistence : inMemoryPersistence\) : \[indexedDBLocalPersistence, browserLocalPersistence\]/,
   'Firebase Auth must configure supported persistence during construction'
 );
-assert.match(appSource, /firebaseAuthPersistencePromise = Promise\.resolve\('indexedDB-or-localStorage'\)/);
-assert.match(appSource, /firebaseAuthPersistencePromise = configureFirebaseAuthPersistence\(auth\)/);
+assert.match(firebaseClientRuntimeSource, /firebaseAuthPersistencePromise = Promise\.resolve\('indexedDB-or-localStorage'\)/);
+assert.match(firebaseClientRuntimeSource, /firebaseAuthPersistencePromise = configureFirebaseAuthPersistence\(auth\)/);
 assert.match(appSource, /const expectedCachedFirebaseUid = cachedFirebaseUid \|\|/);
 assert.match(appSource, /`identity_\$\{cachedIdentityKey\}`/);
 assert.match(appSource, /const cachedSessionBoundToAuth = Boolean\(/);

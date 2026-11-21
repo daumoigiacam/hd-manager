@@ -14,7 +14,7 @@ const create=values=>new Function(...Object.keys(values),'return '+baseline.toSt
 for(const mode of ['default','revenue','revenue_desc','revenue_asc','date'])test('actual directory retains exact stable order/search/filters: '+mode,()=>{
   const compareCustomerNames=createBoundedCollationCompare(new Intl.Collator('vi'));
   for(const keyword of ['','ga','hồng','nonexistent'])for(const canSeeCustomerDebt of [false,true])for(const canSeeCustomerStats of [false,true]){
-    const values={customerSummaries:customers,debouncedCustomerSearch:keyword,customerStatusFilter:canSeeCustomerStats?'debt':'credit',
+    const values={localCustomerSource:null,customerSummaries:customers,debouncedCustomerSearch:keyword,customerStatusFilter:canSeeCustomerStats?'debt':'credit',
       customerSortFilter:mode,customerDateFilter:'2026-10-24',customerManagerFilter:canSeeCustomerDebt?'e1':'all',
       canSeeCustomerStats,canSeeCustomerDebt,canSeeCustomerLocation:canSeeCustomerDebt,
       activeProductForPricingLookup:new Map([['p1',{name:'Gà'}]]),employees:[{id:'e1',name:'Synthetic manager',phone:'0900000'}],
@@ -28,7 +28,7 @@ for(const mode of ['default','revenue','revenue_desc','revenue_asc','date'])test
 
 test('date activity scanning is bounded per customer in the real callback rather than repeated by sort comparisons',()=>{
   let reads=0;
-  const values={customerSummaries:customers,debouncedCustomerSearch:'',customerStatusFilter:'all',customerSortFilter:'date',customerDateFilter:'2026-10-24',customerManagerFilter:'all',
+  const values={localCustomerSource:null,customerSummaries:customers,debouncedCustomerSearch:'',customerStatusFilter:'all',customerSortFilter:'date',customerDateFilter:'2026-10-24',customerManagerFilter:'all',
     hasTokenSearchQuery:()=>false,canSeeCustomerStats:true,canSeeCustomerDebt:true,
     getDateKeyFromAnyValue:v=>{reads++;return String(v||'').slice(0,10)},getEntityTimestamp:r=>Date.parse(r.createdAt||r.date)||0,
     compareCustomerNames:createBoundedCollationCompare(new Intl.Collator('vi'))};

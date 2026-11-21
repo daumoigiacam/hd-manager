@@ -170,7 +170,7 @@ test('ô người giao thuộc đúng từng dòng phiếu xuất của khách h
 
 test('sửa ô kg giữ từng lần cân và tự cộng lại tổng', () => {
   assert.match(warehouseModuleSource, /initialEntries: ensureWarehouseWeightEntryRows\(editableWeightEntries\.map/);
-  assert.match(warehouseModuleSource, /const nextSourceWeight = normalizedEntries\.reduce\(\(sum, value\) => sum \+ value, 0\)/);
+  assert.match(warehouseModuleSource, /const nextSourceWeight = getWarehouseWeightEntryTotal\(normalizedEntries\)/);
   assert.match(warehouseModuleSource, /weightEntries: normalizedEntries/);
   assert.doesNotMatch(warehouseModuleSource, /weightEntries: nextValue === '' \? \[\] : \[nextValue\]/);
 });

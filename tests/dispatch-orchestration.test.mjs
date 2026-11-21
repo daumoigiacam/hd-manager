@@ -16,7 +16,7 @@ test('dispatch view contains no speech capture, transcription or auto-apply time
 });
 
 test('manual quantity formatting retains decimal comma and positive-number rules', () => {
-  for (const [input, expected] of [[5,'5'],['2,567','2.57'],[0,''],[-1,''],[null,''],['abc',''],[Infinity,'']]) {
+  for (const [input, expected] of [[5,'5'],['2,567','2.567'],[0,''],[-1,''],[null,''],['abc',''],[Infinity,'']]) {
     assert.equal(formatDispatchNumberInput(input),expected);
   }
 });

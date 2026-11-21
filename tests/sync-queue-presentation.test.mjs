@@ -6,9 +6,11 @@ const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
 const panel = readFileSync(new URL('../src/layout/SyncQueueStatus.jsx', import.meta.url), 'utf8');
 const css = readFileSync(new URL('../src/design-system/foundation.css', import.meta.url), 'utf8');
 
-test('sync diagnostics only mount inside settings, never as a global footer overlay', () => {
-  assert.equal((app.match(/<SyncQueueStatus\b/g) || []).length, 1);
-  assert.match(app, /data-settings-page="menu"[^>]*>\s*<SyncQueueStatus \/>/);
+test('the requested cleanup removes the settings sync-status row and never creates a global footer overlay', () => {
+  const settings=readFileSync(new URL('../development/hd-manager/application/src/features/legacy/SettingsView.jsx',import.meta.url),'utf8');
+  assert.equal((app.match(/<SyncQueueStatus\b/g) || []).length, 0);
+  assert.doesNotMatch(settings,/<SyncQueueStatus\b/);
+  assert.doesNotMatch(settings,/Trạng thái đồng bộ/);
   assert.match(css, /\.hd-sync-queue\s*\{\s*position: static;/);
   assert.doesNotMatch(panel, /thao tác chưa được máy chủ xác nhận/);
 });

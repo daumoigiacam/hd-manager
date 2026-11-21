@@ -4,7 +4,7 @@ const primary=Object.freeze(['employees','customers','messages']);
 const background=Object.freeze(['zalo_inbox_messages','zalo_inbox_bridge_logs','zalo_send_queue','zalo_campaigns','zalo_campaign_queue','order_requests','ai_reply_rules']);
 const none=Object.freeze([]);
 const alertHistory=Object.freeze(['orders','orderRequests','payments','expenses','products']);
-const attachments=Object.freeze({order:Object.freeze(['orders','products']),order_request:Object.freeze(['orderRequests','products']),report:Object.freeze(['orders','payments','expenses'])});
+const attachments=Object.freeze({order:Object.freeze(['orders','products','payments']),order_request:Object.freeze(['orderRequests','products']),report:Object.freeze(['orders','payments','expenses'])});
 export const MESSAGE_PRIMARY_COLLECTIONS=primary;
 const hasAction=action=>Object.prototype.hasOwnProperty.call(attachments,action);
 export const getMessageAttachmentReadCollections=action=>hasAction(action)?attachments[action]:none;

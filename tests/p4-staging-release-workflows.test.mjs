@@ -4,6 +4,8 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import {createRequire} from 'node:module';
+const {parse}=createRequire(import.meta.url)('yaml');
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const releaseId = 'p4-vps-staging-20260829T072544Z';
@@ -51,7 +53,12 @@ test('ordinary pushes cannot invoke a production deployment', async () => {
   const workflow = await readFile(path.join(root, '.github', 'workflows', 'deploy.yml'), 'utf8');
 
   assert.match(workflow, /^\s*workflow_dispatch:/m);
-  assert.doesNotMatch(workflow, /^\s*push:/m);
+  // Pushes run validation. Every remote/deployment operation remains manual.
+  const steps=parse(workflow).jobs.deploy.steps;
+  const guard="github.event_name == 'workflow_dispatch' && inputs.confirm_production_release == true";
+  for(const step of steps.filter(row=>/appleboy\/(ssh|scp)-action/.test(row.uses||''))){
+    assert.ok(step.if===guard||step.if==="failure() && steps.home_release_backup.outcome == 'success'",step.name);
+  }
   assert.doesNotMatch(workflow, /github\.event_name == 'push'/);
   assert.match(workflow, /confirm_production_release:/);
   assert.match(workflow, /inputs\.confirm_production_release == true/);

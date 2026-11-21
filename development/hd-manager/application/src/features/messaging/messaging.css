@@ -332,6 +332,7 @@
 .hd-chat-waveform i { flex: 1; min-width: 2px; border-radius: 2px; background: #86acfb; }
 .hd-chat-audio-duration { flex: none; color: #7c8da7; font-size: 11px; }
 .hd-chat-business { display: flex; flex-direction: column; gap: 3px; width: 250px; max-width: 100%; padding: 10px 12px; border-left: 3px solid #1674ff; border-radius: 9px; background: #f8fafc; }
+.hd-chat-business > span { display: flex; flex-direction: column; gap: 3px; }
 .hd-chat-business strong { color: #1c58bd; font-size: 12px; font-weight: 600; }
 .hd-chat-business span { white-space: pre-wrap; overflow-wrap: anywhere; color: #334155; font-size: 13px; line-height: 1.45; }
 .hd-chat-business--location { flex-direction: row; align-items: center; gap: 10px; border-left: 0; }

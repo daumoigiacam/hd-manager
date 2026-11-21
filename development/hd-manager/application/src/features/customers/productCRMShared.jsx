@@ -15,7 +15,8 @@ import { DEFAULT_LOYALTY_ELIGIBILITY_CONDITIONS, normalizeLoyaltyEligibilityCond
 import { buildCustomerDirectionsUrl } from "../../utils/customerLocationDirections.js";
 import { normalizePickedCustomerContact, pickWebCustomerContact } from "../../utils/customerContactPicker.js";
 import { sortOrdersByNewest } from "../../utils/orderRecency.js";
-import { Capacitor, registerPlugin } from "@capacitor/core";
+import { Capacitor } from "@capacitor/core";
+import {getCapacitorPlugin} from '../../utils/nativePluginRegistry.js';
 import { Geolocation } from "@capacitor/geolocation";
 import { Share as CapacitorShare } from "@capacitor/share";
 import { Directory, Encoding, Filesystem } from "@capacitor/filesystem";
@@ -30,16 +31,6 @@ const customerDirectorySummaryCache = createProjectionCache();
 const EMPTY_CUSTOMER_SUMMARIES = Object.freeze([]);
 
 const EMPTY_MAIN_LEDGER = Object.freeze({});
-
-const getCapacitorPlugin = (name) => {
-  const registryOwner = typeof globalThis !== 'undefined' ? globalThis : null;
-  if (!registryOwner) return registerPlugin(name);
-  registryOwner.__HD_MANAGER_CAPACITOR_PLUGINS__ ||= {};
-  if (!registryOwner.__HD_MANAGER_CAPACITOR_PLUGINS__[name]) {
-    registryOwner.__HD_MANAGER_CAPACITOR_PLUGINS__[name] = registerPlugin(name);
-  }
-  return registryOwner.__HD_MANAGER_CAPACITOR_PLUGINS__[name];
-};
 
 const APP_SCREEN_BACK_EVENT = 'hd-manager-screen-back';
 
@@ -453,6 +444,9 @@ const isFirebasePermissionError = (error) => {
 };
 
 const getFriendlyFirebaseErrorMessage = (error, fallback = 'Thao tác chưa hoàn tất, vui lòng thử lại.') => {
+  if (error?.code === 'pricing_invalid_loss_standard' && error.message) return error.message;
+  if (error?.code === 'customer_batch_price_invalid' && error.message) return error.message;
+  if (typeof error?.code === 'string' && error.code.startsWith('inventory_') && error.message) return error.message;
   const rawMessage = `${error?.message || error || ''}`.trim();
   if (isFirestoreInternalAssertionError(error)) {
     return 'App đã ghi nhận thao tác và đang đồng bộ nền. Bạn không cần bấm gửi nhiều lần.';
@@ -716,8 +710,8 @@ const parseCustomerImportWorkbook = async (file) => {
     rawRows = parseCustomerImportCsvRows(await file.text());
   } else {
     try {
-      const { default: readXlsxFile } = await import('read-excel-file/browser');
-      rawRows = await readXlsxFile(file);
+      const { readSheet } = await import('read-excel-file/browser');
+      rawRows = await readSheet(file, 1);
     } catch (error) {
       throw new Error(`Không đọc được file .xlsx: ${error?.message || 'vui lòng kiểm tra lại file.'}`);
     }

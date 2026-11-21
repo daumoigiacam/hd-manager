@@ -21,8 +21,9 @@ import {
   writeBatch
 } from 'firebase/firestore';
 
-const projectId = process.env.HD_PAYROLL_RULES_TEST_PROJECT_ID || 'hd-manager-payroll-rules-test';
-if(!/^hd-manager-payroll-rules-test(?:-[0-9]+)?$/.test(projectId))throw Error('Dedicated payroll Rules test project required');
+const projectId = process.env.HD_PAYROLL_RULES_TEST_PROJECT_ID || `demo-payroll-rules-${process.pid}`;
+if(!/^(?:hd-manager-payroll-rules-test(?:-[0-9]+)?|demo-payroll-rules-[0-9]+)$/.test(projectId))throw Error('Dedicated payroll Rules test project required');
+if(!/^(?:127\.0\.0\.1|localhost):8185$/.test(process.env.FIRESTORE_EMULATOR_HOST||''))throw Error('Payroll Rules require loopback 8185');
 const appId = 'test-app';
 const companyId = 'company-01';
 const rules = readFileSync(new URL('../firestore.rules', import.meta.url), 'utf8');

@@ -7,7 +7,7 @@ import { parse } from '@babel/parser';
 import { collectBackupCollections } from '../src/services/backupReadScheduler.js';
 
 const root = new URL('../', import.meta.url);
-const appUrl = new URL('src/App.jsx', root);
+const appUrl = new URL('../development/hd-manager/application/src/App.jsx', import.meta.url);
 const baselineRevision = '5f162f5ce85fd4dc746382f13a6a4170e4a29775';
 const fixedTime = '2026-10-03T08:09:10.123Z';
 const fixedMilliseconds = Date.parse(fixedTime);
@@ -25,14 +25,15 @@ const names = new Set(['DATA_COLLECTION_NAMES', 'BACKUP_DATA_COLLECTIONS',
   'handleCreateCompanyBackup', 'handleRunDailyAutoBackup']);
 function sourceRuntime(source) {
   const declarations = new Map();
+  let activeSource = source, collectMissing = false;
   const tree = parse(source, { sourceType: 'module', plugins: ['jsx'] });
   function visit(node) {
     if (!node || typeof node !== 'object') return;
-    if (node.type === 'VariableDeclarator' && names.has(node.id?.name)) {
+    if (node.type === 'VariableDeclarator' && names.has(node.id?.name) && (!collectMissing || !declarations.has(node.id.name))) {
       assert.ok(!declarations.has(node.id.name), `Ambiguous backup declaration: ${node.id.name}`);
       let expression = node.init;
       if (expression.type === 'CallExpression' && expression.callee.name === 'useCallback') expression = expression.arguments[0];
-      declarations.set(node.id.name, source.slice(expression.start, expression.end));
+      declarations.set(node.id.name, activeSource.slice(expression.start, expression.end));
     }
     for (const [key, value] of Object.entries(node)) {
       if (['loc', 'start', 'end', 'extra', 'comments'].includes(key)) continue;
@@ -41,6 +42,13 @@ function sourceRuntime(source) {
     }
   }
   visit(tree);
+  if (!declarations.has('getTodayString')) {
+    // These unchanged helpers are now imported by the actual App from its CRM
+    // boundary. Read those live declarations without loading the browser app.
+    activeSource = readFileSync(new URL('../development/hd-manager/application/src/features/customers/productCRMShared.jsx',import.meta.url),'utf8');
+    collectMissing = true;
+    visit(parse(activeSource,{sourceType:'module',plugins:['jsx']}));
+  }
   return {
     evaluate(name, bindings = {}) {
       assert.ok(declarations.has(name), `Missing actual App backup declaration: ${name}`);
@@ -163,6 +171,8 @@ function appHarness({ revision = 'current', preview = true, company = undefined,
     currentCompany: company === undefined ? { id: 'old-id', companyId: 'old-company', name: 'C\u00f4ng ty / A: * Depot',
       createdAt: new Date('2026-09-01T00:00:00Z'), bytes: new Uint8Array([1, 2]) } : company,
     activeTenantScopeRef: { current: 'tenant-a' },
+    readOwnerRef: {current: 'tenant-a/authorized-user'}, readOwnerKey: 'tenant-a/authorized-user',
+    withTimeout: promise => promise,
     loyaltyActivityRef: { current: { tab: 'orders', lastInputAt: -Infinity } },
     document: { visibilityState: 'visible', activeElement: null }, navigator: { onLine: true },
     window: { setTimeout: timers.setTimeout }, collectBackupCollections,
@@ -204,6 +214,8 @@ function appHarness({ revision = 'current', preview = true, company = undefined,
   };
   bindings.getDocs = target => read('getDocs', target);
   bindings.getDoc = target => read('getDoc', target);
+  bindings.firebaseGetDocsFromServer = target => read('getDocs', target);
+  bindings.firebaseGetDocFromServer = target => read('getDoc', target);
   const create = () => app.evaluate('handleCreateCompanyBackup', bindings);
   bindings.handleCreateCompanyBackup = create();
   return { app, bindings, timers, calls, fileWrites, stateWrites, fixture,
@@ -348,12 +360,16 @@ test('actual App preview backup is exactly the old complete output including leg
   }
 });
 
-test('actual App production queries are tenant-scoped and authorized output equals the old backup', async () => {
+test('actual App production backup uses server-confirmed tenant queries and company data, preserving exact business records', async () => {
   for (const company of [undefined, null]) {
     const old = appHarness({ revision: 'baseline', preview: false, company });
     const current = appHarness({ preview: false, company });
     const expected = await old.run();
-    assert.deepStrictEqual(await current.run(), expected);
+    const result = await current.run();
+    for(const name of current.bindings.BACKUP_DATA_COLLECTIONS) assert.deepStrictEqual(result.backup.collections[name], expected.backup.collections[name], name);
+    assert.equal(result.count, expected.count);
+    assert.equal(result.backup.collections.companies.length, 1);
+    assert.equal(result.backup.collections.companies[0].name, 'Fallback company');
     const queries = current.calls.filter(call => call.kind === 'getDocs');
     assert.equal(queries.length, current.bindings.BACKUP_DATA_COLLECTIONS.length);
     assert.deepStrictEqual(queries.map(call => call.target.target.path.at(-1)), current.bindings.BACKUP_DATA_COLLECTIONS);
@@ -363,13 +379,33 @@ test('actual App production queries are tenant-scoped and authorized output equa
       assert.deepStrictEqual(target.target.path.slice(0, -1), ['artifacts', 'backup-fixture', 'public', 'data']);
     }
     const documents = current.calls.filter(call => call.kind === 'getDoc');
-    assert.deepStrictEqual(documents.map(call => call.target.path), company === null
-      ? [['artifacts', 'backup-fixture', 'public', 'data', 'companies', 'tenant-a']] : []);
+    assert.deepStrictEqual(documents.map(call => call.target.path), [['artifacts', 'backup-fixture', 'public', 'data', 'companies', 'tenant-a']]);
     assert.equal(current.maximumReads, 1);
   }
   const missing = appHarness({ preview: false, company: null });
   missing.fixture.set('companies', []);
-  assert.deepStrictEqual((await missing.run()).backup.collections.companies, []);
+  await assert.rejects(missing.run(), /Không tìm thấy dữ liệu công ty/);
+});
+
+test('actual live backup never falls back to cached collection/company reads or reports partial server failures as success', async () => {
+  const current = appHarness({preview:false});
+  current.bindings.getDocs = () => assert.fail('Live backup must not use cache-capable getDocs');
+  current.bindings.getDoc = () => assert.fail('Live backup must not use cache-capable getDoc');
+  current.bindings.handleCreateCompanyBackup = current.create();
+  assert.equal((await current.run()).success,true);
+  for(const read of ['firebaseGetDocsFromServer','firebaseGetDocFromServer']) {
+    const rejected = appHarness({preview:false});
+    rejected.bindings[read] = async () => {throw Object.assign(new Error('Server unavailable'),{code:'unavailable'});};
+    rejected.bindings.handleCreateCompanyBackup = rejected.create();
+    await assert.rejects(rejected.run(), /Server unavailable/);
+    assert.equal(rejected.fileWrites.length,0);
+  }
+});
+
+test('actual backup aborts a changed actor generation within the same tenant before exporting', async () => {
+  const current = appHarness({preview:false,onRead:(_name,bindings)=>{bindings.readOwnerRef.current='tenant-a/replacement-session';}});
+  await assert.rejects(current.run(),{name:'AbortError'});
+  assert.equal(current.fileWrites.length,0);
 });
 
 test('actual App chunks normalization at 100 records and preserves all document order', async () => {
