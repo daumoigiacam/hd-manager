@@ -1,13 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readApplicationRootSource} from '../scripts/helpers/application-source.cjs';
+import {readFileSync} from 'node:fs';
 import {parse} from '@babel/parser';
 import {build} from 'esbuild';
 import {chromium} from 'playwright-core';
 import {chromiumLaunchOptions} from './helpers/chromium-launch-options.mjs';
 
 test('actual customer wrapper/header keep typing out of the parent, retain focus/drafts, and cancel old-scope commits', {timeout:30000},async()=>{
-  const source=readApplicationRootSource(),tree=parse(source,{sourceType:'module',plugins:['jsx']});
+  const source=readApplicationRootSource();
+  const wrapperSource=readFileSync(new URL('../development/hd-manager/application/src/features/customers/productCRMShared.jsx',import.meta.url),'utf8');
+  const tree=parse(wrapperSource,{sourceType:'module',plugins:['jsx']});
   const wrapper=tree.program.body.find(node=>node.type==='FunctionDeclaration'&&node.id?.name==='CustomerCRMView');
   assert(wrapper);assert(source.includes('const customerSearchStore = useMemo(() => createOrderSearchState(), [dashboardPrivacyScope])'));
   assert(source.indexOf('const dashboardPrivacyScope =')<source.indexOf('const customerSearchStore ='));
@@ -16,15 +19,19 @@ test('actual customer wrapper/header keep typing out of the parent, retain focus
   const bundle=await build({stdin:{resolveDir:process.cwd(),loader:'jsx',contents:`
     import React,{useCallback,useMemo,useState,useSyncExternalStore}from'react';import{createRoot}from'react-dom/client';
     import{createOrderSearchState}from'./src/services/orderSearchState.js';import OrderSearchInput from'./src/features/orders/OrderSearchInput.jsx';
-    const noCustomerSearchSubscription=()=>()=>{},deferredCustomerCRMViewModule={};
+    import{customerReadiness,shouldRequestCustomerSupplements}from'./src/features/customers/customerReadiness.js';
+    import{CUSTOMER_FINANCIAL_READ_KEYS,customerFinancialSnapshot,customerEditNeedsFinancialReadiness}from'./src/features/customers/customerFinancialPresentation.js';
+    import{useRetainedReadProjection}from'./src/hooks/useRetainedReadProjection.js';
+    import{runReadyFinancialMutation}from'./src/services/orderWorkspaceReadPlan.js';
+    const noCustomerSearchSubscription=()=>()=>{},deferredCustomerCRMViewModule={},deferredSQLiteCRMModule={},ReconciledLedgerContext=React.createContext(null);
     function PreloadedWorkspace({viewProps}){return <p data-query>{viewProps.searchKeyword}</p>}
-    ${source.slice(wrapper.start,wrapper.end)}
+    ${wrapperSource.slice(wrapper.start,wrapper.end)}
     window.parentRenders=0;window.commits=[];
     function Parent(){window.parentRenders++;const[scope,setScope]=useState('actor-a'),[bump,setBump]=useState(0);
       const store=useMemo(()=>{const value=createOrderSearchState(),write=value.set;value.set=next=>{window.commits.push({scope,value:typeof next==='string'?next:'updater'});write(next)};return value},[scope]);
       window.setScope=setScope;window.bump=()=>setBump(v=>v+1);window.currentStore=store;
       return <><OrderSearchInput key={'input-'+scope} searchStore={store} onCommit={store.set} onClose={()=>{window.searchClosed=true}} commitDelayMs={400} placeholder="Search fixture"/>
-        <CustomerCRMView key={'workspace-'+scope} searchStore={store}/><p>{bump}</p></>}
+        <CustomerCRMView key={'workspace-'+scope} privacyScope={scope} searchStore={store}/><p>{bump}</p></>}
     createRoot(document.getElementById('root')).render(<React.StrictMode><Parent/></React.StrictMode>);
   `},bundle:true,write:false,format:'iife',jsx:'automatic',define:{'process.env.NODE_ENV':'"development"'}});
   const browser=await chromium.launch(chromiumLaunchOptions());
