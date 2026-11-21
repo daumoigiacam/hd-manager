@@ -17,7 +17,7 @@ test('actual customer wrapper/header keep typing out of the parent, retain focus
   assert(source.includes('searchStore={customerSearchStore} searchKeyword={customerSearchKeyword}'));
   assert(source.includes('key={`${activeTab}:${dashboardPrivacyScope}`}'));
   const bundle=await build({stdin:{resolveDir:process.cwd(),loader:'jsx',contents:`
-    import React,{useCallback,useMemo,useState,useSyncExternalStore}from'react';import{createRoot}from'react-dom/client';
+    import React,{useCallback,useEffect,useMemo,useState,useSyncExternalStore}from'react';import{createRoot}from'react-dom/client';
     import{createOrderSearchState}from'./src/services/orderSearchState.js';import OrderSearchInput from'./src/features/orders/OrderSearchInput.jsx';
     import{customerReadiness,shouldRequestCustomerSupplements}from'./src/features/customers/customerReadiness.js';
     import{CUSTOMER_FINANCIAL_READ_KEYS,customerFinancialSnapshot,customerEditNeedsFinancialReadiness}from'./src/features/customers/customerFinancialPresentation.js';

@@ -17,6 +17,7 @@ test('real quote component renders and searches without reading financial histor
     import SearchableProductPicker from './src/features/products/SearchableProductPicker.jsx';
     import {buildCustomerBatchPricePatch} from './src/utils/customerBatchPricePatch.js';
     import {configScopeFingerprint} from './src/utils/customerProductAutoSync.js';
+    import {admitQuoteShare} from './src/services/quoteWorkspaceReadPlan.js';
     import {createRoot} from 'react-dom/client';
     import {Search,X,Loader2,CheckCircle,Send} from 'lucide-react';
     const getSalesDownlineEmployeeIds=()=>[];
