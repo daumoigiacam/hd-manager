@@ -55,12 +55,16 @@ test('real quote component renders and searches without reading financial histor
   const browser = await chromium.launch(chromiumLaunchOptions());
   try {
     const page = await browser.newPage();
+    page.setDefaultTimeout(5000);
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
+    let stage='mount';
+    try {
     await page.setContent('<html class="hd-low-power-ui"><body><div id="root"></div></body></html>');
     for(const file of output.outputFiles.filter(f=>f.path.endsWith('.css')))await page.addStyleTag({content:file.text});
     await page.addScriptTag({ content: output.outputFiles.find(f=>f.path.endsWith('.js')).text });
     await page.getByRole('button', { name: 'Chọn tất cả', exact: true }).waitFor();
+    stage='initial scope and closed picker';
     assert.equal(await page.getByText('Outside scope', { exact: true }).count(), 0);
     assert.equal(await page.getByText('Archived', { exact: true }).count(), 0);
     assert.equal(await page.getByText('Allowed customer', { exact: true }).count(), 1);
@@ -68,23 +72,28 @@ test('real quote component renders and searches without reading financial histor
     assert.equal(await page.locator('textarea').count(), 0, 'hidden preview must not mount');
     assert.equal(await page.locator('select option').count(),2,'only the two pagination pages mount; the 1000-product picker stays closed');
     const picker=page.getByRole('combobox',{name:'Chọn sản phẩm báo giá',exact:true});
+    stage='open and search product';
     await picker.click();await picker.fill('Synthetic');await page.getByRole('option').first().waitFor();
     assert.ok(await page.getByRole('option').count()<30,'large catalog mounts only virtual visible choices');
     await picker.fill('Another product');await page.getByRole('option',{name:/Another product/}).click();
+    stage='switch product';
     await page.getByText('Second customer',{exact:true}).waitFor();assert.equal(await page.getByText('Allowed customer',{exact:true}).count(),0);
     await picker.click();await picker.fill('Fixture product');await page.getByRole('option',{name:/Fixture product/}).click();
     await page.getByText('Allowed customer',{exact:true}).waitFor();
     const pagination=page.getByRole('navigation',{name:'Phân trang khách nhận báo giá'});
+    stage='second customer page';
     await pagination.getByLabel('Chọn trang').selectOption('1');
     assert.equal(await page.getByText('Allowed customer',{exact:true}).count(),0);
     await page.getByRole('button').filter({hasText:'Page customer 15'}).click();
     const search = page.getByPlaceholder('2. Tìm và tick nhiều khách hàng');
+    stage='search across pages';
     await search.fill('Page customer 24');
     assert.equal(await page.getByText('Page customer 24',{exact:true}).count(),1,'search includes rows outside the mounted page');
     await search.fill('Allowed');
     await search.fill('');
     assert.deepEqual(await page.evaluate(() => window.saved), [], 'opening/searching does not write prices');
     await page.getByRole('button', { name: 'Chọn tất cả', exact: true }).click();
+    stage='save all selected prices';
     await page.getByPlaceholder('VD: 68.000').fill('68000');
     await page.getByRole('button', { name: 'Áp dụng giá mới', exact: true }).click();
     await page.waitForFunction(() => window.saved.length === 26);
@@ -95,5 +104,8 @@ test('real quote component renders and searches without reading financial histor
     assert.equal(writes[0].id, 'allowed');
     assert.equal(writes[0].patch.priceOverrides.p1.price, 68000);
     assert.deepEqual(errors, []);
+    } catch(error) {
+      throw new Error(`Quote fixture stage=${stage}; browserErrors=${JSON.stringify(errors)}; visible=${(await page.locator('body').innerText()).slice(0,700)}; ${error.message}`,{cause:error});
+    }
   } finally { await browser.close(); }
 });
