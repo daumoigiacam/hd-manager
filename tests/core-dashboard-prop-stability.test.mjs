@@ -4,12 +4,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { build } from 'esbuild';
 import { chromium } from 'playwright-core';
-import { appObject, appFunction } from './helpers/app-source-function.mjs';
+import { appExpression, appFunction } from './helpers/app-source-function.mjs';
 
 test('actual dashboard loader memoization and deferred guard retain current tenant, period and genuine busy state', { timeout: 30000 }, async () => {
   const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
-  const node = appObject('handleLoadPayrollPeriodSnapshots');
-  const initializer = source.slice(node.start, node.end);
+  const initializer = appExpression('handleLoadPayrollPeriodSnapshots');
   const start = source.indexOf('function MemoizedExecutiveDashboardView(props) {');
   const end = source.indexOf('\nfunction ExecutivePeriodSummaryCard', start);
   assert.ok(start > 0 && end > start);

@@ -27,6 +27,13 @@ test('synthetic fixture and canonical hooks share the application React package 
   const packages=new Set(inputs.filter(file=>file.replaceAll('\\','/').includes('/node_modules/react/')).map(file=>file.slice(0,file.lastIndexOf(path.sep+'react'+path.sep))+path.sep+'react'));
   assert.deepEqual([...packages],[expected]);
 });
+
+test('synthetic browser fixtures supply an empty Vite environment and preserve explicit overrides',async()=>{
+  for(const [define,expected] of [[{},'unset'],[{'import.meta.env.VITE_FIXTURE':JSON.stringify('explicit')},'explicit']]){
+    const result=await build({stdin:{contents:"console.log(import.meta.env.VITE_FIXTURE||'unset');",resolveDir:root},bundle:true,write:false,format:'iife',define});
+    const values=[];new Function('console',result.outputFiles[0].text)({log:value=>values.push(value)});assert.deepEqual(values,[expected]);
+  }
+});
 test('canonical routing covers constructed file URLs, absolute/relative paths and Buffer paths without changing fixtures/server/destinations',()=>{
   const legacy=path.join(root,'src/App.jsx');
   for(const input of [legacy,pathToFileURL(legacy),Buffer.from(legacy),path.relative(process.cwd(),legacy)])assert.equal(canonicalSourceReadPath(input),canonical);

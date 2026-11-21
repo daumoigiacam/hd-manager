@@ -1,5 +1,6 @@
 import fs from 'node:fs';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath,pathToFileURL} from 'node:url';
+import {createRequire} from 'node:module';
 
 // Older regression tests live at repository root. The released application is
 // configured in development/hd-manager/application; exercise that same source
@@ -9,8 +10,12 @@ const legacy = new URL('src/', root).href;
 const canonical = new URL('development/hd-manager/application/src/', root).href;
 const tests = new URL('tests/', root).href;
 const sourceHelper = new URL('scripts/helpers/application-source.cjs', root).href;
+const applicationRequire=createRequire(new URL('development/hd-manager/application/package.json',root));
 
 export async function resolve(specifier, context, next) {
+  // Tests and the application must construct values with the same SDK classes.
+  // Two npm installs otherwise create distinct Timestamp/Reference identities.
+  if (/^(?:firebase|@firebase\/[^/]+)(?:\/|$)/.test(specifier)) return next(pathToFileURL(applicationRequire.resolve(specifier)).href, context);
   if(specifier==='esbuild'&&context.parentURL?.startsWith(tests))return next(new URL('scripts/canonical-esbuild.mjs',root).href,context);
   let candidate;
   try { candidate = new URL(specifier, context.parentURL).href; } catch { /* Bare package import. */ }

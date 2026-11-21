@@ -1,6 +1,7 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {appFunction} from './helpers/app-source-function.mjs';
 import {createSourcePhaseDiagnostics} from '../src/services/sourcePhaseDiagnostics.js';
+import {rememberCommittedReadSources} from '../src/services/moduleReadAvailability.js';
 import {build} from 'esbuild';
 import {chromium} from 'playwright-core';
 import {chromiumLaunchOptions} from './helpers/chromium-launch-options.mjs';
@@ -10,7 +11,7 @@ function fixture({warm=false,deferred=false}={}){
  const updates=[];
  const activeTenantScopeRef={current:'a'},readOwnerRef={current:'fixture-session'};
  const collectionReadinessCommittedRef={current:warm?{actorUid:'actor-a',tenantId:'a',loaded:{orders:true},serverConfirmed:state}:null};
- const bindings={readOwnerRef,readOwnerKey:'fixture-session',activeTenantScopeRef,tenantCompanyId:'a',firebaseUser:{uid:'actor-a'},collectionReadinessCommittedRef,sourcePhaseDiagnostics:createSourcePhaseDiagnostics(),startupNotificationBarrier:null,customerSession:false,
+ const bindings={rememberCommittedReadSources,readOwnerRef,readOwnerKey:'fixture-session',activeTenantScopeRef,tenantCompanyId:'a',firebaseUser:{uid:'actor-a'},collectionReadinessCommittedRef,sourcePhaseDiagnostics:createSourcePhaseDiagnostics(),startupNotificationBarrier:null,customerSession:false,
   markCollectionLoaded(){},setServerConfirmedCollectionState:update=>{sets++;if(deferred){updates.push(update);return}state=update(state);
    // This synchronous state harness models the subsequent committed effect.
    collectionReadinessCommittedRef.current={actorUid:'actor-a',tenantId:'a',loaded:{},serverConfirmed:state};}};
@@ -28,7 +29,7 @@ function fixture({warm=false,deferred=false}={}){
 }
 test('actual confirmed-source publisher batches commit witnesses in one bounded microtask instead of a timer/transition',async()=>{
  const f=fixture();f.mark('orders');f.mark('payments');assert.equal(f.read().sets,0);
- await Promise.resolve();assert.equal(f.read().sets,1);assert.deepEqual(f.read().state,{tenantId:'a',ownerKey:'fixture-session',collections:{orders:true,payments:true}});
+ await Promise.resolve();assert.equal(f.read().sets,1);assert.deepEqual(f.read().state,{tenantId:'a',ownerKey:'fixture-session',collections:{orders:true,payments:true},availableCollections:{orders:true,payments:true}});
  for(let i=0;i<100;i++)f.mark('orders');await Promise.resolve();assert.equal(f.read().sets,1,'already committed source metadata must not create 100 no-op React actions');
 });
 test('cancelled or replaced tenant cannot receive a queued confirmed-source mark',async()=>{
@@ -76,6 +77,7 @@ test('actual pending/confirm callbacks keep the same React form and cached rows 
  const script=`import React,{useState,useRef,useMemo,useLayoutEffect,useEffect}from'react';
  import{createRoot}from'react-dom/client';import{flushSync}from'react-dom';
  import{createCollectionCommitWitness}from'./src/services/collectionCommitWitness.js';
+ import{rememberCommittedReadSources}from'./src/services/moduleReadAvailability.js';
  window.mounts=0;window.unmounts=0;window.starts=0;
  function View({rows,ready}){const[draft,setDraft]=useState('');useEffect(()=>{window.mounts++;return()=>window.unmounts++},[]);
  return React.createElement('main',{'data-ready':String(ready)},React.createElement('p',null,rows[0].id),React.createElement('input',{value:draft,onChange:event=>setDraft(event.target.value),'aria-label':'Draft'}));}

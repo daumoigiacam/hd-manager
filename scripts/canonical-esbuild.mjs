@@ -18,5 +18,6 @@ const plugin={name:'test-canonical-source',setup(api){api.onResolve({filter:/.*/
  if(!relative||relative==='..'||relative.startsWith('..'+path.sep)||path.isAbsolute(relative))return;
  const target=path.join(canonical,relative);if(fs.existsSync(target)&&fs.statSync(target).isFile())return {path:target};
 });}};
-export const build=options=>esbuild.build({...options,plugins:[plugin,...(options.plugins||[])]});
-export const context=options=>esbuild.context({...options,plugins:[plugin,...(options.plugins||[])]});
+const fixtureOptions=options=>({...options,define:{'import.meta.env':'{}',...options.define},plugins:[plugin,...(options.plugins||[])]});
+export const build=options=>esbuild.build(fixtureOptions(options));
+export const context=options=>esbuild.context(fixtureOptions(options));

@@ -1,19 +1,18 @@
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import {parse}from'@babel/parser';
 import {build}from'esbuild';import{chromium}from'playwright-core';import{chromiumLaunchOptions}from'./helpers/chromium-launch-options.mjs';
+import {appFunction} from './helpers/app-source-function.mjs';
 test('actual App read-state reset commits no previous actor data, preserves commands and rejects delayed old publication',{timeout:30000},async()=>{
- const source=fs.readFileSync('src/App.jsx','utf8'),ast=parse(source,{sourceType:'module',plugins:['jsx']}),app=ast.program.body.find(n=>n.type==='ExportDefaultDeclaration').declaration;
+ const source=fs.readFileSync('src/App.jsx','utf8'),ast=parse(source,{sourceType:'module',plugins:['jsx']}),app=ast.program.body.find(n=>n.type==='FunctionDeclaration'&&n.id?.name==='ApplicationView')||ast.program.body.find(n=>n.type==='ExportDefaultDeclaration').declaration;
  const states=app.body.body.filter(n=>n.type==='VariableDeclaration').flatMap(n=>n.declarations).filter(n=>n.id.type==='ArrayPattern'&&n.id.elements[0]?.name.startsWith('raw')&&n.init?.callee?.name==='useState');
  assert.ok(states.length>=40);const start=source.indexOf('  const readOwnerKey='),end=source.indexOf('  const setRealtimeStatus =',start);assert.ok(start>0&&end>start);
  const declarations=states.map(n=>'const '+source.slice(n.start,n.end)+';').join('\n'),names=states.map(n=>n.id.elements[0].name);
  const fillers=states.map(n=>`${n.id.elements[1].name}(${n.init.arguments[0].type==='ObjectExpression'?'{fiction:{id:"private-fixture"}}':'[{id:"private-fixture"}]'});`).join('\n');
- const errorBindings=['getErrorText','isFirebasePermissionError'].map(name=>{
-  const declaration=ast.program.body.filter(n=>n.type==='VariableDeclaration').flatMap(n=>n.declarations).find(n=>n.id.name===name);
-  assert.ok(declaration,`Missing actual App classifier binding: ${name}`);return 'const '+source.slice(declaration.start,declaration.end)+';';
- }).join('\n');
+ const errorBindings=['getErrorText','isFirebasePermissionError'].map(name=>'const '+name+'='+appFunction(name).toString()+';').join('\n');
  const script=`import React,{useState,useRef,useLayoutEffect}from'react';import{createRoot}from'react-dom/client';import{bindScopedReadPublication}from'./src/services/scopedReadPublication.js';import{createReadOwnerAccess}from'./src/services/readOwnerAccess.js';window.commits=[];window.commands=[{operationId:'unresolved-fictional-command'}];
  ${errorBindings}
  function Fixture(){const[actor,setActor]=useState({id:'a',uid:'u',companyId:'same-company',accountType:'employee',role:'sales',session:1}),[loaded,setLoadedCollections]=useState({}),[confirmed,setServerConfirmedCollectionState]=useState({collections:{}});const currentUser=actor,dataSessionId=actor.uid+'-'+actor.session,readPermissionKey=actor.permission||'initial-permission';
  const lastStableCollectionDataRef=useRef(new Map()),recentLocalWritesRef=useRef(new Map()),recentLocalDeletesRef=useRef(new Map()),lastRealtimeSnapshotAtRef=useRef(new Map()),lastRealtimeServerSnapshotAtRef=useRef(new Map()),collectionReadinessCommittedRef=useRef(null),customerBootstrapCommitRef=useRef(null);
+ const startupWorkspaceRef=useRef(null),startupWorkspaceSeedRef=useRef(null),firebaseUser={uid:actor.uid},hasCurrentWorkspaceBootstrap=()=>false,setStartupWorkspace=()=>{};
  const [financial,setCustomerFinancialState]=useState(null),[catalog,setCustomerCatalogState]=useState(null);const resetCustomerFinancialReadiness=()=>({status:'idle'});
  ${declarations}
  ${source.slice(start,end)}
