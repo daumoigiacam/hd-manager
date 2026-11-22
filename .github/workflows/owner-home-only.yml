@@ -33,28 +33,17 @@ jobs:
             wOCqgEh4n/8tZa/8zW9kAYQul9xVxWQaSsuZwxE8ioe9AgMBAAE=
             -----END PUBLIC KEY-----
           REMOTE_PROBE: |
-            import os,json,subprocess,pathlib,datetime
-            paths=['/var/log','/var/tmp','/var/backups','/var/www','/var/lib','/tmp','/home/hdmanager']
-            command=['du','-x','-B1','--max-depth=1',*paths]
-            p=subprocess.run(command,capture_output=True,text=True,timeout=120)
-            sizes=[]
-            for line in p.stdout.splitlines():
+            import subprocess,json,datetime,os
+            commands=[['docker','system','df','--format','{{json .}}'],['docker','ps','-a','--format','{{json .}}'],['docker','buildx','du','--format','json'],['docker','info','--format','{{json .DockerRootDir}}']]
+            results=[]
+            for command in commands:
                 try:
-                    size,name=line.split('\t',1)
-                    sizes.append({'bytes':int(size),'path':name})
-                except ValueError:pass
-            largest=[]
-            for root in ['/var/log','/var/tmp','/tmp','/var/backups/hd-manager-frontend']:
-                for base,dirs,files in os.walk(root,followlinks=False):
-                    for name in files:
-                        file=pathlib.Path(base)/name
-                        try:
-                            s=file.lstat()
-                            if file.is_file() and not file.is_symlink() and s.st_size>=20*1024*1024:
-                                largest.append({'path':str(file),'bytes':s.st_size,'mtime':s.st_mtime,'links':s.st_nlink})
-                        except OSError:pass
+                    p=subprocess.run(command,capture_output=True,text=True,timeout=28)
+                    results.append({'command':command,'exit':p.returncode,'stdout':p.stdout[:160000],'stderr':p.stderr[:1800]})
+                except subprocess.TimeoutExpired:
+                    results.append({'command':command,'timeout':True})
             s=os.statvfs('/var/www/hd-manager')
-            print(json.dumps({'at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'status':'READ_ONLY_STORAGE_METADATA_COMPLETE','physicalFreeBytes':s.f_bfree*s.f_frsize,'ordinaryFreeBytes':s.f_bavail*s.f_frsize,'directories':sorted(sizes,key=lambda x:-x['bytes'])[:100],'largeFiles':sorted(largest,key=lambda x:-x['bytes'])[:50],'commandExit':p.returncode,'businessDocumentReads':0,'productionChanged':False}))
+            print(json.dumps({'at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'status':'READ_ONLY_DOCKER_METADATA_COMPLETE','commands':results,'physicalFreeBytes':s.f_bfree*s.f_frsize,'productionChanged':False,'businessDocumentReads':0}))
         shell: bash
         run: |-
           node --input-type=module <<'HD_READ_ONLY_RELEASE_METADATA'
