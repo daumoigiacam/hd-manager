@@ -1,8 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {unzipSync} from 'fflate';
-import {prepareShareEntries,createShareArchive,webFileShare,nativeFileShare,deliverShareFiles,deliverShareText,isShareDismissed} from '../src/utils/shareDelivery.js';
+import {prepareShareEntries,createShareArchive,createShareProgress,webFileShare,nativeFileShare,deliverShareFiles,deliverShareText,isShareDismissed} from '../src/utils/shareDelivery.js';
 const entries=Array.from({length:4},(_,i)=>({name:`đơn-đặt-trang-${i+1}.png`,blob:new Blob([Uint8Array.from([137,80,78,71,i,255,0])],{type:'image/png'})}));
+test('per-page retry tracks distinct pages; downloading one never erases a complete prior handoff',()=>{
+ const progress=createShareProgress(4);
+ assert.deepEqual(progress({status:'shared'},[3]),{status:'partial',count:1,savedCount:0,expectedCount:4});
+ assert.equal(progress({status:'shared'},[3]).count,1);
+ assert.equal(progress({status:'downloaded'},[0,1,2]).status,'partial','mixed modes must not claim all files were shared');
+ assert.equal(progress({status:'shared'},[0,1,2,3]).status,'shared');
+ assert.equal(progress({status:'downloaded'},[3]).status,'shared','later download must preserve already complete handoff');
+ const saved=createShareProgress(4);assert.equal(saved({status:'downloaded'},[0,1,2,3]).status,'downloaded');
+});
 test('four pages and UTF-8 filenames survive one archive byte-for-byte',async()=>{
  const zip=await createShareArchive(entries), restored=unzipSync(new Uint8Array(await zip.arrayBuffer()));
  assert.deepEqual(Object.keys(restored),entries.map(e=>e.name));

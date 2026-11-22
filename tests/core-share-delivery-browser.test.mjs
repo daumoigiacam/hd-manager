@@ -27,7 +27,7 @@ test('share dialog preserves four images through target failure, explicit retry 
   await page.selectOption('#mode','unsupported');await page.getByRole('button',{name:'Chuẩn bị 4 ảnh đơn đặt',exact:true}).click();await dialog.waitFor();
   await dialog.getByRole('button',{name:'Chia sẻ toàn bộ (4 tệp)',exact:true}).click();await page.getByText(/Thiết bị không nhận bộ tệp/).waitFor();
   await dialog.getByRole('button',{name:'Chia sẻ tệp 4',exact:true}).click();await page.getByText(/Đã chuyển 1 tệp/).waitFor();
-  await dialog.getByRole('button',{name:'Xong / Đóng'}).click();
+  await dialog.getByRole('button',{name:'Xong / Đóng'}).click();await page.getByText('Kết quả: partial',{exact:true}).waitFor();
   await page.selectOption('#mode','cancel');await page.getByRole('button',{name:'Hóa đơn / QR / giao hàng (1 ảnh)',exact:true}).click();await dialog.waitFor();
   await dialog.getByRole('button',{name:'Chia sẻ toàn bộ (1 tệp)',exact:true}).click();await page.getByText(/Đã đóng hộp chia sẻ/).waitFor();await dialog.getByRole('button',{name:'Xong / Đóng'}).click();await page.getByText('Kết quả: cancelled',{exact:true}).waitFor();
   await page.getByRole('button',{name:'Công nợ / báo giá / báo cáo (chữ)',exact:true}).click();await dialog.waitFor();await dialog.getByRole('button',{name:'Sao chép nội dung',exact:true}).click();await page.getByText(/Đã sao chép nội dung/).waitFor();await dialog.getByRole('button',{name:'Xong / Đóng'}).click();await page.getByText('Kết quả: copied',{exact:true}).waitFor();

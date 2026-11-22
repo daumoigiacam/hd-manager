@@ -4,6 +4,11 @@ import fs from 'node:fs';
 import {appFunction} from './helpers/app-source-function.mjs';
 import {shareDispatchSheet} from '../src/features/warehouse/shareDispatchSheet.js';
 
+test('past-date order sheet filename matches the selected business date',()=>{
+ const filename=appFunction('buildOrderRequestSheetFilename',{requestFilterDate:'2026-11-21',getTodayString:()=> '2026-11-22'},{scope:'OrderRequestView'});
+ assert.equal(filename(),'bang-don-dat-hang-2026-11-21');
+});
+
 test('invoice, QR, price table, delivery images and backup files use the same delivery gate',async()=>{
  const calls=[];
  const shareBlobFile=appFunction('shareBlobFile',{

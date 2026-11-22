@@ -1,4 +1,4 @@
-import { createShareArchive, isShareDismissed } from '../../utils/shareDelivery.js';
+import { createShareArchive, createShareProgress, isShareDismissed } from '../../utils/shareDelivery.js';
 import './shareFilesDialog.css';
 
 // Display only prepared blobs; no render/network work between a click and send.
@@ -13,7 +13,7 @@ export function showShareFilesDialog({ entries, title = 'Chia sẻ', text = '', 
     const summary = document.createElement('p'); summary.textContent = text || `Đã chuẩn bị đủ ${entries.length} tệp. Chọn chia sẻ cả bộ hoặc từng ảnh.`;
     const status = document.createElement('p'); status.setAttribute('role', 'status'); status.className = 'hd-share-status'; status.textContent = initialError;
     let busy = false, closed = false, result = { status: 'cancelled' }, archive = null, archiveError = '';
-    const shared = new Set(), saved = new Set(), allIndices = entries.map((_, index) => index);
+    const progress = createShareProgress(entries.length), allIndices = entries.map((_, index) => index);
     const buttons = [];
     const button = (label, action) => {
       const node = document.createElement('button'); node.type = 'button'; node.textContent = label;
@@ -28,10 +28,7 @@ export function showShareFilesDialog({ entries, title = 'Chia sẻ', text = '', 
         const pending = operation();
         Promise.resolve(pending).then(value => {
           if (value?.status && !['saved', 'downloaded', 'shared', 'copied'].includes(value.status)) throw Error('Chưa lưu được tệp. Hãy thử lại.');
-          const statusValue = value?.status || 'shared';
-          const completed = statusValue === 'shared' ? shared : saved;
-          indices.forEach(index => completed.add(index));
-          result = { ...(value || {}), status: statusValue === 'copied' || completed.size === entries.length ? statusValue : 'partial', count: completed.size, expectedCount: entries.length };
+          result = progress(value, indices);
           status.textContent = success;
         }).catch(error => {
           status.textContent = isShareDismissed(error) ? 'Đã đóng hộp chia sẻ. Bạn có thể chọn gửi lại.'
