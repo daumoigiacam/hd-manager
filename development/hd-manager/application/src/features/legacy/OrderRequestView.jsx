@@ -2634,7 +2634,7 @@ export function createOrderRequestView(runtime) {
   const readRequestNote = useCurrentCallback(getOrderRequestRowNoteText);
   const readRequestQuantity = useCurrentCallback(formatSheetQuantity);
   const readRequestSize = useCurrentCallback(formatOrderRequestSizeCell);
-  const buildOrderRequestSheetFilename = () => `bang-don-dat-hang-${getTodayString()}`;
+  const buildOrderRequestSheetFilename = () => `bang-don-dat-hang-${requestFilterDate || getTodayString()}`;
   const orderRequestSheetRowsPerImage = 12;
 
   const buildOrderRequestSheetPages = () => {
@@ -3060,7 +3060,7 @@ export function createOrderRequestView(runtime) {
       });
       const result = await shareOrderRequestSheetBlobs(blobs);
 
-      setSheetStatus(result.status === 'partial' ? `Mới xử lý ${result.count}/${result.expectedCount} ảnh. Bấm Chia sẻ để mở lại bộ ảnh còn nguyên.`
+      setSheetStatus(result.status === 'partial' ? `Đã chuyển ${result.count}/${result.expectedCount} ảnh, đã yêu cầu tải ${result.savedCount || 0}/${result.expectedCount} ảnh. Bấm Chia sẻ để mở lại đủ bộ ảnh.`
         : ['shared', 'saved', 'downloaded', 'cancelled'].includes(result.status) ? '' : 'Thiết bị này chưa hỗ trợ chia sẻ trực tiếp.');
     } catch (error) {
       setSheetStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể chia sẻ bảng đơn đặt hàng.'));

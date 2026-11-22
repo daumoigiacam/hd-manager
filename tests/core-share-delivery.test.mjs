@@ -1,8 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {unzipSync} from 'fflate';
-import {prepareShareEntries,createShareArchive,webFileShare,nativeFileShare,deliverShareFiles,deliverShareText,isShareDismissed} from '../src/utils/shareDelivery.js';
+import {prepareShareEntries,createShareArchive,createShareProgress,webFileShare,nativeFileShare,deliverShareFiles,deliverShareText,isShareDismissed} from '../src/utils/shareDelivery.js';
 const entries=Array.from({length:4},(_,i)=>({name:`đơn-đặt-trang-${i+1}.png`,blob:new Blob([Uint8Array.from([137,80,78,71,i,255,0])],{type:'image/png'})}));
+test('per-page retry tracks distinct pages; downloading one never erases a complete prior handoff',()=>{
+ const progress=createShareProgress(4);
+ assert.deepEqual(progress({status:'shared'},[3]),{status:'partial',count:1,savedCount:0,expectedCount:4});
+ assert.equal(progress({status:'shared'},[3]).count,1);
+ assert.equal(progress({status:'downloaded'},[0,1,2]).status,'partial','mixed modes must not claim all files were shared');
+ assert.equal(progress({status:'shared'},[0,1,2,3]).status,'shared');
+ assert.equal(progress({status:'downloaded'},[3]).status,'shared','later download must preserve already complete handoff');
+ const saved=createShareProgress(4);assert.equal(saved({status:'downloaded'},[0,1,2,3]).status,'downloaded');
+});
 test('four pages and UTF-8 filenames survive one archive byte-for-byte',async()=>{
  const zip=await createShareArchive(entries), restored=unzipSync(new Uint8Array(await zip.arrayBuffer()));
  assert.deepEqual(Object.keys(restored),entries.map(e=>e.name));
@@ -62,4 +71,18 @@ test('expired activation or ambiguous text failure requires explicit fresh gestu
   let sends=0,presents=0;const result=await deliverShareText({text:'synthetic'}, {platform:'web',navigator:{userActivation:{isActive:active},share:async()=>{sends++;throw Error('receiver failed');}},present:async({text})=>{presents++;assert.equal(text,'synthetic');return{status:'cancelled'};}});
   assert.equal(result.status,'cancelled');assert.equal(sends,active?1:0);assert.equal(presents,1);
  }
+});
+test('100 consecutive four-page Web preparations recover after alternating cancellation and receiver failure',async()=>{
+ let sends=0;
+ for(let cycle=0;cycle<100;cycle++){
+  const result=await deliverShareFiles({entries},{platform:'web',navigator:{canShare:()=>true,share:async({files})=>{
+   sends++;assert.equal(files.length,4);assert.deepEqual(files.map(f=>f.name),entries.map(e=>e.name));
+   if(cycle%3===0)throw Object.assign(Error('cancelled'),{name:'AbortError'});
+   if(cycle%3===1)throw Object.assign(Error('receiver failed after some pages'),{name:'DataError'});
+  }},present:async({send})=>{
+   try{return await send(entries);}catch(error){return{status:isShareDismissed(error)?'cancelled':'failed'};}
+  }});
+  assert.equal(result.status,['cancelled','failed','shared'][cycle%3]);
+ }
+ assert.equal(sends,100,'exactly one user-intended handoff per cycle; no retries or partial arrays');
 });

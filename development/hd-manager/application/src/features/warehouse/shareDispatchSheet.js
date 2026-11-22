@@ -1,5 +1,5 @@
 /**
- * @typedef {{status: string, count?: number, expectedCount?: number}} ShareResult
+ * @typedef {{status: string, count?: number, savedCount?: number, expectedCount?: number}} ShareResult
  */
 /**
  * @template T
@@ -45,7 +45,7 @@ export async function shareDispatchSheet(sourceRows, targetDate, {lock, canShare
         title: 'Xuất kho', dialogTitle: 'Chia sẻ xuất kho'
       });
       if (result?.status === 'partial') {
-        setDispatchActionError(`Mới xử lý ${result.count}/${result.expectedCount} ảnh. Bấm Chia sẻ để mở lại đủ bộ ảnh.`);
+        setDispatchActionError(`Đã chuyển ${result.count}/${result.expectedCount} ảnh, đã yêu cầu tải ${result.savedCount || 0}/${result.expectedCount} ảnh. Bấm Chia sẻ để mở lại đủ bộ ảnh.`);
       } else if (!['shared', 'saved', 'downloaded', 'cancelled'].includes(result?.status || '')) {
         setDispatchActionError('Thiết bị chưa hỗ trợ chia sẻ trực tiếp. Hãy dùng nút tải xuống.');
       }

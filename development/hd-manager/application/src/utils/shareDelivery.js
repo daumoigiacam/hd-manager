@@ -3,6 +3,20 @@
 export const isShareDismissed = error => error?.name === 'AbortError'
   || /\b(cancelled|canceled|user cancelled|share canceled)\b/i.test(error?.message || '');
 
+export function createShareProgress(expectedCount) {
+  const shared = new Set(), saved = new Set();
+  let savedStatus = 'downloaded';
+  return (value, indices) => {
+    const status = value?.status || 'shared';
+    if (status === 'copied') return { status };
+    const completed = status === 'shared' ? shared : saved;
+    indices.forEach(index => completed.add(index));
+    if (status !== 'shared') savedStatus = status;
+    const resultStatus = shared.size === expectedCount ? 'shared' : saved.size === expectedCount ? savedStatus : 'partial';
+    return { status: resultStatus, count: shared.size, savedCount: saved.size, expectedCount };
+  };
+}
+
 export function prepareShareEntries(entries) {
   if (!Array.isArray(entries) || !entries.length) throw Error('Chưa có tệp để chia sẻ.');
   const names = new Set();

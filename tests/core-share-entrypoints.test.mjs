@@ -1,8 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import {parse} from '@babel/parser';
 import {appFunction} from './helpers/app-source-function.mjs';
 import {shareDispatchSheet} from '../src/features/warehouse/shareDispatchSheet.js';
+
+test('customer report downloads retain their object URL while the browser consumes it',()=>{
+ const source=fs.readFileSync(new URL('../development/hd-manager/application/src/features/customers/productCRMShared.jsx',import.meta.url),'utf8');
+ const tree=parse(source,{sourceType:'module',plugins:['jsx']});
+ const row=tree.program.body.flatMap(n=>n.declarations||[]).find(n=>n.id.name==='downloadContentFile');
+ let revoked=false,clicked=false,scheduled;
+ const download=(new Function('window','document','Blob','return ('+source.slice(row.init.start,row.init.end)+');'))({
+  URL:{createObjectURL:()=> 'blob:qa',revokeObjectURL:()=>{revoked=true;}},setTimeout:(callback,delay)=>{assert(delay>=60000);scheduled=callback;}
+ },{createElement:()=>({click(){clicked=true;assert.equal(revoked,false);}}),body:{appendChild(){},removeChild(){}}},Blob);
+ assert.equal(download('history.csv','synthetic','text/csv'),true);assert.equal(clicked,true);assert.equal(revoked,false);scheduled();assert.equal(revoked,true);
+});
+
+test('past-date order sheet filename matches the selected business date',()=>{
+ const filename=appFunction('buildOrderRequestSheetFilename',{requestFilterDate:'2026-11-21',getTodayString:()=> '2026-11-22'},{scope:'OrderRequestView'});
+ assert.equal(filename(),'bang-don-dat-hang-2026-11-21');
+});
 
 test('invoice, QR, price table, delivery images and backup files use the same delivery gate',async()=>{
  const calls=[];

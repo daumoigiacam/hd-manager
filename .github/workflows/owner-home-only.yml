@@ -1,94 +1,30 @@
-name: HD Manager sharing release read-only capacity
+name: HD Manager isolated sharing browser QA
 on:
   push:
     branches:
       - codex/official-home-qa-20261114
 permissions:
   contents: read
-  actions: read
 concurrency:
-  group: production
+  group: sharing-browser-qa
   cancel-in-progress: false
 jobs:
-  readonly:
+  browser:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
-      - name: Read current static release metadata and capacity only
+      - uses: actions/checkout@v5
+        with:
+          ref: cc5d4bceb33d7c77c676fb035dcf382e05badde6
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install exact test dependencies
+        run: npm ci --ignore-scripts
+      - name: Install Chromium
+        run: npx playwright-core install --with-deps chromium
+      - name: Verify all repeated Web share cases
         env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
-          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
-          REPORT_PUBLIC_KEY: |
-            -----BEGIN PUBLIC KEY-----
-            MIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAtxDyOAxYhO2GwTV21CNx
-            IYrbN7qPjsbHpPfqe6m8+xsd9ziErcyCBJ1MCOdAIS1PZFSRefzIYa4ZiMQ/G0/4
-            6aA/M3NjokY2vz7bovLBrqbSiONPfjPhllUNgStksXhNJ9uyr23+rORcKILGGFiF
-            fcYFd8VGl6PD+UBsOp/yBEWOEQnAJOxQ5xgjqNe3S83QRogIpKqgBe9iLyjTo3ZH
-            gwa3PpAngHEnO0GT/mZs04FL+GShvqyccl1GBM2po0wSKIE0mq2VKyxVXlcMq5eg
-            0L9N9SbD1wPEsiZ/lnqwTVU6LNV0Ja+nPb6ERR/3JYXdMUMZ+XtPEq+DuX3nPGqv
-            OlWXT5xKW7bO0FemL//XdEcKXsd1pPZULmACN3WAjlRuyI5HbOdA8PGKHgj0lnM5
-            cUxQq2l77zUhDCQEreu9A96MBZJopYfg5WNWsrLBZArPjtYAspQ+4kkA/qmB0WyR
-            wOCqgEh4n/8tZa/8zW9kAYQul9xVxWQaSsuZwxE8ioe9AgMBAAE=
-            -----END PUBLIC KEY-----
-          REMOTE_PROBE: |
-            import json,os,pathlib,hashlib,datetime
-            base=pathlib.Path('/var/www/hd-manager')
-            current=(base/'current').resolve(strict=True)
-            assert str(current).startswith(str(base/'releases')+'/')
-            version=json.loads((current/'version.json').read_text())
-            filesystems={}
-            for directory in ['/var/www/hd-manager','/var/backups','/var/tmp']:
-                s=os.statvfs(directory)
-                filesystems[directory]={'physicalFreeBytes':s.f_bfree*s.f_frsize,'ordinaryUserFreeBytes':s.f_bavail*s.f_frsize}
-            print(json.dumps({'at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'status':'READ_ONLY_PREFLIGHT_COMPLETE','currentSource':version['buildId'],'currentRelease':str(current),'indexSha256':hashlib.sha256((current/'index.html').read_bytes()).hexdigest(),'currentReleaseBytes':sum(f.stat().st_size for f in current.rglob('*') if f.is_file() and not f.is_symlink()),'filesystems':filesystems,'productionChanged':False}))
-        shell: bash
-        run: |-
-          node --input-type=module <<'HD_READ_ONLY_RELEASE_METADATA'
-          import fs from 'node:fs';
-          import os from 'node:os';
-          import path from 'node:path';
-          import dns from 'node:dns/promises';
-          import {execFileSync} from 'node:child_process';
-          import {randomBytes,createCipheriv,publicEncrypt,constants} from 'node:crypto';
-          const dir=fs.mkdtempSync(path.join(process.env.RUNNER_TEMP||os.tmpdir(),'hd502-readonly-'));
-          const keyFile=path.join(dir,'ci-key'),known=path.join(dir,'known_hosts');
-          let result,keyFormat;
-          try {
-           const host=process.env.VPS_HOST?.trim(),user=process.env.VPS_USER?.trim(),key=process.env.VPS_SSH_KEY;
-           if(!/^[a-zA-Z0-9.-]+$/.test(host||'')||!/^[a-z_][a-z0-9_-]*\$?$/i.test(user||'')||!key)throw Error('AUTHORIZED_SSH_CONFIGURATION_MISSING');
-           const configured=await dns.lookup(host,{all:true}),app=await dns.lookup('app.hdconnect.net',{all:true});
-           if(!configured.some(x=>app.some(y=>x.address===y.address)||x.address==='180.93.0.87'))throw Error('CONFIGURED_HOST_NOT_PRODUCTION_DNS_OR_APPROVED_VPS');
-           let material=key.replace(/\r\n?/g,'\n');
-           keyFormat={lines:material.split('\n').length,hasPemBoundary:/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(material),hasEscapedNewlines:material.includes('\\n'),trailingNewline:material.endsWith('\n')};
-           if(keyFormat.hasPemBoundary&&keyFormat.hasEscapedNewlines&&keyFormat.lines===1)material=material.replace(/\\r\\n/g,'\n').replace(/\\n/g,'\n');
-           if(!keyFormat.hasPemBoundary&&/^[A-Za-z0-9+/=\s]+$/.test(material)){
-            const decoded=Buffer.from(material,'base64').toString('utf8');
-            if(/^-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(decoded)){material=decoded.replace(/\r\n?/g,'\n');keyFormat.explicitBase64Envelope=true;}
-           }
-           if(!material.endsWith('\n'))material+='\n';
-           fs.writeFileSync(keyFile,material,{mode:0o600});material='';delete process.env.VPS_SSH_KEY;
-           try{execFileSync('ssh-keygen',['-l','-f',keyFile],{stdio:['ignore','pipe','pipe'],timeout:10000});keyFormat.localParse='PASS';}
-           catch{keyFormat.localParse='FAILED';throw Error('EXISTING_SSH_KEY_FORMAT_NOT_READABLE');}
-           const pinned=process.env.VPS_KNOWN_HOSTS;
-           if(pinned)fs.writeFileSync(known,pinned,{mode:0o600});
-           const args=['-i',keyFile,'-o','IdentitiesOnly=yes','-o','BatchMode=yes','-o','ConnectTimeout=10','-o','ConnectionAttempts=1','-o','LogLevel=ERROR','-o','RequestTTY=no','-o','StrictHostKeyChecking='+(pinned?'yes':'accept-new'),'-o','UserKnownHostsFile='+known,user+'@'+host,'python3 -'];
-           const stdout=execFileSync('ssh',args,{input:process.env.REMOTE_PROBE,encoding:'utf8',timeout:150000,maxBuffer:2*1024*1024,stdio:['pipe','pipe','pipe']});
-           result={status:'SSH_READ_COMPLETED',keyFormat,hostTrust:pinned?'EXISTING_KNOWN_HOSTS':'EXISTING_CI_HOST_MATCHED_PRODUCTION_DNS_FIRST_USE_HOSTKEY',payload:JSON.parse(stdout)};
-          } catch(error) {
-           result={status:'READ_DIAGNOSTIC_FAILED',keyFormat,code:/^[A-Z_]+$/.test(error.message)?error.message:'SSH_OR_PROBE_FAILURE',exitStatus:error.status,stdout:String(error.stdout||'').slice(-20000),stderr:String(error.stderr||'').slice(-12000)};
-          } finally {
-           for(const file of [keyFile,known])try{fs.unlinkSync(file);}catch{}
-           try{fs.rmdirSync(dir);}catch{}
-          }
-          const aes=randomBytes(32),iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',aes,iv);
-          const ciphertext=Buffer.concat([cipher.update(JSON.stringify(result),'utf8'),cipher.final()]);
-          const meta={version:1,wrappedKey:publicEncrypt({key:process.env.REPORT_PUBLIC_KEY,padding:constants.RSA_PKCS1_OAEP_PADDING,oaepHash:'sha256'},aes).toString('base64'),iv:iv.toString('base64'),tag:cipher.getAuthTag().toString('base64')};
-          aes.fill(0);console.log('HD502_META '+JSON.stringify(meta));
-          const encoded=ciphertext.toString('base64'),parts=Math.ceil(encoded.length/6000);
-          for(let i=0;i<parts;i++)console.log('HD502_PART '+i+' '+parts+' '+encoded.slice(i*6000,(i+1)*6000));
-          console.log('HD502_STATUS '+result.status);
-          if(result.status!=='SSH_READ_COMPLETED')process.exitCode=1;
-
-          HD_READ_ONLY_RELEASE_METADATA
+          NODE_OPTIONS: --import=${{ github.workspace }}/scripts/register-canonical-source.mjs
+        run: node --test --test-concurrency=1 --test-timeout=90000 tests/share-delivery.browser.mjs
