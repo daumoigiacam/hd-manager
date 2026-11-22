@@ -33,16 +33,28 @@ jobs:
             wOCqgEh4n/8tZa/8zW9kAYQul9xVxWQaSsuZwxE8ioe9AgMBAAE=
             -----END PUBLIC KEY-----
           REMOTE_PROBE: |
-            import json,os,pathlib,hashlib,datetime
-            base=pathlib.Path('/var/www/hd-manager')
-            current=(base/'current').resolve(strict=True)
-            assert str(current).startswith(str(base/'releases')+'/')
-            version=json.loads((current/'version.json').read_text())
-            filesystems={}
-            for directory in ['/var/www/hd-manager','/var/backups','/var/tmp']:
-                s=os.statvfs(directory)
-                filesystems[directory]={'physicalFreeBytes':s.f_bfree*s.f_frsize,'ordinaryUserFreeBytes':s.f_bavail*s.f_frsize}
-            print(json.dumps({'at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'status':'READ_ONLY_PREFLIGHT_COMPLETE','currentSource':version['buildId'],'currentRelease':str(current),'indexSha256':hashlib.sha256((current/'index.html').read_bytes()).hexdigest(),'currentReleaseBytes':sum(f.stat().st_size for f in current.rglob('*') if f.is_file() and not f.is_symlink()),'filesystems':filesystems,'productionChanged':False}))
+            import os,json,subprocess,pathlib,datetime
+            paths=['/var/log','/var/tmp','/var/backups','/var/www','/var/lib','/tmp','/home/hdmanager']
+            command=['du','-x','-B1','--max-depth=1',*paths]
+            p=subprocess.run(command,capture_output=True,text=True,timeout=120)
+            sizes=[]
+            for line in p.stdout.splitlines():
+                try:
+                    size,name=line.split('\t',1)
+                    sizes.append({'bytes':int(size),'path':name})
+                except ValueError:pass
+            largest=[]
+            for root in ['/var/log','/var/tmp','/tmp','/var/backups/hd-manager-frontend']:
+                for base,dirs,files in os.walk(root,followlinks=False):
+                    for name in files:
+                        file=pathlib.Path(base)/name
+                        try:
+                            s=file.lstat()
+                            if file.is_file() and not file.is_symlink() and s.st_size>=20*1024*1024:
+                                largest.append({'path':str(file),'bytes':s.st_size,'mtime':s.st_mtime,'links':s.st_nlink})
+                        except OSError:pass
+            s=os.statvfs('/var/www/hd-manager')
+            print(json.dumps({'at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'status':'READ_ONLY_STORAGE_METADATA_COMPLETE','physicalFreeBytes':s.f_bfree*s.f_frsize,'ordinaryFreeBytes':s.f_bavail*s.f_frsize,'directories':sorted(sizes,key=lambda x:-x['bytes'])[:100],'largeFiles':sorted(largest,key=lambda x:-x['bytes'])[:50],'commandExit':p.returncode,'businessDocumentReads':0,'productionChanged':False}))
         shell: bash
         run: |-
           node --input-type=module <<'HD_READ_ONLY_RELEASE_METADATA'
