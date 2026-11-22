@@ -1,0 +1,1307 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-22",
+  "status": "PASS_TESTED_SCOPE_WITH_EXPLICIT_LIMITATIONS",
+  "canonicalSource": "development/hd-manager/application",
+  "baselineCommit": "a04e9ebf95742d9db5394d74f111ef2d33f54fd1",
+  "sourceHash": "d9df772b5a21e690ef7fbc02edc3601701eefe3b9a1834ac48f6738e5726ed65",
+  "buildId": "full-audit-20261122-d9df772b5a21",
+  "moduleGroups": [
+    {
+      "id": "auth",
+      "label": "Đăng nhập, hồ sơ và bảo mật",
+      "domain": "PASS",
+      "ui": "PASS_LOCAL_BROWSER",
+      "scope": "Existing functionality tested in isolated fixtures/local QA.",
+      "testFiles": [
+        "tests/account-login-flow-observer.test.mjs",
+        "tests/biometric-lifecycle.test.mjs",
+        "tests/biometric-native-patch.test.mjs",
+        "tests/core-auth-request-timing.test.cjs",
+        "tests/core-backup-auth-initialization.test.mjs",
+        "tests/core-cooperative-collection-identity.test.mjs",
+        "tests/core-identity-auth-region.test.mjs",
+        "tests/core-identity-copy-allocation.test.mjs",
+        "tests/core-identity-runtime-warmup.test.cjs",
+        "tests/core-identity-session-critical-path.test.cjs",
+        "tests/core-password-login-no-enrollment-block.test.mjs",
+        "tests/core-scoped-record-identity.test.mjs",
+        "tests/core-worker-auth-session.test.mjs",
+        "tests/customer-portal-security.test.mjs",
+        "tests/email-auth-vps-contract.test.mjs",
+        "tests/identity-center.test.mjs",
+        "tests/identity-native-http-transport.test.mjs",
+        "tests/identity-passkeys.test.cjs",
+        "tests/identity-time.test.cjs",
+        "tests/local-identity-setup-grant.test.mjs",
+        "tests/login-home-role.test.mjs",
+        "tests/native-auth-json-fetch.test.mjs",
+        "tests/phone-login-ui.test.mjs",
+        "tests/request-authorization.test.mjs",
+        "tests/upgrade-identity-network-timing.test.mjs",
+        "tests/upgrade-trusted-login-observation.test.mjs"
+      ],
+      "checks": []
+    },
+    {
+      "id": "home",
+      "label": "Trang chủ và điều hành",
+      "domain": "PASS",
+      "ui": "PASS_LOCAL_BROWSER",
+      "scope": "Existing functionality tested in isolated fixtures/local QA.",
+      "testFiles": [
+        "tests/business-report-cash-expense.test.mjs",
+        "tests/business-report-finance.test.mjs",
+        "tests/business-report-view-model.test.mjs",
+        "tests/core-dashboard-payroll-yields.test.mjs",
+        "tests/core-dashboard-privacy-scope.test.mjs",
+        "tests/core-employee-home-api.test.mjs",
+        "tests/core-employee-home-byte-budget.test.mjs",
+        "tests/core-employee-home-cpu-diagnostic.test.mjs",
+        "tests/core-employee-home-cpu-log-metadata.test.mjs",
+        "tests/core-employee-home-field-instrumentation.test.mjs",
+        "tests/core-employee-home-field-projection.test.mjs",
+        "tests/core-employee-home-grpc-snapshot.test.mjs",
+        "tests/core-employee-home-heap-config.test.mjs",
+        "tests/core-employee-home-process-projector.test.mjs",
+        "tests/core-employee-home-projected-projector.test.mjs",
+        "tests/core-employee-home-projected-runtime.test.mjs",
+        "tests/core-employee-home-qa-endpoint.test.mjs",
+        "tests/core-employee-home-read-model-client.test.mjs",
+        "tests/core-employee-home-read-model.test.mjs",
+        "tests/core-employee-home-rest-snapshot.test.mjs",
+        "tests/core-employee-home-runtime-shape.test.mjs",
+        "tests/core-employee-home-runtime.test.mjs",
+        "tests/core-employee-home-screen-model.test.mjs",
+        "tests/core-employee-home-snapshot-input.test.mjs",
+        "tests/core-home-data-contract.test.mjs",
+        "tests/core-home-primary-clock-scope.test.mjs",
+        "tests/core-home-primary-compact-cache.test.mjs",
+        "tests/core-home-priority-contract.test.mjs",
+        "tests/core-home-read-model-prototype.test.mjs",
+        "tests/core-personal-home-worker.test.mjs",
+        "tests/dashboard-payroll-source.test.mjs",
+        "tests/dashboard-widget-preferences.test.mjs",
+        "tests/home-critical-read-capacity.test.mjs",
+        "tests/home-performance-probe.test.mjs",
+        "tests/home-primary-projection.test.mjs",
+        "tests/home-projection-scope.test.mjs",
+        "tests/home-session-report.test.mjs",
+        "tests/offline-home-feed-storage.test.mjs",
+        "tests/online-home-projection-client.test.mjs",
+        "tests/operating-expense-detail.test.mjs",
+        "tests/sales-revenue-period.test.mjs",
+        "development/hd-manager/application/tests/instant-home-cache.test.mjs",
+        "development/hd-manager/application/tests/instant-home-model.test.mjs"
+      ],
+      "checks": []
+    },
+    {
+      "id": "orders",
+      "label": "Đơn hàng và hóa đơn",
+      "domain": "PASS",
+      "ui": "PASS_CLOUD_EMULATOR_BROWSER",
+      "scope": "Existing functionality tested in isolated fixtures/local QA.",
+      "testFiles": [
+        "tests/core-dispatch-order-row-cache.test.mjs",
+        "tests/core-finance-order-code-cache.test.mjs",
+        "tests/core-order-directory-projection.test.mjs",
+        "tests/core-order-search-hardening.test.mjs",
+        "tests/core-order-view-projection.test.mjs",
+        "tests/customer-order-memory.test.mjs",
+        "tests/customer-portal-order-detail.test.mjs",
+        "tests/customer-product-billing.test.mjs",
+        "tests/firestore-customer-order-readonly-rules.test.mjs",
+        "tests/order-cross-account-sync.test.mjs",
+        "tests/order-detail-item-edit.test.mjs",
+        "tests/order-detail-payment-status.test.mjs",
+        "tests/order-return-client.test.mjs",
+        "tests/order-share-cache.test.mjs",
+        "tests/save-critical-path.test.mjs",
+        "tests/save-integrity-regressions.test.mjs",
+        "tests/smart-customer-ordering.test.mjs",
+        "tests/warehouse-dispatch-bulk-order-billing.test.mjs",
+        "tests/warehouse-dispatch-order-creation.test.mjs",
+        "tests/web-workspace-order-readiness.test.mjs",
+        "development/hd-manager/application/tests/order-creation-admission.test.mjs",
+        "development/hd-manager/application/tests/order-ledger-admission.test.mjs",
+        "development/hd-manager/application/tests/order-priority-admission.test.mjs",
+        "development/hd-manager/application/tests/order-refresh-presentation.test.mjs"
+      ],
+      "checks": []
+    },
+    {
+      "id": "order_requests",
+      "label": "Đơn đặt",
+      "domain": "PASS",
+      "ui": "PASS_CLOUD_EMULATOR_BROWSER",
+      "scope": "Existing functionality tested in isolated fixtures/local QA.",
+      "testFiles": [
+        "tests/ai-zalo-order-request.test.mjs",
+        "tests/core-order-request-view-projection.test.mjs",
+        "tests/core-request-admission.test.mjs",
+        "tests/core-request-picker-work.test.mjs",
+        "tests/core-request-previous-order.test.mjs",
+        "tests/delivery-request-index.test.mjs",
+        "tests/master-order-request-derived-cache.test.mjs",
+        "tests/master-request-lookup.test.mjs",
+        "tests/order-request-attributes.test.mjs",
+        "tests/order-request-inline-attributes.test.mjs",
+        "tests/order-request-render-window.test.mjs",
+        "tests/order-request-share-recovery.test.mjs",
+        "tests/order-request-share.test.mjs",
+        "tests/order-request-ux.test.mjs",
+        "development/hd-manager/application/tests/order-request-read-plan.test.mjs",
+        "development/hd-manager/application/tests/request-low-power-pages.test.mjs",
+        "development/hd-manager/application/tests/request-table-cache.test.mjs"
+      ],
+      "checks": []
+    },
+    {
+      "id": "warehouse_dispatch",
+      "label": "Xuất kho",
+      "domain": "PASS",
+      "ui": "PASS_CLOUD_EMULATOR_BROWSER",
+      "scope": "Existing functionality tested in isolated fixtures/local QA.",
+      "testFiles": [
+        "tests/core-dispatch-picker-lazy.test.mjs",
+        "tests/dispatch-dialog-models.test.mjs",
+        "tests/dispatch-editor-model.test.mjs",
+        "tests/dispatch-history-concurrency.test.mjs",
+        "tests/dispatch-list-search.test.mjs",
+        "tests/dispatch-orchestration.test.mjs",
+        "tests/dispatch-panel-actions.test.mjs",
+        "tests/dispatch-parent-helpers.test.mjs",
+        "tests/dispatch-share-pages.test.mjs",
+        "tests/dispatch-source-branch-regression.test.mjs",
+        "tests/dispatch-source-pricing-regression.test.mjs",
+        "tests/dispatch-workflow-typing.test.mjs",
+        "tests/upgrade-dispatch-ranking.test.mjs",
+        "tests/warehouse-dispatch-command.test.mjs",
+        "tests/warehouse-dispatch-design-tokens.test.mjs",
+        "tests/warehouse-dispatch-edit-ack.test.mjs",
+        "tests/warehouse-dispatch-grouping.test.mjs",
+        "tests/warehouse-dispatch-local-save.test.mjs",
+        "tests/warehouse-dispatch-performance.test.mjs",
+        "tests/warehouse-dispatch-read-boundary.test.mjs",
+        "tests/warehouse-dispatch-weight-input.test.mjs",
+        "development/hd-manager/application/tests/dispatch-live-head.test.mjs",
+        "development/hd-manager/application/tests/dispatch-weight-consistency.test.mjs"
+      ],
+      "checks": []
+    },
+    {
+      "id": "warehouse_import",
+      "label": "Nhập Xuất Tồn",
+      "domain": "PASS",
+      "ui": "PASS_CLOUD_EMULATOR_BROWSER",
+      "scope": "Existing functionality tested in isolated fixtures/local QA.",
+      "testFiles": [
+        "tests/core-customer-supplier-projection.test.mjs",
+        "tests/core-stock-history-projection.test.mjs",
+        "tests/core-supplier-entry-index.test.mjs",
+        "tests/core-warehouse-group-options.test.mjs",
+        "tests/core-warehouse-supplier-collation.test.mjs",
+        "tests/inventory-backfill.test.cjs",
+        "tests/inventory-client-errors.test.mjs",
+        "tests/inventory-reconciliation.test.cjs",
+        "tests/inventory-transaction-concurrency.test.cjs",
+        "tests/master-incremental-stock.test.mjs",
+        "tests/master-inventory-history-parity.test.mjs",
+        "tests/master-inventory-render-dependencies.test.mjs",
+        "tests/master-product-stock-index.test.mjs",
+        "tests/warehouse-inventory-integrity.test.mjs",
+        "tests/warehouse-product-scanner.test.mjs",
+        "tests/warehouse-quantity-units.test.mjs",
+        "tests/warehouse-supplier-picker.test.mjs",
+        "development/hd-manager/application/tests/warehouse-import-default-groups.test.mjs",
+        "development/hd-manager/application/tests/warehouse-import-schema-reuse.test.mjs"
+      ],
+      "checks": []
+    },
+    {
+      "id": "delivery_reports",
+      "label": "Giao hàng",
+      "domain": "PASS",
+      "ui": "PASS_CLOUD_EMULATOR_BROWSER",
+      "scope": "Existing functionality tested in isolated fixtures/local QA.",
+      "testFiles": [
+        "tests/core-delivery-metadata.test.mjs",
+        "tests/core-delivery-pricing.test.mjs",
+        "tests/core-delivery-signature-index.test.mjs",
+        "tests/delivery-reconciliation-ux.test.mjs",
+        "tests/delivery-redesign-layout.test.mjs"
+      ],
+      "checks": [
+        "create report with linked pending income/expense",
+        "edit amount updates same receipt atomically",
+        "pending amounts excluded from official debt",
+        "date previous day empty and today restored",
+        "reload persisted report"
+      ]
+    },
+    {
+      "id": "customers",
+      "label": "Khách hàng",
+      "domain": "PASS",
+      "ui": "PASS_CLOUD_EMULATOR_BROWSER",
+      "scope": "Existing functionality tested in isolated fixtures/local QA.",
+      "testFiles": [
+        "tests/core-customer-bootstrap-endpoint.test.cjs",
+        "tests/core-customer-bootstrap-publication.test.mjs",
+        "tests/core-customer-directory-filter.test.mjs",
+        "tests/core-customer-ledger-cooperative.test.mjs",
+        "tests/core-customer-summary-projection.test.mjs",
+        "tests/customer-care.test.cjs",
+        "tests/customer-contact-picker.test.mjs",
+        "tests/customer-create-focus-stability.test.mjs",
+        "tests/customer-debt-payment.test.cjs",
+        "tests/customer-debt-repayment.test.mjs",
+        "tests/customer-history-selector.test.mjs",
+        "tests/customer-ledger-index.test.mjs",
+        "tests/customer-location-directions.test.mjs",
+        "tests/customer-loyalty-eligibility.test.mjs",
+        "tests/customer-messaging.test.mjs",
+        "tests/customer-offline-readiness.test.mjs",
+        "tests/customer-product-auto-sync.test.mjs",
+        "tests/customer-product-visibility.test.mjs",
+        "tests/customer-reconciliation-export.test.mjs",
+        "tests/employee-scoped-customer-messaging.test.mjs",
+        "tests/upgrade-customer-financial-readiness.test.mjs",
+        "tests/upgrade-customer-startup-observation.test.mjs",
+        "development/hd-manager/application/tests/customer-background-supplements.test.mjs",
+        "development/hd-manager/application/tests/customer-financial-presentation.test.mjs"
+      ],
+      "checks": [
+        "CRUD with soft archive and server reread",
+        "Default debt and history visible; manager selection persisted",
+        "20/6 pagination with 26 unique records",
+        "XLSX import once and duplicate blocked",
+        "Loan over-return blocked, partial/full returns persisted, reduction below returned blocked"
+      ]
+    },
+    {
+      "id": "debt",
+      "label": "Sổ nợ",
+      "domain": "PASS",
+      "ui": "PASS_CLOUD_EMULATOR_BROWSER",
+      "scope": "Existing functionality tested in isolated fixtures/local QA.",
+      "testFiles": [
+        "tests/core-debt-directory-cache.test.mjs",
+        "tests/core-ledger-sort-cache.test.mjs",
+        "tests/debt-balance-share.test.mjs",
+        "tests/debt-correction-reconciliation.test.cjs",
+        "tests/debt-overview-layout.test.mjs",
+        "tests/debt-repayment-cost.test.mjs",
+        "tests/payroll-debt-carryover.test.mjs",
+        "tests/upgrade-debt-observation.test.mjs",
+        "tests/upgrade-debt-prepared-search.test.mjs",
+        "development/hd-manager/application/tests/debt-refresh-readiness.test.mjs"
+      ],
+      "checks": [
+        "Receivable/payable totals and customer detail",
+        "Receipt selected invoice correctly allocated and exact server acknowledgement",
+        "General receipt oldest-first retained",
+        "Server reread official total379000 / receivable1653000"
+      ]
+    },
+    {
+      "id": "finance",
+      "label": "Thu chi",
+      "domain": "PASS",
+      "ui": "PASS_CLOUD_EMULATOR_BROWSER",
+      "scope": "Existing functionality tested in isolated fixtures/local QA.",
+      "testFiles": [
+        "tests/asset-expense-projection.test.mjs",
+        "tests/core-daily-finance-lazy.test.mjs",
+        "tests/expense-category.test.mjs",
+        "tests/finance-mobile-layout.test.mjs",
+        "tests/offline-payroll-cashflow.test.mjs",
+        "tests/report-expense-list.test.mjs",
+        "development/hd-manager/application/tests/cashflow-queue-presentation.test.mjs",
+        "development/hd-manager/application/tests/cashflow-sort-projection.test.mjs",
+        "development/hd-manager/application/tests/finance-read-retention.test.mjs"
+      ],
+      "checks": [
+        "Create30000 / edit35000 / soft archive expense",
+        "Approval pending receipt550000; reject expense50000 then approve",
+        "Reject dialog invalid amount, notes, success",
+        "Filter pending empty after approvals",
+        "Server confirmed929000 receipts and8050000 costs"
+      ]
+    },
+    {
+      "id": "bank_payments",
+      "label": "Ngân hàng và thanh toán",
+      "domain": "PASS",
+      "ui": "PASS_CLOUD_EMULATOR_BROWSER",
+      "scope": "Existing functionality tested in isolated fixtures/local QA.",
+      "testFiles": [
+        "tests/bank-app-deeplink.test.mjs",
+        "tests/bank-transaction-view.test.mjs",
+        "tests/company-bank-accounts.test.mjs",
+        "tests/payment-native-notification.test.mjs",
+        "tests/sepay-reconciliation.test.cjs",
+        "development/hd-manager/application/tests/bank-priority-readiness.test.mjs",
+        "development/hd-manager/application/tests/quote-payment-balance.test.mjs"
+      ],
+      "checks": [
+        "Transfer total79000 includes receipts from orders/debt",
+        "25 unique banktransactions page20/5",
+        "Matched invoice labels; linked QAaccount visible",
+        "Ignored/cancelled retained and excluded automatic posting",
+        "Server evidence verifies6unchangedpayments"
+      ]
+    },
+    {
+      "id": "products",
+      "label": "Sản phẩm",
+      "domain": "PASS",
+      "ui": "PASS_CLOUD_EMULATOR_BROWSER",
+      "scope": "Existing functionality tested in isolated fixtures/local QA.",
+      "testFiles": [
+        "tests/master-production-release-smoke.test.mjs",
+        "tests/pricing-product-margin.test.mjs",
+        "tests/product-measures.test.mjs",
+        "tests/product-pricing-units.test.mjs",
+        "tests/production-deploy-workflow.test.mjs",
+        "tests/production-offline-preflight.test.mjs",
+        "tests/production-qa-apk-config.test.mjs",
+        "development/hd-manager/application/tests/product-numeric-search.test.mjs",
+        "development/hd-manager/application/tests/product-workspace-read-plan.test.mjs"
+      ],
+      "checks": [
+        "Create/edit65000/softarchive product",
+        "Numeric SKU search987654",
+        "Group rename updates product category",
+        "Inventory SKU movement16 / opening100 / remaining84; group-only import intentionally has no productId"
+      ]
+    },
+    {
+      "id": "pricing",
+      "label": "Giá cả",
+      "domain": "PASS",
+      "ui": "PASS_CLOUD_EMULATOR_BROWSER",
+      "scope": "Existing functionality tested in isolated fixtures/local QA.",
+      "testFiles": [
+        "tests/core-pricing-formula-cooperative.test.mjs",
+        "tests/core-pricing-sales-activity.test.mjs",
+        "tests/core-pricing-sales-reuse.test.mjs",
+        "tests/master-pricing-normalization-parity.test.mjs",
+        "tests/pricing-candidate-index.test.mjs",
+        "development/hd-manager/application/tests/pricing-margin-page.test.mjs"
+      ],
+      "checks": [
+        "Input41000 and margin25 produce rounded51000",
+        "ONE Save preserves unblurred lastfactor1.02; server reread",
+        "Manual2.5 minus.25 savesoutput2.25",
+        "Current invalidloss2kg/1kg blocked without any serverwrite",
+        "Formula revenue290000; missingcost shown as unavailable",
+        "Share image flow returned success; no recipient selected"
+      ]
+    },
+    {
+      "id": "price_quotes",
+      "label": "Báo giá",
+      "domain": "PASS",
+      "ui": "PASS_CLOUD_EMULATOR_BROWSER",
+      "scope": "Existing functionality tested in isolated fixtures/local QA.",
+      "testFiles": [
+        "development/hd-manager/application/tests/quote-source-demand.test.mjs"
+      ],
+      "checks": [
+        "A-only59000; B58000 unchanged",
+        "Units/conversions/exactvariants/rawmetadata preserved; actualbilling2Kg118000",
+        "Multi-select across search,clearall, productchange resetsselection/status",
+        "23 eligible customers20/3 unique23",
+        "ActualhandlerpartialCASfailure1/2; retryonlyfailed; duplicateguard"
+      ]
+    },
+    {
+      "id": "employees",
+      "label": "Nhân sự và hoa hồng",
+      "domain": "PASS",
+      "ui": "PASS_CLOUD_EMULATOR_BROWSER",
+      "scope": "Existing functionality tested in isolated fixtures/local QA.",
+      "testFiles": [
+        "tests/company-departments.test.mjs",
+        "tests/core-employee-attendance-projection.test.mjs",
+        "tests/core-employee-revenue-projection.test.mjs",
+        "tests/core-employee-review-source-index.test.mjs",
+        "tests/employee-evaluation-automation.test.mjs",
+        "tests/employee-review-ui.test.mjs",
+        "development/hd-manager/application/tests/commission-policy.test.mjs",
+        "development/hd-manager/application/tests/company-employee-reviews.test.mjs",
+        "development/hd-manager/application/tests/sales-commission-tiers.test.mjs"
+      ],
+      "checks": [
+        "Create synthetic employee; edit salary and commission; duplicate threshold rejected",
+        "Saved rates 2% and 2.5%; version v1 ends Nov20 and v2 starts Nov21",
+        "Archive synthetic employee, company department create/edit, holiday create/delete, department filter correct"
+      ]
+    },
+    {
+      "id": "company_attendance",
+      "label": "Chấm công, điều chỉnh và xác nhận công",
+      "domain": "PASS",
+      "ui": "PASS_CLOUD_EMULATOR_BROWSER",
+      "scope": "Existing functionality tested in isolated fixtures/local QA.",
+      "testFiles": [
+        "tests/attendance-auto-wifi.test.mjs",
+        "tests/attendance-manual.test.cjs",
+        "tests/attendance-period-rbac.test.mjs",
+        "tests/attendance-roster.test.mjs",
+        "tests/attendance-wifi.test.mjs",
+        "tests/attendance-work-roles.test.mjs",
+        "tests/company-wifi-save.test.mjs"
+      ],
+      "checks": [
+        "Selected different day and saved sales shift08:00–17:00",
+        "Driver leave saved and dashboard counts correct",
+        "Phone search returns only intended employee",
+        "Time native fill requires actual key event in browser test harness; no product change"
+      ]
+    },
+    {
+      "id": "payroll",
+      "label": "Bảng lương và đối soát lương",
+      "domain": "PASS",
+      "ui": "PASS_CLOUD_EMULATOR_BROWSER",
+      "scope": "Existing functionality tested in isolated fixtures/local QA.",
+      "testFiles": [
+        "tests/core-payroll-view-cooperative.test.mjs",
+        "tests/payroll-allowance-proration.test.mjs",
+        "tests/payroll-auto-lock.test.cjs",
+        "tests/payroll-automation-disabled.test.mjs",
+        "tests/payroll-evaluation-integration.test.mjs",
+        "tests/payroll-period-freeze.test.mjs",
+        "tests/payroll-period-hardening.test.mjs",
+        "tests/payroll-period-lock.test.mjs",
+        "tests/payroll-settlement-rbac.test.mjs",
+        "tests/payroll-workspace-model.test.mjs",
+        "tests/salary-advance-period.test.mjs",
+        "development/hd-manager/application/tests/evaluation-toggle-payroll.test.mjs"
+      ],
+      "checks": [
+        "Attendance1 day ->base200000+allowances23334",
+        "Bonus100000 penalty20000 approvedadvance10000; purchase10000->12000->archive",
+        "Rapidbonus30000save createdONErecord thenarchived",
+        "Pendingrecalculation preserves detailtab andexpandedtable; errorsretained/retrytested",
+        "October locked2snapshots +one303000carryover; rejectedwhenpolicymissing/pendingcommand",
+        "Evaluationoff hidesopenpayroll evaluation; locked800000history unchanged"
+      ]
+    },
+    {
+      "id": "employee_reviews",
+      "label": "Đánh giá",
+      "domain": "PASS",
+      "ui": "PASS_CLOUD_EMULATOR_BROWSER",
+      "scope": "Existing functionality tested in isolated fixtures/local QA.",
+      "testFiles": [
+        "tests/core-evaluation-date-formatter.test.mjs",
+        "tests/employee-evaluation-automation.test.mjs",
+        "tests/employee-review-ui.test.mjs",
+        "tests/core-employee-review-source-index.test.mjs",
+        "development/hd-manager/application/tests/company-employee-reviews.test.mjs",
+        "development/hd-manager/application/tests/employee-review-integrity.test.mjs"
+      ],
+      "checks": [
+        "10criteria changed4->5->4, peer500k->1m->500k correct",
+        "Criterion renamed and restored; employee/month filtering correct",
+        "Selfreview rejected and reason retained afterfix",
+        "Driver3star rapid submit =>one reviewandone notification",
+        "CustomerSeptemberedit retains sourcecustomer/name/emptyreviewerId/date/creationtime",
+        "Companyfeatureturnedoff; menu hidden; lockedOctober snapshots unchanged"
+      ]
+    },
+    {
+      "id": "asset_management",
+      "label": "Tài sản",
+      "domain": "PASS",
+      "ui": "PASS_CLOUD_EMULATOR_BROWSER",
+      "scope": "Existing functionality tested in isolated fixtures/local QA.",
+      "testFiles": [
+        "tests/asset-management-redesign.test.mjs",
+        "development/hd-manager/application/tests/asset-search-readiness.test.mjs",
+        "tests/asset-expense-projection.test.mjs",
+        "development/hd-manager/application/tests/asset-mutation-integrity.test.mjs",
+        "development/hd-manager/application/tests/asset-view-integrity.test.mjs"
+      ],
+      "checks": [
+        "create rapid-double-submit one record",
+        "edit name/status",
+        "archive after server acknowledgement",
+        "search and type filter empty/reset",
+        "fuel2.5Lx22000=55000 auto amount",
+        "reject negative-50000 without write",
+        "othercost20k repair ->30kmaintenance clearing note ->archive with linkedexpense",
+        "maintenance and document rapid-double-submit one entry; driver/handover/maintenance defaults preserved",
+        "image receipt upload retained server-side",
+        "history and maintenance no fuel misclassification",
+        "known-field financial/payroll baseline unchanged"
+      ]
+    },
+    {
+      "id": "messages",
+      "label": "Tin nhắn, thông báo và Zalo",
+      "domain": "PASS",
+      "ui": "PASS_CLOUD_EMULATOR_BROWSER",
+      "scope": "Existing functionality tested in isolated fixtures/local QA.",
+      "testFiles": [
+        "tests/ai-gateway-security.test.mjs",
+        "tests/ai-zalo-assistant.test.mjs",
+        "tests/android-notification-icon.test.mjs",
+        "tests/core-message-render-work.test.mjs",
+        "tests/core-notification-lookup-projection.test.mjs",
+        "tests/core-notification-timestamp-cache.test.mjs",
+        "tests/core-startup-notification-admission.test.mjs",
+        "tests/messages-chat-list-layout.test.mjs",
+        "tests/notification-center-layout.test.mjs",
+        "development/hd-manager/application/tests/message-attachment-pointer.test.mjs",
+        "development/hd-manager/application/tests/message-attachment-selection.test.mjs",
+        "development/hd-manager/application/tests/message-source-demand.test.mjs",
+        "development/hd-manager/application/tests/message-send-ui.test.mjs",
+        "development/hd-manager/application/tests/message-mutation-integrity.test.mjs",
+        "development/hd-manager/application/tests/message-order-financials.test.mjs",
+        "development/hd-manager/application/tests/customer-message-send-ui.test.mjs"
+      ],
+      "checks": [
+        "rapid-send exactly one new text; server ACK before success",
+        "one group three valid participants",
+        "invalid group one participant produces visible error",
+        "search message content/highlight and empty results",
+        "notification all/unread filter and close",
+        "QR fixture decoded QA-CODE-20261122 and copied into search",
+        "image stored and rendered",
+        "latest order attachment total1072000/paid110000/debt962000 from actual allocation ledger",
+        "customer support routed to qa_sales",
+        "report929000 receipts/8105000 expenses",
+        "orderrequest16Con price67000",
+        "fake contact attachment",
+        "no browser errors"
+      ]
+    },
+    {
+      "id": "settings",
+      "label": "Cài đặt",
+      "domain": "PASS",
+      "ui": "PASS_CLOUD_EMULATOR_BROWSER",
+      "scope": "Existing functionality tested in isolated fixtures/local QA.",
+      "testFiles": [
+        "tests/core-automatic-backup-stream.test.mjs",
+        "tests/core-firestore-native-wire-values.test.mjs",
+        "tests/core-firestore-read-worker-client.test.mjs",
+        "tests/core-firestore-worker-values.test.mjs",
+        "tests/export-restore-scope.test.mjs",
+        "tests/firestore-resilience.test.mjs",
+        "tests/firestore-transport.test.mjs",
+        "tests/instant-firestore-transport.test.mjs",
+        "tests/loyalty-reminders.test.mjs",
+        "tests/loyalty-rewards.test.mjs",
+        "tests/loyalty-settings-save.test.mjs",
+        "tests/master-backup-scheduling.test.mjs",
+        "tests/theme-preferences.test.mjs",
+        "development/hd-manager/application/tests/settings-save-integrity.test.mjs",
+        "development/hd-manager/application/tests/settings-view-integrity.test.mjs",
+        "development/hd-manager/application/tests/settings-mutation-integrity.test.mjs",
+        "development/hd-manager/application/tests/settings-data-integrity.test.mjs"
+      ],
+      "checks": [
+        "Warehouse negative days rejected; 7 saved then 0 restored",
+        "Loyalty invalid money rejected; fixed123000 and percent1.5 persisted then fixed100000 restored; feature remains off",
+        "Two fake bank accounts, leading zeros preserved, duplicate account rejected, secondary VA does not replace primary invoice account",
+        "Six reminder rules saved, sender/day/holiday/message fields preserved; all disabled with no external sends",
+        "Salary advance rejects negative percent, saves50 then unlimited; department30 limits preserved",
+        "Quick action off/on reflects actual header then restored",
+        "Server-confirmed full backup223 records downloaded",
+        "One archived notification restored; unchanged file retry replays one durable command",
+        "Malformed file rejected with localized message",
+        "Reset requires selected scope; confirmation cancelled without deleting messages/notifications",
+        "Security entry and trusted device list render; no credential change or physical biometric operation",
+        "No browser error logs"
+      ]
+    },
+    {
+      "id": "role_permissions",
+      "label": "Vai trò",
+      "domain": "PASS",
+      "ui": "PASS_CLOUD_EMULATOR_BROWSER",
+      "scope": "Existing functionality tested in isolated fixtures/local QA.",
+      "testFiles": [
+        "development/hd-manager/application/tests/role-permission-integrity.test.mjs",
+        "development/hd-manager/application/tests/role-permission-view.test.mjs"
+      ],
+      "checks": [
+        "Department module OFF persisted with all 15 child actions revoked",
+        "Save retained selected department and exact server success receipt",
+        "Restored the original 10/15 sales message actions",
+        "Employee override OFF persisted separately from department policy",
+        "Default removed both employee override maps and restored exact inheritance",
+        "Owner23/23 immutable with edit controls disabled",
+        "All original effective role policies restored; no business ledger or locked payroll changes",
+        "No browser error logs"
+      ]
+    },
+    {
+      "id": "billing",
+      "label": "Gói dịch vụ",
+      "domain": "PASS",
+      "ui": "PASS_INFORMATION_PAGE_ONLY",
+      "scope": "Existing informational placeholder only; subscription purchases/renewal are not implemented.",
+      "testFiles": [
+        "tests/master-billing-normalization-parity.test.mjs",
+        "tests/startup-subscription-plan.test.mjs"
+      ],
+      "checks": []
+    },
+    {
+      "id": "shared",
+      "label": "Điều hướng, tìm kiếm, đồng bộ và nền tảng dùng chung",
+      "domain": "PASS",
+      "ui": "PASS_WEB_AND_ANDROID_SMOKE",
+      "scope": "Existing functionality tested in isolated fixtures/local QA.",
+      "testFiles": [
+        "tests/account-greeting.test.mjs",
+        "tests/android-audit-observer.test.mjs",
+        "tests/android-release-canonical-workflow.test.mjs",
+        "tests/android-release-readiness.test.mjs",
+        "tests/app-back-navigation.test.mjs",
+        "tests/browser-interaction-timing.test.mjs",
+        "tests/business-operation-idempotency.test.mjs",
+        "tests/cache-freshness.test.mjs",
+        "tests/cached-vietnam-formatters.test.mjs",
+        "tests/core-acceptance-remembered-session.test.mjs",
+        "tests/core-android-renderer-ownership.test.mjs",
+        "tests/core-android-timeline-metadata.test.mjs",
+        "tests/core-bounded-worker-transfer.test.mjs",
+        "tests/core-collection-commit-witness.test.mjs",
+        "tests/core-confirmed-empty-complaints.test.mjs",
+        "tests/core-cooperative-projection.test.mjs",
+        "tests/core-cooperative-report-projection.test.mjs",
+        "tests/core-denied-read-access.test.mjs",
+        "tests/core-entity-timestamp.test.mjs",
+        "tests/core-grouped-row-page.test.mjs",
+        "tests/core-inbox-index-plan.test.mjs",
+        "tests/core-incremental-sort.test.mjs",
+        "tests/core-initial-read-admission.test.mjs",
+        "tests/core-latest-records.test.mjs",
+        "tests/core-navigation-side-effects.test.mjs",
+        "tests/core-navigation-viewport.test.mjs",
+        "tests/core-performance-projection-immutability.test.mjs",
+        "tests/core-profitability-preparation.test.mjs",
+        "tests/core-read-worker-lanes-pilot.test.mjs",
+        "tests/core-read-worker-persistence.test.mjs",
+        "tests/core-read-worker-snapshot.test.mjs",
+        "tests/core-realtime-cooperative-pipeline.test.mjs",
+        "tests/core-report-continuity-gate.test.mjs",
+        "tests/core-report-index.test.mjs",
+        "tests/core-rest-cooperative-scan.test.mjs",
+        "tests/core-rest-startup-timing.test.mjs",
+        "tests/core-scoped-read-publication.test.mjs",
+        "tests/core-search-cooperative.test.mjs",
+        "tests/core-search-query-scaling.test.mjs",
+        "tests/core-snapshot-materialization.test.mjs",
+        "tests/core-snapshot-publication-retry.test.mjs",
+        "tests/core-source-phase-diagnostics.test.mjs",
+        "tests/core-startup-diagnostic-privacy.test.mjs",
+        "tests/core-startup-ui-admission.test.mjs",
+        "tests/core-stream-transfer-window.test.mjs",
+        "tests/core-table-isolation.test.mjs",
+        "tests/core-vendor-lazy-boundary.test.mjs",
+        "tests/core-verified-data-session.test.mjs",
+        "tests/core-worker-inbox-query-guard.test.mjs",
+        "tests/core-worker-snapshot-metadata.test.mjs",
+        "tests/core-worker-transfer-budget.test.mjs",
+        "tests/core-workflow-on-demand-share.test.mjs",
+        "tests/critical-business-audit-tooling.test.mjs",
+        "tests/deferred-navigation.test.mjs",
+        "tests/design-system-foundation.test.mjs",
+        "tests/electron-security.test.cjs",
+        "tests/fetch-timeout.test.mjs",
+        "tests/firebase-endpoints.test.mjs",
+        "tests/footer-navigation.test.mjs",
+        "tests/global-search.test.mjs",
+        "tests/hybrid-runtime-safety.test.mjs",
+        "tests/instant-data-engine.test.mjs",
+        "tests/instant-realtime.test.mjs",
+        "tests/interaction-metrics.test.mjs",
+        "tests/invoice-code.test.mjs",
+        "tests/invoice-templates.test.mjs",
+        "tests/keyboard-viewport.test.mjs",
+        "tests/legacy-runtime.test.mjs",
+        "tests/list-page.test.mjs",
+        "tests/local-activity-audit-contract.test.mjs",
+        "tests/local-android-config.test.mjs",
+        "tests/local-grant-renewal-contract.test.mjs",
+        "tests/master-app-calculation-parity.test.mjs",
+        "tests/master-background-scheduling.test.mjs",
+        "tests/master-collation-compare-cache.test.mjs",
+        "tests/master-compatibility-maintenance.test.mjs",
+        "tests/master-dev-watch.test.mjs",
+        "tests/master-interactive-read-scope.test.mjs",
+        "tests/master-performance-comparison.test.mjs",
+        "tests/master-primitive-normalization-cache.test.mjs",
+        "tests/master-realtime-snapshot-items.test.mjs",
+        "tests/master-record-calculation-cache.test.mjs",
+        "tests/master-rest-integration.test.mjs",
+        "tests/master-rest-pagination.test.mjs",
+        "tests/master-search-debounce.test.mjs",
+        "tests/master-search-index.test.mjs",
+        "tests/native-session-persistence.test.mjs",
+        "tests/native-startup-connectivity.test.mjs",
+        "tests/offline-hosted-api.test.cjs",
+        "tests/offline-isolated-qa-boundary.test.mjs",
+        "tests/offline-packaged-backend.test.mjs",
+        "tests/offline-trusted-commands.test.mjs",
+        "tests/offline-trusted-read-parity.test.mjs",
+        "tests/owner-data-gate.test.mjs",
+        "tests/p4-staging-release-workflows.test.mjs",
+        "tests/performance-monitor.test.mjs",
+        "tests/phase1-hidden-report.test.mjs",
+        "tests/phase2-adaptive-policy.test.mjs",
+        "tests/phase2-audit-tooling.test.mjs",
+        "tests/platform-admin-cutover.test.mjs",
+        "tests/platform-sdk.test.mjs",
+        "tests/preloadable-module.test.mjs",
+        "tests/read-arbiter.test.mjs",
+        "tests/read-lifecycle.test.mjs",
+        "tests/realtime-listener-planner.test.mjs",
+        "tests/realtime-tenant-sync.test.mjs",
+        "tests/release-staging-workflow.test.mjs",
+        "tests/report-module-removal.test.mjs",
+        "tests/revenue-detail.test.mjs",
+        "tests/safe-cleanup-parity.test.mjs",
+        "tests/scoped-native-listener.test.mjs",
+        "tests/search-engine.test.mjs",
+        "tests/search-focus-style.test.mjs",
+        "tests/section-info-hint.test.mjs",
+        "tests/shared-hotpaths.test.mjs",
+        "tests/static-compression.test.mjs",
+        "tests/sync-queue-presentation.test.mjs",
+        "tests/takeover-bounded-audit.test.mjs",
+        "tests/upgrade-adaptive-resource.test.mjs",
+        "tests/upgrade-android-process-metrics.test.mjs",
+        "tests/upgrade-fixture-preflight.test.mjs",
+        "tests/upgrade-native-bridge-callback-count.test.mjs",
+        "tests/upgrade-native-failure-metadata.test.mjs",
+        "tests/upgrade-native-listener-release-patch.test.mjs",
+        "tests/upgrade-native-pilot-source-boundary.test.mjs",
+        "tests/upgrade-native-probe.test.mjs",
+        "tests/upgrade-noop-publication.test.mjs",
+        "tests/upgrade-observation-barrier.test.mjs",
+        "tests/upgrade-pending-recovery.test.mjs",
+        "tests/upgrade-report-formatters.test.mjs",
+        "tests/upgrade-rich-fixture.test.mjs",
+        "tests/upgrade-search-dense-postings.test.mjs",
+        "tests/upgrade-search-fast-lane.test.mjs",
+        "tests/upgrade-search-phase-transform.test.mjs",
+        "tests/upgrade-share-pipeline.test.mjs",
+        "tests/upgrade-share-worker-lifecycle.test.mjs",
+        "tests/upgrade-soak-metrics.test.mjs",
+        "tests/upgrade-trusted-input-pair.test.mjs",
+        "tests/upgrade-worker-heap.test.mjs",
+        "tests/verification-cursor-order.test.mjs",
+        "tests/verification-soak-analysis.test.mjs",
+        "tests/verification-trace-analysis.test.mjs",
+        "tests/vite-api-proxy-config.test.mjs",
+        "tests/vps-api-client.test.mjs",
+        "tests/vps-domain-consumption.test.mjs",
+        "tests/warm-session-unlock.test.mjs",
+        "tests/workflow-data-readiness.test.mjs",
+        "tests/workspace-presentation.test.mjs",
+        "development/hd-manager/application/tests/active-source-retention.test.mjs",
+        "development/hd-manager/application/tests/business-day-fast-path.test.mjs",
+        "development/hd-manager/application/tests/business-directory-atomic-head.test.mjs",
+        "development/hd-manager/application/tests/local-queue-attention.test.mjs",
+        "development/hd-manager/application/tests/master-search-index.test.mjs",
+        "development/hd-manager/application/tests/module-read-availability.test.mjs",
+        "development/hd-manager/application/tests/module-readiness-trace.test.mjs",
+        "development/hd-manager/application/tests/native-connectivity-owner.test.mjs",
+        "development/hd-manager/application/tests/native-queue-schema.test.mjs",
+        "development/hd-manager/application/tests/navigation-intent-consumption.test.mjs",
+        "development/hd-manager/application/tests/navigation-module-intent.test.mjs",
+        "development/hd-manager/application/tests/offline-grant-renewal.test.mjs",
+        "development/hd-manager/application/tests/retained-module-activity.test.mjs",
+        "development/hd-manager/application/tests/retained-scoped-page.test.mjs",
+        "development/hd-manager/application/tests/sync-status-integrity.test.mjs",
+        "tests/core-preview-journal.test.mjs",
+        "tests/core-preview-snapshot-delta.test.mjs",
+        "tests/phase2a-preview-storage.test.mjs",
+        "tests/preview-firestore-cursor.test.mjs"
+      ],
+      "checks": []
+    }
+  ],
+  "finalGates": {
+    "shared": {
+      "passed": 1011,
+      "failed": 0,
+      "skipped": 7,
+      "cancelled": 0,
+      "log": "shared.domain.log"
+    },
+    "regression": {
+      "passed": 299,
+      "failed": 0,
+      "skipped": 0,
+      "cancelled": 0,
+      "log": "canonical-final-test.log"
+    },
+    "emulator": {
+      "passed": 83,
+      "failed": 0,
+      "skipped": 0,
+      "cancelled": 0,
+      "log": "canonical-release-emulator.log"
+    },
+    "orderCreationArchive": {
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0,
+      "cancelled": 0,
+      "log": "order-command-side-effects-final.log"
+    },
+    "roleCatalogComparisons": 38340,
+    "ciFunctionalGroups": 66,
+    "ciFunctionalGroupResults": [
+      {
+        "task": "npm run test:sales-commission-tiers",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-0.log"
+      },
+      {
+        "task": "npm run test:workspace-background-read",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-1.log"
+      },
+      {
+        "task": "npm run test:company-employee-reviews",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-2.log"
+      },
+      {
+        "task": "node --test tests/online-home-projection-client.test.mjs tests/workspace-presentation.test.mjs tests/web-workspace-order-readiness.test.mjs",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-3.log"
+      },
+      {
+        "task": "npm run test:attendance-wifi",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-4.log"
+      },
+      {
+        "task": "npm run test:ai-zalo",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-5.log"
+      },
+      {
+        "task": "npm run test:ai-zalo-order",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-6.log"
+      },
+      {
+        "task": "npm run test:stress",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-7.log"
+      },
+      {
+        "task": "npm run test:product-pricing-units",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-8.log"
+      },
+      {
+        "task": "npm run test:smart-customer-ordering",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-9.log"
+      },
+      {
+        "task": "npm run test:customer-product-billing",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-10.log"
+      },
+      {
+        "task": "npm run test:customer-order-memory",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-11.log"
+      },
+      {
+        "task": "npm run test:customer-contact-picker",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-12.log"
+      },
+      {
+        "task": "npm run test:customer-reconciliation-export",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-13.log"
+      },
+      {
+        "task": "npm run test:search",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-14.log"
+      },
+      {
+        "task": "npm run test:global-search",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-15.log"
+      },
+      {
+        "task": "npm run test:company-departments",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-16.log"
+      },
+      {
+        "task": "npm run test:search-focus-style",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-17.log"
+      },
+      {
+        "task": "npm run test:dashboard-widgets",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-18.log"
+      },
+      {
+        "task": "npm run test:messages-chat-list",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-19.log"
+      },
+      {
+        "task": "npm run test:notification-center",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-20.log"
+      },
+      {
+        "task": "npm run test:finance-mobile-layout",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-21.log"
+      },
+      {
+        "task": "npm run test:debt-overview-layout",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-22.log"
+      },
+      {
+        "task": "npm run test:asset-management",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-23.log"
+      },
+      {
+        "task": "npm run test:delivery-redesign",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-24.log"
+      },
+      {
+        "task": "npm run test:sales-revenue-period",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-25.log"
+      },
+      {
+        "task": "npm run test:salary-advance-period",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-26.log"
+      },
+      {
+        "task": "npm run test:warehouse-dispatch",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-27.log"
+      },
+      {
+        "task": "npm run test:warehouse-dispatch-grouping",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-28.log"
+      },
+      {
+        "task": "npm run test:warehouse-dispatch-bulk-order-billing",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-29.log"
+      },
+      {
+        "task": "npm run test:warehouse-dispatch-order-creation",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-30.log"
+      },
+      {
+        "task": "npm run test:warehouse-inventory",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-31.log"
+      },
+      {
+        "task": "npm run test:order-request-ux",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-32.log"
+      },
+      {
+        "task": "npm run test:order-share-cache",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-33.log"
+      },
+      {
+        "task": "npm run test:realtime-listener-planner",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-34.log"
+      },
+      {
+        "task": "npm run test:realtime-tenant-sync",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-35.log"
+      },
+      {
+        "task": "npm run test:workflow-data-readiness",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-36.log"
+      },
+      {
+        "task": "npm run test:firestore-resilience",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-37.log"
+      },
+      {
+        "task": "npm run test:delivery-reconciliation",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-38.log"
+      },
+      {
+        "task": "npm run test:payroll-evaluation",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-39.log"
+      },
+      {
+        "task": "node tests/employee-evaluation-automation.test.mjs",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-40.log"
+      },
+      {
+        "task": "npm run test:payroll-lock",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-41.log"
+      },
+      {
+        "task": "npm run test:payroll-freeze",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-42.log"
+      },
+      {
+        "task": "npm run test:payroll-hardening",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-43.log"
+      },
+      {
+        "task": "npm run test:payroll-debt-rollover",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-44.log"
+      },
+      {
+        "task": "npm run test:payroll-auto-lock",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-45.log"
+      },
+      {
+        "task": "npm run test:identity",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-46.log"
+      },
+      {
+        "task": "npm run test:hybrid-runtime",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-47.log"
+      },
+      {
+        "task": "npm run test:production-deploy-workflow",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-48.log"
+      },
+      {
+        "task": "npm run test:request-authorization",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-49.log"
+      },
+      {
+        "task": "npm run test:customer-portal-security",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-50.log"
+      },
+      {
+        "task": "npm run test:customer-loyalty-eligibility",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-51.log"
+      },
+      {
+        "task": "npm run test:customer-debt-payment",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-52.log"
+      },
+      {
+        "task": "npm run test:sepay-reconciliation",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-53.log"
+      },
+      {
+        "task": "npm run test:bank-app-deeplink",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-54.log"
+      },
+      {
+        "task": "npm run test:ai-gateway-security",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-55.log"
+      },
+      {
+        "task": "npm run test:fetch-timeout",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-56.log"
+      },
+      {
+        "task": "npm run test:vps-api",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-57.log"
+      },
+      {
+        "task": "npm run test:platform-sdk",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-58.log"
+      },
+      {
+        "task": "npm run test:platform-admin-cutover",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-59.log"
+      },
+      {
+        "task": "npm run test:electron-security",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-60.log"
+      },
+      {
+        "task": "npm run test:footer-navigation",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-61.log"
+      },
+      {
+        "task": "npm run test:functions",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-62.log"
+      },
+      {
+        "task": "npm run test:master-performance",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-63.log"
+      },
+      {
+        "task": "npm run test:instant-data",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-64.log"
+      },
+      {
+        "task": "npm run test:home-cold-calculation",
+        "status": "PASS_LOCAL_NON_BROWSER_SCOPE",
+        "log": "ci-functional-65.log"
+      }
+    ],
+    "lint": "PASS",
+    "typecheck": "PASS",
+    "firebaseOnlyBundle": "PASS",
+    "assetParity": "PASS",
+    "kpi": "PASS_WITH_ADVISORY_WARNINGS",
+    "countsOverlap": true,
+    "countNote": "Groups reuse tests. Do not sum these numbers as unique cases."
+  },
+  "safety": {
+    "isolatedEmulator": true,
+    "deliberateProductionBusinessWrites": 0,
+    "productionFrontendActivated": false,
+    "productionRulesDeployed": false,
+    "originalQaRevenue": 2032000,
+    "originalQaReceipts": 929000,
+    "originalQaReceivable": 1103000,
+    "lockedPayrollSnapshotsPreserved": 2,
+    "foreignTenantMutationsDenied": true
+  },
+  "apk": {
+    "status": "PASS",
+    "file": ".artifacts/full-app-20261122/android/HD-Manager-1.0.13-QA-20261122.apk",
+    "sha256": "0d4732cc530e9ea8b8110dd187764af8cb4627004f302f9cde783c037ffac149",
+    "bytes": 31724398,
+    "webFiles": 93,
+    "allAssetsMatch": true,
+    "serverUrl": null,
+    "fixtureBootstrap": false,
+    "sourceHash": "d9df772b5a21e690ef7fbc02edc3601701eefe3b9a1834ac48f6738e5726ed65",
+    "buildId": "full-audit-20261122-d9df772b5a21",
+    "package": "com.hdmanager.app.acceptance",
+    "versionCode": 26112201,
+    "versionName": "1.0.13",
+    "signing": "existing Android Debug key",
+    "localPath": ".artifacts/full-app-20261122/android/HD-Manager-1.0.13-QA-20261122.apk",
+    "productionSignedRelease": false,
+    "googlePlayReady": false
+  },
+  "androidSmoke": {
+    "device": "Pixel_5 Android 11 API30 emulator",
+    "installed": true,
+    "existingSessionPreserved": true,
+    "checks": [
+      "Home opens",
+      "Orders load without obsolete review badge",
+      "Native date picker opens and changes displayed day",
+      "Customers load with debt summaries",
+      "Return to Home"
+    ],
+    "productionBusinessMutations": false
+  },
+  "legacyExclusions": [
+    {
+      "oracle": "VPS Settings tab consumes Storage API read, provider and health contracts",
+      "classification": "No storage tab/providers/health UI in the retained root app",
+      "executed": false,
+      "canonicalFirebaseAcceptance": false
+    },
+    {
+      "oracle": "VPS staging customer creation uses the authenticated VPS actor when legacy employees are unavailable",
+      "classification": "The old monolithic customer form assertion no longer matches the split legacy CRM",
+      "executed": false,
+      "canonicalFirebaseAcceptance": false
+    },
+    {
+      "oracle": "VPS inventory lookup uses only its supported query contract",
+      "classification": "Legacy read panel still forwards its generic query; narrowed VPS lookup is not implemented",
+      "executed": false,
+      "canonicalFirebaseAcceptance": false
+    },
+    {
+      "oracle": "VPS staging can create only the missing disposable UOM and warehouse master records for inventory E2E",
+      "classification": "No createUnit method or disposable master-setup UI in the retained root adapter",
+      "executed": false,
+      "canonicalFirebaseAcceptance": false
+    },
+    {
+      "oracle": "VPS staging exposes explicit order lifecycle controls without automatic stock-out or legacy payment rules",
+      "classification": "No reserve/release order methods or lifecycle UI in the retained root adapter",
+      "executed": false,
+      "canonicalFirebaseAcceptance": false
+    },
+    {
+      "oracle": "VPS fulfillment UI preserves real order, reservation, delivery-plan, and ledger lineage",
+      "classification": "No delivery-plan/reservation/reversal UI in the retained root adapter",
+      "executed": false,
+      "canonicalFirebaseAcceptance": false
+    },
+    {
+      "oracle": "VPS staging debt and cash UI use their supported Finance contracts and retain tenant guardrails",
+      "classification": "The root app exposes generic read panels, not these lifecycle forms",
+      "executed": false,
+      "canonicalFirebaseAcceptance": false
+    }
+  ],
+  "limitations": [
+    "Passing these cases is not a proof of absence of every possible defect.",
+    "Browser automation is deferred to CUA/GitHub CI; local shell CI groups exclude browser-launch scripts. Screenshots and QA evidence remain local.",
+    "Billing page has no implemented paid subscription purchase/renewal capability.",
+    "No real Zalo/SMS/bank transmission, payment provider transaction, physical camera/GPS/contacts or physical low/mid/high device matrix acceptance.",
+    "No physical-device P95/60fps guarantee; architecture simulation warnings remain advisory.",
+    "Commission is monthly; quarterly/yearly application and unapproved return-money rules remain deliberately gated.",
+    "Functions runtime dependency audit has 1 low and 4 moderate findings; no high/critical findings at the configured gate.",
+    "APK uses the existing debug QA key and separate acceptance package. Official production signing/Play release is not performed.",
+    "Main push validates/builds; it does not activate VPS or deploy Firestore Rules. Production activation remains a separate release."
+  ],
+  "githubCi": {
+    "status": "TO_BE_OBSERVED_AFTER_PUSH"
+  }
+}

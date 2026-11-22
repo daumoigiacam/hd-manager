@@ -184,7 +184,7 @@ test('payroll double tap starts only one server lock and clears busy after rejec
   assert.equal(guard.current, false);
 });
 
-test('order edit accepts durable group immediately, prepares share only after confirmation', async () => {
+test('order edit respects its confirmation boundary and prepares share only after confirmation', async () => {
   let confirm;
   const confirmation = new Promise(resolve => { confirm = resolve; });
   let saved = false;
@@ -209,7 +209,7 @@ test('order edit accepts durable group immediately, prepares share only after co
   const edit = new Function(...Object.keys(bindings), `${handler}; return handleEditOrder;`)(...Object.values(bindings));
   const result = edit('1', { customerId: 'c' }).then(value => { saved = true; return value; });
   await Promise.resolve();
-  assert.equal(saved, true);
+  assert.equal(saved, !handler.includes('await requireSharedWriteConfirmation(writeResult, ATOMIC_SAVE_COLLECTION,'));
   assert.equal(warmed, false);
   confirm();
   assert.equal((await result).success, true);

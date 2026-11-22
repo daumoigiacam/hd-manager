@@ -15,7 +15,7 @@ test('native credential lifecycle is opt-in, scoped, protected and cancellable',
   let offline = false;
   let rejected = false;
   const identity = { identityKey: 'emp_a', id: 'a', phone: '0900000001', companyId: 'co', accountType: 'employee' };
-  globalThis.window = { localStorage: storage(), sessionStorage: storage() };
+  globalThis.window = { localStorage: storage(), sessionStorage: storage(), location: {origin:'https://app.hdconnect.net'} };
   globalThis.__biometricTest = {
     async isAvailable() { return { isAvailable: available, strongBiometryIsAvailable: available, biometryType: 3 }; },
     async verifyIdentity() { prompts++; if (cancel) throw new Error('cancel'); },
@@ -37,7 +37,7 @@ test('native credential lifecycle is opt-in, scoped, protected and cancellable',
   try {
     const output = await build({ entryPoints: ['src/services/identityCenter.js'], bundle: true, write: false, platform: 'node', format: 'esm', define: { 'import.meta.env': '{}' }, plugins: [{ name: 'native-test', setup(b) {
       b.onResolve({ filter: /^@capacitor\/core$|^@capgo\/capacitor-native-biometric$/ }, args => ({ path: args.path, namespace: 'test' }));
-      b.onLoad({ filter: /.*/, namespace: 'test' }, args => ({ contents: args.path === '@capacitor/core' ? 'export const Capacitor={isNativePlatform:()=>true,getPlatform:()=>"android"};' : 'export const NativeBiometric=globalThis.__biometricTest;export const AccessControl={NONE:0,BIOMETRY_CURRENT_SET:1};' }));
+      b.onLoad({ filter: /.*/, namespace: 'test' }, args => ({ contents: args.path === '@capacitor/core' ? 'export const Capacitor={isNativePlatform:()=>true,getPlatform:()=>"android"};export const CapacitorHttp={request:async({url,method,headers,data})=>{const response=await globalThis.fetch(url,{method,headers,body:JSON.stringify(data)});return {status:response.status||(response.ok?200:500),data:await response.json(),headers:{},url};}};' : 'export const NativeBiometric=globalThis.__biometricTest;export const AccessControl={NONE:0,BIOMETRY_CURRENT_SET:1};' }));
     } }] });
     const api = await import(`data:text/javascript;base64,${Buffer.from(output.outputFiles[0].text).toString('base64')}`);
     assert.equal(api.getBiometricAutoLoginProfile(), null);

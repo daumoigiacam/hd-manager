@@ -5,6 +5,7 @@ import { parse } from '@babel/parser';
 import { initializeApp, deleteApp } from 'firebase/app';
 import { getFirestore, collection, query, where, orderBy, limit, queryEqual } from 'firebase/firestore';
 import { canUseFirestoreReadWorker } from '../src/services/readWorkerPolicy.js';
+import {canUseMessageReadWorker} from '../src/services/messageReadAccessPlan.js';
 
 const source = fs.readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
 const ast = parse(source, { sourceType: 'module', plugins: ['jsx'] });
@@ -21,6 +22,7 @@ visit(ast);
 assert.ok(expression);
 const evaluate = new Function('readWorker', 'canUseFirestoreReadWorker', 'colName', 'collectionRefs', 'customerSession',
   'firebaseQueryEqual', 'firebaseQuery', 'collection', 'db', 'appId', 'tenantCompanyId', 'firebaseWhere', 'firebaseOrderBy', 'firebaseLimit',
+  'CORE_DATA_COLLECTION_NAMES','activeTabForSyncRef','canUseMessageReadWorker','getMessageReadPlan',
   `return ${expression}`);
 
 test('actual App worker admission accepts only the exact SDK manager inbox query', async () => {
@@ -30,7 +32,8 @@ test('actual App worker admission accepts only the exact SDK manager inbox query
     const target = collection(db, 'artifacts', appId, 'public', 'data', 'messages');
     const expected = () => query(target, where('companyId', '==', companyId), orderBy('createdAt', 'desc'), limit(200));
     const eligible = (refs, customerSession = false, worker = {}) => evaluate(worker, canUseFirestoreReadWorker,
-      'messages', refs, customerSession, queryEqual, query, collection, db, appId, companyId, where, orderBy, limit);
+      'messages', refs, customerSession, queryEqual, query, collection, db, appId, companyId, where, orderBy, limit,
+      ['companies','employees'],{current:'messages'},canUseMessageReadWorker,()=>[{kind:'all',filters:[]}]);
     assert.equal(eligible([expected()]), true);
     assert.equal(eligible([expected()], true), false);
     assert.equal(eligible([expected()], false, null), false);

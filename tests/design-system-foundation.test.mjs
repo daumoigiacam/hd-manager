@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import {readApplicationSource} from '../scripts/helpers/application-source.cjs';
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 
-const app = read('src/App.jsx');
+const app = readApplicationSource();
 const productView = app.slice(app.indexOf('function ProductManagementView('), app.indexOf('function CustomerCRMView('));
 const main = read('src/main.jsx');
 const shell = read('src/layout/AppShell.jsx');
@@ -54,7 +55,7 @@ assert.match(indexCss, /html\s*\{[^}]*font-size:\s*16px/s, 'Root font size must 
 assert.match(indexCss, /\.mobile-app-shell\s*\{[^}]*font-size:\s*var\(--hd-type-body,\s*14px\)/s, 'Mobile shell must use the shared fixed body text size');
 assert.match(indexCss, /input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\),\s*select,\s*textarea\s*\{\s*font-size:\s*var\(--hd-type-body,\s*14px\)/s, 'Form controls must use the shared 14px body size by default');
 assert.match(indexCss, /data-hd-ios-input-zoom-guard="true"[\s\S]*?font-size:\s*max\(16px,\s*var\(--hd-type-body,\s*14px\)\)/, 'iOS form controls must retain a 16px minimum to prevent focus zoom');
-assert.match(main, /const isIosInputZoomGuard = platform === 'ios' \|\| isIosWeb;[\s\S]*root\.dataset\.hdIosInputZoomGuard = isIosInputZoomGuard \? 'true' : 'false';/, 'Runtime must enable the input zoom guard only on iOS');
+assert.match(main, /const isIosInputZoomGuard = platform === 'ios' \|\| isIosWeb;[\s\S]*const zoomGuardValue = isIosInputZoomGuard \? 'true' : 'false';[\s\S]*if \(root\.dataset\.hdIosInputZoomGuard !== zoomGuardValue\) root\.dataset\.hdIosInputZoomGuard = zoomGuardValue;/, 'Runtime must enable the input zoom guard only on iOS without redundant DOM mutations');
 assert(foundation.includes('.hd-customer-create-view__header h3') && foundation.includes('font-size: var(--hd-type-h1)'), 'Customer create title must use the shared page title scale');
 for (const token of ['--hd-type-kpi-lg: 24px', '--hd-type-kpi-md: 20px', '--hd-type-kpi-sm: 16px', '--hd-type-h1: 20px', '--hd-type-section-title: 16px', '--hd-type-card-title: 14px']) {
   assert(foundation.includes(token), `Missing CSS typography token: ${token}`);

@@ -1,4 +1,4 @@
-// Exact original shared pure declarations; no CRM UI/native/auth imports.
+// Generated from canonical source by scripts/build-payroll-original-domain.mjs. Do not edit independently.
 import {sortProjection} from "../../services/cooperativeProjection.js";
 
 import {purchaseAmount} from "../../utils/productMeasures.js";
@@ -833,4 +833,4 @@ const getPaymentTimestamp = (payment = {}) => (
     || (getPaymentDateKey(payment) ? new Date(`${getPaymentDateKey(payment)}T12:00:00`).getTime() : 0)
 );
 
-export {isOwnerAccountUser,isOwnerPosition,getEntityTimestamp,isEmployeeSalesPosition,normalizeEmployeePosition,getTodayString,getDateKeyFromAnyValue,buildCustomerReconciledLedger,parseLooseMoneyValue,roundMoneyValue,normalizeEmployeeRoleSalaryComponents,isSalesPosition,WAREHOUSE_EXPORT_POSITION,formatCurrency,SALES_COLLABORATOR_POSITION,getSalesLeaderId,parseInputCurrency,getPaymentDateKey};
+export {isOwnerAccountUser,isOwnerPosition,getEntityTimestamp,isEmployeeSalesPosition,normalizeEmployeePosition,getTodayString,isSalesPosition,WAREHOUSE_EXPORT_POSITION,SALES_COLLABORATOR_POSITION,getDateKeyFromAnyValue,buildCustomerReconciledLedger,parseLooseMoneyValue,roundMoneyValue,normalizeEmployeeRoleSalaryComponents,formatCurrency,getSalesLeaderId,parseInputCurrency,getPaymentDateKey};

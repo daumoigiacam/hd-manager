@@ -9,6 +9,8 @@ import { sortProjection } from "../../services/cooperativeProjection.js";
 import { useCooperativeProjection } from "../../hooks/useCooperativeProjection.js";
 import { DELIVERY_RECONCILIATION_INITIAL_CUSTOMER_LIMIT, buildPendingDeliveryReconciliationGroups, calculateDeliveryActualCollectionTotal, countPendingDeliveryReconciliationDispatches, getVisibleDeliveryReconciliationGroups, resolveDeliveryCollectionDraftAmount } from "../../utils/deliveryReconciliationUx.js";
 import { createDeliverySavePlan } from "../../utils/deliverySavePlan.js";
+import { planDeliveryCashflowChange } from "../../utils/deliveryCashflow.js";
+import { takeDeliveryCashflow } from "../../utils/deliveryCashflowTotals.js";
 import { X, CheckCircle, Phone, ChevronDown, ChevronUp, Lock, MapPin, Search, ClipboardList, Send } from "lucide-react";
 // Transitional bundle boundary. Only stable local module bindings are injected;
 // all actor/company/business data continues to arrive through current props.
@@ -205,14 +207,6 @@ export function createDeliveryReportView(runtime) {
       && resolveEntityDateKey(expense, workingDate) === workingDate
       && (!expense.createdByEmployeeId || !employee?.id || expense.createdByEmployeeId === employee.id))
     .sort((a, b) => (getEntityTimestamp(b) || 0) - (getEntityTimestamp(a) || 0)), [employee?.id, expenses, workingDate]);
-  const dayDeliveryCollectedTotal = useMemo(() => dayReports.reduce((sum, report) => sum + parseInputCurrency(report.collectedAmount), 0), [dayReports]);
-  const dayDeliveryExpenseTotal = useMemo(() => (
-    dayReports.reduce((sum, report) => sum + parseInputCurrency(report.deliveryExpenseAmount), 0)
-    + dayStandaloneDeliveryExpenses.reduce((sum, expense) => sum + parseInputCurrency(expense.amount), 0)
-  ), [dayReports, dayStandaloneDeliveryExpenses]);
-  const sumUniqueMoneyValues = (values = []) => Array.from(new Set(
-    values.map(value => parseInputCurrency(value)).filter(value => value > 0)
-  )).reduce((sum, value) => sum + value, 0);
   const latestReportByDispatch = useMemo(() => {
     const reportMap = new Map();
     dayReports.forEach(report => {
@@ -539,17 +533,11 @@ export function createDeliveryReportView(runtime) {
   );
   const reportCustomerGroups = useMemo(() => {
     const grouped = new Map();
-    const seenCollectedByCustomer = new Map();
-    const seenExpenseByCustomer = new Map();
-    const takeUniqueCustomerCashflow = (seenMap, customerKey, value) => {
+    const seenCollectedByCustomer = new Set();
+    const seenExpenseByCustomer = new Set();
+    const takeUniqueCustomerCashflow = (seenMap, report, kind, value) => {
       const amount = parseInputCurrency(value);
-      if (amount <= 0) return 0;
-      if (!seenMap.has(customerKey)) seenMap.set(customerKey, new Set());
-      const seenValues = seenMap.get(customerKey);
-      const valueKey = String(amount);
-      if (seenValues.has(valueKey)) return 0;
-      seenValues.add(valueKey);
-      return amount;
+      return takeDeliveryCashflow(seenMap, report, kind, amount);
     };
     dayReports.forEach((report) => {
       const customer = customerLookup.get(report.customerId);
@@ -616,8 +604,8 @@ export function createDeliveryReportView(runtime) {
       if (!productRow.packageUnit && report.actualPackageUnit) {
         productRow.packageUnit = report.actualPackageUnit;
       }
-      const uniqueCollectedAmount = takeUniqueCustomerCashflow(seenCollectedByCustomer, customerKey, report.collectedAmount);
-      const uniqueExpenseAmount = takeUniqueCustomerCashflow(seenExpenseByCustomer, customerKey, report.deliveryExpenseAmount);
+      const uniqueCollectedAmount = takeUniqueCustomerCashflow(seenCollectedByCustomer, report, 'income', report.collectedAmount);
+      const uniqueExpenseAmount = takeUniqueCustomerCashflow(seenExpenseByCustomer, report, 'expense', report.deliveryExpenseAmount);
       if (uniqueCollectedAmount > 0) group.collectedAmounts.push(uniqueCollectedAmount);
       if (uniqueExpenseAmount > 0) group.expenseAmounts.push(uniqueExpenseAmount);
       if (status.isMismatch) group.mismatchCount += 1;
@@ -646,8 +634,8 @@ export function createDeliveryReportView(runtime) {
           productSummary,
           shortProductSummary,
           tableProductRows: productRows,
-          totalCollectedAmount: sumUniqueMoneyValues(group.collectedAmounts),
-          totalExpenseAmount: sumUniqueMoneyValues(group.expenseAmounts),
+          totalCollectedAmount: group.collectedAmounts.reduce((sum, amount) => sum + amount, 0),
+          totalExpenseAmount: group.expenseAmounts.reduce((sum, amount) => sum + amount, 0),
           latestTimestamp: getEntityTimestamp(sortedReports[0]) || 0,
           reports: sortedReports
         };
@@ -1375,6 +1363,8 @@ export function createDeliveryReportView(runtime) {
     setCollectedAmountManuallyEdited(Boolean(parseLooseMoneyValue(report.collectedAmount)));
     setCollectedMethod(report.collectedMethod || 'Tiền mặt');
     const linkedAssetCostLog = assetCostLogs.find(log => log.id === report.assetCostLogId || log.relatedDeliveryReportId === report.id);
+    const linkedExpense = expenses.find(expense => expense.id === report.expenseId || expense.relatedDeliveryReportId === report.id);
+    setStandaloneExpenseNote(report.deliveryExpenseNote ?? linkedExpense?.note ?? '');
     const existingExpenseAssetId = report.deliveryExpenseAssetId || linkedAssetCostLog?.assetId || '';
     setDeliveryExpenseAmount(report.deliveryExpenseAmount || '');
     setDeliveryExpenseCategory(report.deliveryExpenseCategory || '');
@@ -1433,15 +1423,37 @@ export function createDeliveryReportView(runtime) {
     if (!window.confirm('Xóa báo cáo giao hàng này?')) return;
     setIsSaving(true);
     try {
-      await onUpdateDeliveryReport(reportId, {
+      const report = deliveryReports.find(row => row.id === reportId);
+      if (!report) throw new Error('Không tìm thấy báo cáo cần xóa.');
+      const plan = createDeliverySavePlan(crypto.randomUUID());
+      const archivedAt = new Date().toISOString();
+      const archive = { isArchived: true, archivedAt, archivedByEmpId: employee?.id || '' };
+      for (const [records, permitted, label, edit] of [
+        [payments, canRecordDeliveryIncome, 'Khoản thu', plan.editPayment],
+        [expenses, canRecordDeliveryExpense, 'Khoản chi', plan.editExpense]
+      ]) {
+        const linked = records.filter(row => !row.isArchived && row.relatedDeliveryReportId === reportId);
+        for (const record of linked) {
+          const change = planDeliveryCashflowChange({ records: [record], reportId, amount: 0,
+            customerId: record.customerId, method: record.method, date: record.date, permitted, label });
+          if (change.type === 'archive') edit(record.id, archive);
+        }
+      }
+      for (const cost of assetCostLogs.filter(row => !row.isArchived && row.relatedDeliveryReportId === reportId)) {
+        if (!canEditAssetCostLog) throw new Error('Cần quyền sửa chi phí xe để xóa báo cáo có chi phí liên kết.');
+        plan.editCost(cost.id, { ...cost, ...archive });
+      }
+      plan.editReport(reportId, {
         isArchived: true,
-        archivedAt: new Date().toISOString(),
+        archivedAt,
         archivedByEmpId: employee?.id || ''
       });
+      const result = await onSaveDeliveryCommand(plan);
+      if (!result?.success) throw new Error(result?.message || 'Không xóa được báo cáo và chứng từ liên quan.');
       if (editingReportId === reportId) resetReportForm();
       setSelectedReportCustomerKey('');
       setStatusTone('emerald');
-      setStatusMessage('Đã xóa báo cáo giao hàng.');
+      setStatusMessage(result.queued ? 'Đã lưu yêu cầu xóa báo cáo và chứng từ chờ duyệt, đang đồng bộ.' : 'Đã xóa báo cáo giao hàng và chứng từ chờ duyệt liên quan.');
     } catch (error) {
       setStatusTone('red');
       setStatusMessage(getFriendlyFirebaseErrorMessage(error, 'Không xóa được báo cáo giao hàng.'));
@@ -1842,6 +1854,7 @@ export function createDeliveryReportView(runtime) {
       const onUpdateDeliveryReport = plan.editReport;
       const onEditOrder = plan.editOrder;
       const onAddPayment = plan.addPayment;
+      const onEditPayment = plan.editPayment;
       const onAddExpense = plan.addExpense;
       const onEditExpense = plan.editExpense;
       const onAddAssetCostLog = plan.addCost;
@@ -1867,6 +1880,21 @@ export function createDeliveryReportView(runtime) {
       const effectiveDeliveryExpenseAssetId = deliveryExpenseAssetId || (!deliveryExpenseAssetTouched ? defaultDeliveryAssetId : '');
       const selectedExpenseAsset = effectiveDeliveryExpenseAssetId ? assetLookup.get(effectiveDeliveryExpenseAssetId) : null;
       const currentEditingReport = editingReportId ? deliveryReports.find(report => report.id === editingReportId) : null;
+      const paymentChange = editingReportId ? planDeliveryCashflowChange({
+        records: payments, reportId: editingReportId, amount: collectedAmountValue,
+        customerId: selectedCustomerId, method: collectedMethod, date: workingDate,
+        permitted: canRecordDeliveryIncome, label: 'Khoản thu'
+      }) : { type: 'create' };
+      const expenseChange = editingReportId ? planDeliveryCashflowChange({
+        records: expenses, reportId: editingReportId, recordId: currentEditingReport?.expenseId,
+        amount: deliveryExpenseAmountValue, customerId: undefined, date: workingDate,
+        details: {
+          category: normalizeExpenseCategoryLabel(deliveryExpenseCategory || 'Chi phí giao hàng'),
+          note: standaloneExpenseNote || deliveryExpenseCategory || 'Chi phí giao hàng',
+          assetId: effectiveDeliveryExpenseAssetId || ''
+        },
+        permitted: canRecordDeliveryExpense, label: 'Khoản chi'
+      }) : { type: 'create' };
       const linkedAssetCostLog = editingReportId
         ? assetCostLogs.find(log => log.id === currentEditingReport?.assetCostLogId || log.relatedDeliveryReportId === editingReportId)
         : null;
@@ -1909,10 +1937,12 @@ export function createDeliveryReportView(runtime) {
         pricingPendingActual: Boolean(row.pricingPendingActual),
         unitPrice: parseLooseMoneyValue(row.unitPrice),
         pricingAmount: parseLooseMoneyValue(row.pricingAmount),
-        collectedAmount: collectedAmountValue,
+        // One compound report has one receipt/expense, owned by its first row.
+        collectedAmount: row === firstRow ? collectedAmountValue : 0,
         collectedMethod,
-        deliveryExpenseAmount: deliveryExpenseAmountValue,
+        deliveryExpenseAmount: row === firstRow ? deliveryExpenseAmountValue : 0,
         deliveryExpenseCategory: normalizeExpenseCategoryLabel(deliveryExpenseCategory || 'Chi phí giao hàng'),
+        deliveryExpenseNote: standaloneExpenseNote || deliveryExpenseCategory || 'Chi phí giao hàng',
         deliveryExpenseAssetId: effectiveDeliveryExpenseAssetId || '',
         deliveryExpenseAssetNameSnapshot: selectedExpenseAsset?.name || '',
         deliveryExpenseAssetPlateSnapshot: selectedExpenseAsset?.plateNumber || selectedExpenseAsset?.licensePlate || selectedExpenseAsset?.plate || '',
@@ -2032,8 +2062,8 @@ export function createDeliveryReportView(runtime) {
           });
         }
       }
-      if (!wasEditing && collectedAmountValue > 0 && canRecordDeliveryIncome) {
-        await onAddPayment?.({
+      if (collectedAmountValue > 0 && canRecordDeliveryIncome && paymentChange.type !== 'none') {
+        const paymentPayload = {
           clientMutationId: `p_delivery_${reportId}`,
           customerId: selectedCustomerId,
           amount: collectedAmountValue,
@@ -2049,9 +2079,13 @@ export function createDeliveryReportView(runtime) {
           relatedDeliveryReportId: reportId || '',
           dispatchId: firstRow.dispatchId || '',
           empId: employee?.id || ''
-        });
+        };
+        if (paymentChange.type === 'edit') await onEditPayment(paymentChange.previous.id, paymentPayload);
+        else await onAddPayment(paymentPayload);
+      } else if (paymentChange.type === 'archive') {
+        await onEditPayment(paymentChange.previous.id, { isArchived: true, archivedAt: new Date().toISOString() });
       }
-      if (deliveryExpenseAmountValue > 0 && canRecordDeliveryExpense) {
+      if (deliveryExpenseAmountValue > 0 && canRecordDeliveryExpense && expenseChange.type !== 'none') {
         const expensePayload = {
           amount: deliveryExpenseAmountValue,
           category: normalizeExpenseCategoryLabel(deliveryExpenseCategory || 'Chi phí giao hàng'),
@@ -2075,13 +2109,17 @@ export function createDeliveryReportView(runtime) {
         if (linkedExpense) await onEditExpense(linkedExpense.id, expensePayload);
         else reportExpenseId = await onAddExpense(expensePayload);
         if (reportId) await onUpdateDeliveryReport(reportId, { expenseId: reportExpenseId });
-      } else if (linkedExpense && canRecordDeliveryExpense) {
+      } else if (linkedExpense && canRecordDeliveryExpense && expenseChange.type === 'archive') {
         await onEditExpense(linkedExpense.id, { isArchived: true, archivedAt: new Date().toISOString() });
         if (linkedAssetCostLog && canEditAssetCostLog) {
           await onEditAssetCostLog(linkedAssetCostLog.id, { ...linkedAssetCostLog, isArchived: true, archivedAt: new Date().toISOString() });
         }
       }
-      if (shouldSyncAssetCostLog) {
+      const assetCostDetailsChanged = linkedAssetCostLog && [
+        ['kmAt', deliveryExpenseKmAtValue], ['liters', deliveryExpenseLitersValue],
+        ['unitPrice', deliveryExpenseUnitPriceValue], ['assetId', effectiveDeliveryExpenseAssetId]
+      ].some(([field, value]) => String(linkedAssetCostLog[field] ?? '') !== String(value ?? ''));
+      if (shouldSyncAssetCostLog && (expenseChange.type !== 'none' || assetCostDetailsChanged)) {
         const normalizedCategory = normalizeExpenseCategoryLabel(deliveryExpenseCategory || 'Chi phí giao hàng');
         const normalizedCategoryKey = normalizeLookupText(normalizedCategory);
         const isFuelCost = ['xang', 'dau', 'nhien lieu', 'fuel'].some(keyword => normalizedCategoryKey.includes(keyword));
@@ -2478,7 +2516,7 @@ export function createDeliveryReportView(runtime) {
                 </span>
               </a>
               <div className="flex min-h-[48px] min-w-0 flex-col items-center justify-center rounded-2xl border border-rose-100 bg-rose-50 px-1.5 py-1.5 text-center text-rose-700 shadow-sm">
-                <span className="text-[11px] font-normal uppercase tracking-wide">Nợ cũ</span>
+                <span className="text-[11px] font-normal uppercase tracking-wide">Công nợ</span>
                 <span className="mt-0.5 w-full truncate text-[11px] font-normal leading-4">
                   {selectedCustomerDebtInfo.debt > 0
                     ? `${formatCurrency(selectedCustomerDebtInfo.debt)} đ`

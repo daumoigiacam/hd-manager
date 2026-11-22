@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 
 import {
   buildBusinessDocumentId,
@@ -9,7 +10,8 @@ import {
   isValidBusinessMutationId,
 } from '../src/utils/businessMutationIds.js';
 
-const appSource = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const appSource = readApplicationSource();
+const readCanonical = name => readFileSync(new URL(`../development/hd-manager/application/src/${name}`, import.meta.url), 'utf8');
 
 test('business command ids are valid and deterministic document ids are tenant scoped', () => {
   const commandId = createBusinessMutationId('warehouse-dispatch', 'fixed-retry-1');
@@ -60,18 +62,21 @@ test('invalid externally supplied command ids are rejected instead of being rewr
 test('order, order request and warehouse forms retain one command id across retries', () => {
   assert.match(appSource, /const createSingleOrderState = \(\) => \(\{\s*clientMutationId: createBusinessMutationId\('order'\)/);
   assert.match(appSource, /const createBulkOrderDraft = \(seed = \{\}\) => \(\{[\s\S]{0,180}clientMutationId: seed\.clientMutationId \|\| createBusinessMutationId\('order'\)/);
-  assert.match(appSource, /const createDraft = \(seed = \{\}\) => \(\{[\s\S]{0,180}clientMutationId: seed\.clientMutationId \|\| createBusinessMutationId\('order-request'\)/);
-  assert.match(appSource, /const createEmptyDispatchDraft = \(assignedDriverId = ''\) => \(\{\s*clientMutationId: createBusinessMutationId\('warehouse-dispatch'\)/);
-  assert.match(appSource, /clientMutationId: dispatchDraft\.clientMutationId \|\| createBusinessMutationId\('warehouse-dispatch'\)/);
-  assert.match(appSource, /clientMutationId: draft\.clientMutationId,\s*customerId: customer\.id/);
-  assert.match(appSource, /clientMutationId: draft\.clientMutationId \|\| createBusinessMutationId\('order'\),\s*customerId/);
+  assert.match(appSource, /const createDraft = \(seed = \{\}\) => \(\{\s*localId: seed\.localId \|\| `req_/);
+  assert.match(appSource, /clientMutationId: draft\.localId,/);
+  assert.match(appSource, /clientMutationId: draft\.clientMutationId,/);
+  const dispatch = readCanonical('features/warehouse/submitDispatchForm.js');
+  assert.match(dispatch, /if \(dispatchCreateMutationRef\.current\?\.fingerprint !== intentFingerprint\)/);
+  assert.match(dispatch, /clientMutationId: createMutation\.clientMutationId/);
+  assert.match(dispatch, /dispatchCreateMutationRef\.current = null/);
 });
 
 test('all three create handlers derive stable tenant-scoped document ids', () => {
-  assert.match(appSource, /buildBusinessDocumentId\('o', myCompanyId, clientMutationId\)/);
-  assert.match(appSource, /buildBusinessDocumentId\('or', myCompanyId, clientMutationId\)/);
-  assert.match(appSource, /buildBusinessDocumentId\('wd', myCompanyId, clientMutationId\)/);
-  assert.match(appSource, /replayedOrder = existingCompanyOrders\.find\(\(order\) => order\?\.clientMutationId === clientMutationId\)/);
-  assert.match(appSource, /replayedRequest = orderRequests\.find\(request => \(/);
+  assert.match(appSource, /orderCreationIntent\(\{companyId:myCompanyId,employeeId:empId,orderData,financialData\}\)/);
+  assert.match(appSource, /`or_\$\{myCompanyId\}_\$\{encodeURIComponent\(requestData\.clientMutationId\)\}`/);
+  const dispatch = readCanonical('features/warehouse/warehouseDispatchUseCases.js');
+  assert.match(dispatch, /const id = `wd_\$\{myCompanyId\}_\$\{clientMutationId\}`/);
+  assert.match(dispatch, /item\.clientMutationId === clientMutationId/);
+  assert.match(readCanonical('utils/orderCreationCommand.js'), /assertOrderCreationReplay/);
 });
 

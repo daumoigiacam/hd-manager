@@ -60,7 +60,7 @@ test('unchanged immutable snapshots reuse validation and replacement snapshots a
 test('actual collection publication validates the full batch before touching overlays or state', async () => {
   const events = [];
   const apply = appFunction('applyCollectionItems', {
-    cancelled:false,readWorker:null,materializationRevisions:new Map(),snapshotRecordMaterializers:new Map(),
+    cancelled:false,isReadAccessCurrent:()=>true,readWorker:null,materializationRevisions:new Map(),snapshotRecordMaterializers:new Map(),
     createSnapshotRecordMaterializer,materializeSnapshotRecords,
     decodeWarehouseDispatchItems: createWarehouseDispatchReadDecoder({ companyId: 'company-a' }),
     clearConfirmedLocalMutations: () => events.push('clear-overlay'),
@@ -85,6 +85,7 @@ test('actual realtime callback rejects malformed data before ACK bookkeeping or 
   const snapshot = { metadata: { fromCache: false, hasPendingWrites: false } };
   const apply = appFunction('applySnapshot', {
     cancelled: false,
+    isReadAccessCurrent:()=>true,
     listenerActive:true,
     colName: 'warehouseDispatches',
     snapshotItemCollectors: [() => [record('bad', { weightKg: {} })]],

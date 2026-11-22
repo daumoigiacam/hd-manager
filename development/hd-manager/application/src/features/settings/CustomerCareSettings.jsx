@@ -1,5 +1,6 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
+import {settingsInteger} from '../../utils/settingsFormValidation.js';
 
 export const CARE_RULES = [
   ['inactive', 'Khách lâu chưa mua', 'Em chào anh/chị, lâu rồi chưa được phục vụ mình. Khi nào anh/chị cần hàng, cứ nhắn em để em hỗ trợ ạ.'],
@@ -10,13 +11,21 @@ export const CARE_RULES = [
   ['payment', 'Sau khi nhận khoản thanh toán', 'Em cảm ơn anh/chị đã thanh toán. Rất cảm ơn anh/chị đã luôn tin tưởng và đồng hành cùng chúng em ạ.'],
 ];
 
-export default function CustomerCareSettings({ company, selected, onSelect, onSave, canEdit }) {
+export default function CustomerCareSettings({ company, selected, onSelect, onSave, canEdit, scope = company?.id }) {
   const rule = CARE_RULES.find(([id]) => id === selected);
   const [draft, setDraft] = useState(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
   const lock = useRef(false);
+  const baseCompany = useRef(company), enabledAt = useRef(null);
+  const context = useRef({active: true, scope});
+  context.current.scope = scope;
+  useEffect(() => { context.current.active = true; return () => { context.current.active = false; }; }, [scope]);
+  const isCurrent = value => context.current.active && context.current.scope === value;
   const open = (id, message) => {
+    if (lock.current) return;
+    baseCompany.current = company;
+    enabledAt.current = company?.customerCareRules?.[id]?.enabledAt || new Date().toISOString();
     setDraft({ enabled: false, sender: 'company', inactiveDays: 7, holidayDates: [], message, ...company?.customerCareRules?.[id] });
     setStatus('');
     onSelect(id);
@@ -24,20 +33,23 @@ export default function CustomerCareSettings({ company, selected, onSelect, onSa
   const save = async event => {
     event.preventDefault();
     if (!canEdit || lock.current) return;
-    if (!draft.message.trim()) { setStatus('Vui lòng nhập nội dung tin nhắn.'); return; }
+    if (!String(draft.message || '').trim()) { setStatus('Vui lòng nhập nội dung tin nhắn.'); return; }
     if (selected === 'holiday' && !draft.holidayDates.length) { setStatus('Vui lòng chọn ít nhất một ngày lễ.'); return; }
     lock.current = true;
     setBusy(true);
     setStatus('');
+    const submittedScope = scope;
     try {
-      const previous = company?.customerCareRules?.[selected];
-      const result = await onSave({ customerCareRules: {
-        ...company?.customerCareRules,
-        [selected]: { ...draft, message: draft.message.trim(), inactiveDays: Math.max(1, Number(draft.inactiveDays) || 7), enabledAt: draft.enabled ? (previous?.enabled && previous.enabledAt || new Date().toISOString()) : null },
-      } });
-      setStatus(result?.success ? 'Đã lưu.' : result?.message || 'Chưa lưu được.');
-    } catch (error) { setStatus(error?.code === 'firestore/sync-pending' ? 'Máy chủ chưa xác nhận. Cài đặt đang chờ đồng bộ.' : error.message || 'Không thể lưu.'); }
-    finally { lock.current = false; setBusy(false); }
+      const inactiveDays = settingsInteger(draft.inactiveDays, {min: 1, max: 3650, label: 'Số ngày chưa mua'});
+      const patch = { customerCareRules: {
+        ...baseCompany.current?.customerCareRules,
+        [selected]: { ...draft, message: draft.message.trim(), inactiveDays, enabledAt: draft.enabled ? enabledAt.current : null },
+      } };
+      const result = await onSave(patch, {baseCompany: baseCompany.current});
+      if (!result?.success || !result.confirmed || result.queued || result.pending) throw new Error(result?.message || 'Máy chủ chưa xác nhận. Vui lòng lưu lại.');
+      if (isCurrent(submittedScope)) { baseCompany.current = {...baseCompany.current, ...patch}; setStatus('Đã lưu.'); }
+    } catch (error) { if (isCurrent(submittedScope)) setStatus(error?.code === 'firestore/sync-pending' ? 'Máy chủ chưa xác nhận. Cài đặt đang chờ đồng bộ.' : error.message || 'Không thể lưu.'); }
+    finally { lock.current = false; if (isCurrent(submittedScope)) setBusy(false); }
   };
   if (!rule || !draft) return <div className="divide-y divide-gray-200">
     {CARE_RULES.map(([id, title, message]) => <button key={id} type="button" onClick={() => open(id, message)} className="flex w-full items-center gap-3 py-4 text-left">

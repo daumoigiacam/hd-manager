@@ -22,16 +22,15 @@ test('same projection owner publishes primary before details and keeps cached fi
 });
 test('live Home keeps both source-confirmation and completed ledger guards; logout clears only the report backing entry',()=>{
  const source=readFileSync('src/App.jsx','utf8');
- assert.match(source,/primarySourceReady=\{!mainLedgerProjection\.pending&&!mainLedgerProjection\.error&&serverConfirmedCollectionState/);
- assert.match(source,/sourceReady=\{!mainLedgerProjection\.pending&&!mainLedgerProjection\.error&&serverConfirmedCollectionState/);
+ assert.match(source,/primarySourceReady=\{\(homeReportRequested\|\|activeTab==='executive_dashboard'\|\|isPreviewDataMode\)&&!mainLedgerProjection\.pending&&!mainLedgerProjection\.error&&serverConfirmedCollectionState/);
+ assert.match(source,/sourceReady=\{\(homeReportRequested\|\|activeTab==='executive_dashboard'\|\|isPreviewDataMode\)&&!mainLedgerProjection\.pending&&!mainLedgerProjection\.error&&serverConfirmedCollectionState/);
  assert.match(source,/const clearAppSession = \(\) => \{\s*clearHomeSessionReport\(\)/);
  assert.match(source,/const snapshot = projection\.snapshot\?\.kind === 'home-primary-v1'\s*\? \{\.\.\.emptySnapshot,\.\.\.projection\.snapshot,finance:\{\.\.\.emptySnapshot\.finance,\.\.\.projection\.snapshot\.finance\}\}/);
  assert.match(source,/<BusinessReportWorkspace snapshot=\{projection\.snapshot\}/);
  assert.match(source,/projection\.snapshot\.kind!=='home-primary-v1'&&<SmartAIAssistant/);
- assert.match(source,/reportCacheReady=\{serverConfirmedCollectionState\?\.tenantId===currentUser\?\.companyId&&\['companies','employees'\]\.every/);
+ assert.match(source,/reportCacheReady=\{startupWorkspaceReady\|\|\(serverConfirmedCollectionState\?\.tenantId===currentUser\?\.companyId&&\['companies','employees'\]\.every/);
  assert.match(source,/restoreReady:reportCacheReady/);
- assert.match(source,/!homePrimaryMode&&usesCompanyHomeDashboard\(homeSourceEmployee,currentUser\)&&!homeDetailsRequested\s*\? COMPANY_HOME_PRIMARY_COLLECTIONS/);
- assert.match(source,/if\(projection\.primaryComplete\)onRequestDetails\?\.\(\)/);
+ assert.match(source,/const homeReadinessCollections = getForegroundReadCollections\('home',\{\s*companyHome:usesCompanyHomeDashboard\(homeSourceEmployee,currentUser\),byTab:FOREGROUND_REALTIME_COLLECTIONS_BY_TAB,primaryHome:homePrimaryMode,\s*workingHome:!isPreviewDataMode,reportRequested:homeReportRequested,detailsRequested:homeDetailsRequested/);
  assert.match(source,/homePrimaryMode\?homeReadinessCollections:FOREGROUND_REALTIME_COLLECTIONS_BY_TAB\.home/);
  assert.match(source,/isCompanyPrimaryHomeReadPlan\(collectionNames\)\)notificationPrerequisites\.push\('warehouseDispatches'\)/);
 });

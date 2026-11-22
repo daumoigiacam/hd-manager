@@ -2,6 +2,7 @@ import { useState, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useDeferredValue } from "react";
 import {getMessageAttachmentReadCollections,pendingAttachmentDecision} from "../../services/messageWorkspaceReadPlan.js";
 import {createMessageAttachmentSelection} from "../../services/messageAttachmentSelection.js";
+import {createMessageSendController} from "../../services/messageSendController.js";
 import { buildCustomerSupportConversationId, getCustomerMessagingEmployeeId, isEmployeeScopedCustomerMessage } from "../../utils/employeeScopedCustomerMessaging.js";
 import { CHAT_LIST_TABS, CHAT_SEARCH_TABS, filterChatConversations, getChatCategory, getChatSearchResult } from "../messaging/messagingUiModel.js";
 import { usePagedList } from "../../services/renderOptimization";
@@ -13,12 +14,13 @@ import { ListPagination } from "../../design-system/ListPagination.jsx";
 // all actor/company/business data continues to arrive through current props.
 // Generated binding contract is checked against the real source AST.
 export function createMessageCenterView(runtime) {
-  const {APP_SCREEN_BACK_EVENT,buildCompanyMonogram,chatListMonthDayFormatter,chatListTimeFormatter,collapseLookupText,formatCurrency,formatDateLabel,formatDateTimeLabel,formatNumber,getCompanyDisplayName,getCompanyLogoUrl,getCustomerDisplayName,getEmployeeAvatarUrl,getEmployeePositionLabel,getEntityTimestamp,getFriendlyFirebaseErrorMessage,getInvoiceTransferProfile,getProductShortName,getTodayString,isSameLoginPhone,markAppBackHandled,normalizeCustomerPhone,parseLooseQuantityValue,useDismissSearchOnOutsideClick,vietnamDateFormatter} = runtime;
+  const {APP_SCREEN_BACK_EVENT,buildCompanyMonogram,buildCustomerLedger,chatListMonthDayFormatter,chatListTimeFormatter,collapseLookupText,formatCurrency,formatDateLabel,formatDateTimeLabel,formatNumber,getCompanyDisplayName,getCompanyLogoUrl,getCustomerDisplayName,getEmployeeAvatarUrl,getEmployeePositionLabel,getEntityTimestamp,getFriendlyFirebaseErrorMessage,getInvoiceTransferProfile,getProductShortName,getTodayString,isSameLoginPhone,markAppBackHandled,normalizeCustomerPhone,parseLooseQuantityValue,useDismissSearchOnOutsideClick,vietnamDateFormatter} = runtime;
   function MessageCenterView({
   onPrimaryReady,primarySourcesReady=true,backgroundSourcesReady=true,
   onAttachmentSourceDemandChange,
   attachmentSourcesReady = {order:true,order_request:true,report:true},
   employee,
+  readIdentity = '',
   currentCompany,
   employees = [],
   customers = [],
@@ -78,6 +80,11 @@ export function createMessageCenterView(runtime) {
   const [showExtraAttachMenu, setShowExtraAttachMenu] = useState(false);
   const [draft, setDraft] = useState('');
   const [status, setStatus] = useState('');
+  const [isSending, setIsSending] = useState(false);
+  const sendContextRef = useRef({active:false,scope:''});
+  const sendControllerRef = useRef(null);
+  const groupIntentRef = useRef(null);
+  if (!sendControllerRef.current) sendControllerRef.current = createMessageSendController({isCurrent:scope=>sendContextRef.current.active && sendContextRef.current.scope===scope});
   const [localReplies, setLocalReplies] = useState({});
   const [pendingAttachment,setPendingAttachment]=useState(null);
   const attachmentSequence=useRef(0),executedAttachment=useRef(0);
@@ -607,11 +614,28 @@ export function createMessageCenterView(runtime) {
     .sort(sortConversationsByPriority);
   const activeConversations = allVisibleConversations;
   const selectedConversation = allVisibleConversations.find((item) => item.id === selectedConversationId) || null;
-  const canSendInSelectedConversation = selectedConversation?.type === 'support'
+  const canSendInSelectedConversation = selectedConversation?.type === 'support' || selectedConversation?.conversationKind === 'customer_support'
     ? canSendSupportMessages
     : selectedConversation?.type === 'internal'
       ? canSendInternalMessages
       : false;
+  const sendScope = JSON.stringify([readIdentity,currentCompany?.id||employee?.companyId||'',currentEmployeeId,selectedConversationId,
+    canSendSupportMessages,canSendInternalMessages,canSendImageAttachment,canSendContactAttachment,canSendLocationAttachment,canSendBankQrAttachment,canSendOrderAttachment,canSendOrderRequestAttachment,canSendReportAttachment]);
+  useLayoutEffect(()=>{
+    sendContextRef.current={active:true,scope:sendScope};
+    sendControllerRef.current.clearExcept(sendScope);
+    setDraft('');setStatus('');setIsSending(false);groupIntentRef.current=null;
+    return()=>{sendContextRef.current.active=false;};
+  },[sendScope]);
+  const sendScopedMessage = async (action,payload) => {
+    const scope=sendScope;
+    if (!sendContextRef.current.active || sendContextRef.current.scope!==scope) return {stale:true};
+    if (sendControllerRef.current.isBusy(scope)) return {busy:true};
+    setIsSending(true);
+    try {return await sendControllerRef.current.send({scope,action,payload,save:onAddMessage});}
+    finally {if(sendContextRef.current.active&&sendContextRef.current.scope===scope)setIsSending(false);}
+  };
+  const isCurrentSendScope = scope => sendContextRef.current.active && sendContextRef.current.scope===scope;
   const listKeyword = normalizeKeyword(deferredSearchKeyword);
   const messageFilterOptions = [
     { id: 'all', label: 'Tất cả', shortLabel: 'Tất cả' },
@@ -835,7 +859,7 @@ export function createMessageCenterView(runtime) {
       customer.fullName,
       sourceItem.searchKeyword,
       sourceNotification.searchKeyword,
-      extractNoticeLeadName(sourceItem.message || conversation.lastMessage),
+      conversation.type === 'notice' ? extractNoticeLeadName(sourceItem.message || conversation.lastMessage) : '',
       conversation.conversationKind === 'internal_group' ? conversation.groupName : '',
       conversation.title,
       latestMessage.senderName
@@ -1315,12 +1339,15 @@ export function createMessageCenterView(runtime) {
   }, [currentEmployeeId, employees, groupSearchKeyword]);
 
   const toggleGroupMember = (employeeId) => {
+    if (isSending || sendControllerRef.current.isBusy(sendScope)) return;
     setGroupMemberIds((prev) => prev.includes(employeeId)
       ? prev.filter((id) => id !== employeeId)
       : [...prev, employeeId]);
   };
 
   const closeCreateGroup = () => {
+    if (isSending || sendControllerRef.current.isBusy(sendScope)) return;
+    groupIntentRef.current = null;
     setShowCreateGroup(false);
     setGroupNameDraft('');
     setGroupMemberIds([]);
@@ -1328,6 +1355,7 @@ export function createMessageCenterView(runtime) {
   };
 
   const handleCreateInternalGroup = async () => {
+    if (isSending) return;
     if (!canSendInternalMessages || typeof onAddMessage !== 'function') {
       setStatus('Tài khoản này chưa được cấp quyền tạo nhóm nội bộ.');
       return;
@@ -1342,9 +1370,12 @@ export function createMessageCenterView(runtime) {
       .map((id) => employeeById.get(id)?.name || employeeById.get(id)?.fullName || 'Nhân sự')
       .slice(0, 3)
       .join(', ')}`;
-    const groupId = `internal_group_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const groupSignature = JSON.stringify([groupName,participantEmpIds]);
+    if (groupIntentRef.current?.signature !== groupSignature) groupIntentRef.current = {signature:groupSignature,id:`internal_group_${crypto.randomUUID()}`};
+    const groupId = groupIntentRef.current.id;
+    const scope = sendScope;
     try {
-      await onAddMessage({
+      const result = await sendScopedMessage('group',{
         conversationId: groupId,
         conversationType: 'internal_group',
         type: 'internal_group',
@@ -1353,11 +1384,13 @@ export function createMessageCenterView(runtime) {
         participantEmpIds,
         text: `Đã tạo nhóm ${groupName}.`
       });
+      if (!result.success || !isCurrentSendScope(scope)) return;
       setActiveType('internal');
       setSelectedConversationId(groupId);
       closeCreateGroup();
       setStatus('Đã tạo nhóm nội bộ.');
     } catch (error) {
+      if (!isCurrentSendScope(scope)) return;
       console.warn('Failed to create internal group.', error);
       setStatus(getFriendlyFirebaseErrorMessage(error, 'Chưa tạo được nhóm nội bộ.'));
     }
@@ -1377,22 +1410,25 @@ export function createMessageCenterView(runtime) {
   };
 
   const handleSendMessage = async () => {
-    if (!selectedConversation || !draft.trim()) return;
+    if (isSending || !selectedConversation || !draft.trim()) return;
     if (!canSendInSelectedConversation) {
       setStatus('Tài khoản này chưa được cấp quyền gửi tin trong hội thoại này.');
       return;
     }
     const nextText = draft.trim();
-    setDraft('');
+    const scope = sendScope;
     if (selectedConversation.type !== 'notice' && typeof onAddMessage === 'function') {
       try {
-        await onAddMessage({
+        const result = await sendScopedMessage('text',{
           ...buildOutgoingMessageMeta(selectedConversation),
           text: nextText
         });
+        if (!result.success || !isCurrentSendScope(scope)) return;
+        setDraft('');
         setStatus('Đã gửi và đồng bộ tin nhắn.');
         return;
       } catch (error) {
+        if (!isCurrentSendScope(scope)) return;
         console.warn('Failed to sync message.', error);
         setDraft(nextText);
         setStatus(getFriendlyFirebaseErrorMessage(error, 'Chưa gửi được tin nhắn lên cloud. Vui lòng thử lại.'));
@@ -1405,7 +1441,7 @@ export function createMessageCenterView(runtime) {
   };
 
   const sendAttachmentPayload = async ({ text = '', attachmentType = '', attachmentLabel = '', attachmentText = '', attachmentImage = '' } = {}) => {
-    if (!selectedConversation) return;
+    if (isSending || !selectedConversation) return;
     if (!canSendInSelectedConversation) {
       setStatus('Tài khoản này chưa được cấp quyền gửi thông tin trong hội thoại này.');
       return;
@@ -1413,10 +1449,11 @@ export function createMessageCenterView(runtime) {
     const cleanText = `${text || ''}`.trim();
     const cleanAttachmentText = `${attachmentText || ''}`.trim();
     if (!cleanText && !cleanAttachmentText && !attachmentImage) return;
+    const scope = sendScope;
 
     if (selectedConversation.type !== 'notice' && typeof onAddMessage === 'function') {
       try {
-        await onAddMessage({
+        const result = await sendScopedMessage('attachment',{
           ...buildOutgoingMessageMeta(selectedConversation),
           text: cleanText,
           attachmentType,
@@ -1424,9 +1461,11 @@ export function createMessageCenterView(runtime) {
           attachmentText: cleanAttachmentText,
           attachmentImage
         });
+        if (!result.success || !isCurrentSendScope(scope)) return;
         setStatus('Đã gửi và đồng bộ thông tin.');
         return;
       } catch (error) {
+        if (!isCurrentSendScope(scope)) return;
         console.warn('Failed to sync attachment message.', error);
         setStatus(getFriendlyFirebaseErrorMessage(error, 'Chưa gửi được thông tin lên cloud. Vui lòng thử lại.'));
         return;
@@ -1439,8 +1478,8 @@ export function createMessageCenterView(runtime) {
   const selectionScope=JSON.stringify([currentCompany?.id||'',currentEmployeeId,selectedConversationId]);
   useLayoutEffect(()=>{
     attachmentSelectionContext.current={scope:selectionScope,allowed:canSendInSelectedConversation,
-      actions:new Set(attachActions.map(action=>action.id)),sources:{order:orders,order_request:orderRequests,customer:customers,contact:[...employees,...customers]}};
-  },[selectionScope,canSendInSelectedConversation,canSendOrderAttachment,canSendOrderRequestAttachment,canSendContactAttachment,orders,orderRequests,customers,employees]);
+      actions:new Set(attachActions.map(action=>action.id)),sources:{order:orders,order_request:orderRequests,customer:customers,contact:[...employees,...customers],payments,expenses,products}};
+  },[selectionScope,canSendInSelectedConversation,canSendOrderAttachment,canSendOrderRequestAttachment,canSendContactAttachment,orders,orderRequests,customers,employees,payments,expenses,products]);
   useLayoutEffect(()=>{
     attachmentSelector.current.cancel();setAttachmentPickerConfig(null);
     return()=>attachmentSelector.current.cancel();
@@ -1476,16 +1515,20 @@ export function createMessageCenterView(runtime) {
   ].filter(Boolean).join('\n');
 
   const buildChatOrderText = (order = {}) => {
-    const customer = customerById.get(order.customerId) || {};
-    const total = order.amount || order.total || order.totalAmount || 0;
-    const paid = order.paid || order.paidAmount || order.collectedAmount || 0;
+    const latest = attachmentSelectionContext.current?.sources;
+    const customer = latest?.customer?.find(item => item.id === order.customerId) || customerById.get(order.customerId) || {};
+    const ledger = buildCustomerLedger(customer, latest?.order || orders, latest?.payments || payments);
+    const ledgerOrder = ledger?.orders?.find(item => item.id === order.id);
+    if (!ledgerOrder) throw new Error('Chưa đối soát được đơn hàng. Vui lòng chọn lại sau khi dữ liệu cập nhật.');
+    const total = ledgerOrder.amount;
+    const paid = ledgerOrder.appliedAmount;
     return [
       `Mã đơn: ${order.code || order.id || 'Chưa có mã'}`,
       `Khách: ${customer.name || order.customerName || order.customerNameSnapshot || 'Khách hàng'}`,
       `Ngày: ${formatDateLabel(order.date || order.createdAt || getEntityTimestamp(order))}`,
       `Tổng: ${formatCurrency(total)} đ`,
       `Đã thu: ${formatCurrency(paid)} đ`,
-      `Còn nợ: ${formatCurrency(Math.max(0, total - paid))} đ`
+      `Còn nợ: ${formatCurrency(Math.max(0, ledgerOrder.outstandingAmount))} đ`
     ].join('\n');
   };
 
@@ -1621,7 +1664,8 @@ export function createMessageCenterView(runtime) {
     if (action.id === 'order') {
       const item = await pickChatItem(orders, 'Chọn đơn hàng', order => `${order.code || order.id || 'Đơn hàng'} - ${customerById.get(order.customerId)?.name || order.customerName || ''}`, 'order');
       if (!item) return;
-      await sendAttachmentPayload({ text: 'Gửi đơn hàng', attachmentType: 'order', attachmentLabel: 'Đơn hàng', attachmentText: buildChatOrderText(item) });
+      try { await sendAttachmentPayload({ text: 'Gửi đơn hàng', attachmentType: 'order', attachmentLabel: 'Đơn hàng', attachmentText: buildChatOrderText(item) }); }
+      catch (error) { setStatus(getFriendlyFirebaseErrorMessage(error, 'Chưa đối soát được chứng từ.')); }
       return;
     }
 
@@ -1651,11 +1695,13 @@ export function createMessageCenterView(runtime) {
   },[pendingAttachment,selectedConversation?.id,canSendInSelectedConversation,attachmentSourcesReady.order,attachmentSourcesReady.order_request,attachmentSourcesReady.report,canSendOrderAttachment,canSendOrderRequestAttachment,canSendReportAttachment]);
 
   const handleImageAttachmentChange = async (event) => {
+    const scope = sendScope;
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file) return;
     try {
       const attachmentImage = await readChatImageAttachment(file);
+      if (!isCurrentSendScope(scope)) return;
       await sendAttachmentPayload({
         text: 'Gửi hình ảnh',
         attachmentType: 'image',
@@ -1663,6 +1709,7 @@ export function createMessageCenterView(runtime) {
         attachmentImage
       });
     } catch (error) {
+      if (!isCurrentSendScope(scope)) return;
       setStatus(getFriendlyFirebaseErrorMessage(error, 'Không gửi được hình ảnh.'));
     }
   };
@@ -1684,7 +1731,7 @@ export function createMessageCenterView(runtime) {
         <OfflineBanner online={isOnline} />
         {showExtraAttachMenu && <div className="hd-chat-extra-actions" data-search-zone="true">{attachActions.filter((action) => !visualAttachActions.some((primary) => primary.id === action.id)).map((action) => <button type="button" key={action.id} onClick={() => { setShowExtraAttachMenu(false); handleRealAttachAction(action); }}>{action.label}</button>)}</div>}
         {pendingAttachment&&<button type="button" className="px-3 py-2 text-xs text-slate-600" onClick={()=>{setPendingAttachment(null);setStatus('Đã hủy tải chứng từ.');}}>Hủy tải chứng từ</button>}
-        <MessageList conversation={selectedConversation} messages={visibleMessages} status={status} onOpenNotice={() => onOpenNotification(selectedConversation.sourceItem)} />
+        <MessageList conversation={selectedConversation} messages={visibleMessages} status={status} emptyTitle={chatKeyword ? 'Không tìm thấy tin nhắn phù hợp' : 'Chưa có tin nhắn'} onOpenNotice={() => onOpenNotification(selectedConversation.sourceItem)} />
 
         {attachmentPickerConfig && (
           <div role="dialog" aria-modal="true" aria-label="Chọn chứng từ đính kèm" data-search-zone="true" className="hd-chat-document-picker fixed inset-0 z-[70] flex items-end justify-center bg-slate-950/55 px-0 sm:items-center sm:px-4">
@@ -1749,7 +1796,7 @@ export function createMessageCenterView(runtime) {
           onSend={handleSendMessage}
           onAttach={() => setShowAttachMenu((value) => !value)}
           onMic={() => setStatus('Ghi âm chưa được hỗ trợ trên thiết bị này.')}
-          disabled={!canSendInSelectedConversation}
+          disabled={!canSendInSelectedConversation || isSending}
           panelOpen={showAttachMenu}
         />}
       </div>
@@ -1782,7 +1829,6 @@ export function createMessageCenterView(runtime) {
           onChange={searchKeyword.trim() ? setActiveSearchTab : setActiveChatTab}
           label={searchKeyword.trim() ? 'Loại kết quả tìm kiếm' : 'Loại cuộc trò chuyện'}
         />
-        {!backgroundSourcesReady&&<p role="status" className="px-4 py-1 text-xs text-slate-500">Đang cập nhật thông báo nghiệp vụ ở nền.</p>}
         {showCreateConversationPanel && canUseCreateConversation && (
           <div data-search-zone="true" className="hd-chat-create-menu">
             <div>
@@ -1956,12 +2002,13 @@ export function createMessageCenterView(runtime) {
 
       {showAddFriendPanel && (
         <div className="fixed inset-0 z-[74] flex items-end justify-center bg-slate-950/55 px-0 sm:items-center sm:px-4" onClick={() => setShowAddFriendPanel(false)}>
-          <div className="w-full max-w-md overflow-hidden rounded-t-[2rem] bg-white shadow-2xl sm:rounded-[2rem]" onClick={(event) => event.stopPropagation()}>
+          <div role="dialog" aria-modal="true" aria-label="Thêm bạn" className="w-full max-w-md overflow-hidden rounded-t-[2rem] bg-white shadow-2xl sm:rounded-[2rem]" onClick={(event) => event.stopPropagation()}>
             <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-4">
               <div>
                 <p className="text-[11px] font-black uppercase tracking-[0.18em] text-emerald-600">Tin nhắn</p>
                 <h3 className="mt-1 text-lg font-black text-slate-900">Thêm bạn</h3>
                 <p className="mt-1 text-xs font-semibold text-slate-500">Tìm theo số điện thoại, tên hồ sơ khách hàng hoặc tên nhân sự.</p>
+                {status && <p role="status" className="mt-2 text-sm font-semibold text-slate-700">{status}</p>}
               </div>
               <button type="button" onClick={() => setShowAddFriendPanel(false)} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600" aria-label="Đóng">
                 <X size={18} />
@@ -2006,12 +2053,13 @@ export function createMessageCenterView(runtime) {
 
       {showCreateGroup && (
         <div className="fixed inset-0 z-[75] flex items-end justify-center bg-slate-950/55 px-0 sm:items-center sm:px-4" onClick={closeCreateGroup}>
-          <div className="w-full max-w-md overflow-hidden rounded-t-[2rem] bg-white shadow-2xl sm:rounded-[2rem]" onClick={(event) => event.stopPropagation()}>
+          <div role="dialog" aria-modal="true" aria-label="Tạo nhóm mới" className="w-full max-w-md overflow-hidden rounded-t-[2rem] bg-white shadow-2xl sm:rounded-[2rem]" onClick={(event) => event.stopPropagation()}>
             <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-4">
               <div>
                 <p className="text-[11px] font-black uppercase tracking-[0.18em] text-cyan-600">Chat nội bộ</p>
                 <h3 className="mt-1 text-lg font-black text-slate-900">Tạo nhóm mới</h3>
                 <p className="mt-1 text-xs font-semibold text-slate-500">Chọn nhân sự để trao đổi công việc cùng lúc.</p>
+                {status && <p role="status" className="mt-2 text-sm font-semibold text-slate-700">{status}</p>}
               </div>
               <button type="button" onClick={closeCreateGroup} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600" aria-label="Đóng">
                 <X size={18} />
@@ -2020,6 +2068,7 @@ export function createMessageCenterView(runtime) {
             <div className="space-y-3 p-4">
               <input
                 value={groupNameDraft}
+                disabled={isSending}
                 onChange={(event) => setGroupNameDraft(event.target.value)}
                 placeholder="Tên nhóm, ví dụ: Giao hàng hôm nay"
                 className="w-full rounded-2xl border border-cyan-100 bg-cyan-50/50 px-4 py-3 text-sm font-bold text-slate-900 outline-none focus:border-cyan-300"
@@ -2029,6 +2078,7 @@ export function createMessageCenterView(runtime) {
                 <input
                   data-hd-search-input="true"
                   value={groupSearchKeyword}
+                  disabled={isSending}
                   onChange={(event) => setGroupSearchKeyword(event.target.value)}
                   placeholder="Tìm nhân sự"
                   className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-slate-800 outline-none placeholder:text-slate-400"
@@ -2042,6 +2092,7 @@ export function createMessageCenterView(runtime) {
                       key={item.id}
                       type="button"
                       onClick={() => toggleGroupMember(item.id)}
+                      disabled={isSending}
                       className={`w-full rounded-2xl border px-4 py-3 text-left transition ${checked ? 'border-cyan-200 bg-cyan-50' : 'border-slate-100 bg-white'}`}
                     >
                       <div className="flex items-center gap-3">
@@ -2064,6 +2115,7 @@ export function createMessageCenterView(runtime) {
               <button
                 type="button"
                 onClick={handleCreateInternalGroup}
+                disabled={isSending}
                 className="w-full rounded-2xl bg-cyan-600 px-4 py-3 text-sm font-black text-white shadow-lg shadow-cyan-100"
               >
                 Tạo nhóm ({groupMemberIds.length + 1} người)
@@ -2074,6 +2126,7 @@ export function createMessageCenterView(runtime) {
       )}
 
       <OfflineBanner online={isOnline} />
+      {status && <p role="status" className="px-4 py-2 text-sm text-slate-700">{status}</p>}
       <div
         className={searchKeyword.trim() ? 'hd-chat-results' : 'hd-chat-list'}
         data-chat-list="true"

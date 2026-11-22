@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { getEventListeners } from 'node:events';
 import { setImmediate as nextTurn, setTimeout as timerTurn } from 'node:timers/promises';
 import test from 'node:test';
 import { parseExpression } from '@babel/parser';
-import { appObject } from './helpers/app-source-function.mjs';
+import { appObject,appExpression,applicationSource as source } from './helpers/app-source-function.mjs';
 import { collectTenantRestQuery } from '../src/services/firestoreRestPagination.js';
 import { createRequestAdmission } from '../src/data/requestAdmission.js';
 import { createReadOwnerAccess } from '../src/services/readOwnerAccess.js';
@@ -13,6 +12,9 @@ import {createCollectionCommitWitness} from '../src/services/collectionCommitWit
 import {parseFirebaseResponseJsonInBackground} from '../src/services/backgroundJsonParser.js';
 import { createRealtimeSnapshotItemsCollector, createRealtimeSnapshotPipeline } from '../src/services/realtimeSnapshotItems.js';
 import { canUseFirestoreReadWorker } from '../src/services/readWorkerPolicy.js';
+import {hasCommittedServerSnapshot} from '../src/services/realtimeReadFreshness.js';
+import {createActiveSourceRetention} from '../src/services/activeSourceRetention.js';
+import {canUseMessageReadWorker,planMessageReadQueries} from '../src/services/messageReadAccessPlan.js';
 import { hasActiveRealtimeListener } from '../src/services/firestoreResilience.js';
 import {
   getRealtimeDataChangeCount, isServerConfirmedRealtimeSnapshot,
@@ -24,11 +26,7 @@ import {
 
 // Parse App through the existing helper, but execute only its extracted readers,
 // listener callback and cleanup. No React, Firebase client or real fetch is loaded.
-const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
-const expression = name => {
-  const node = appObject(name);
-  return source.slice(node.start, node.end);
-};
+const expression = appExpression;
 const scopeStart = source.indexOf('const collectionReadRevisions =');
 assert.ok(scopeStart >= 0, 'Missing collection read revision scope');
 const cleanupStart = appObject('stopReadSources');
@@ -158,6 +156,9 @@ function createHarness({ companyId = 'company-a', customer = false, role = 'sale
   const snapshotAt = new Map();
   const subscriptions = [];
   const bindings = {
+    hasCommittedServerSnapshot,createActiveSourceRetention,canUseMessageReadWorker,
+    getMessageReadPlan:()=>planMessageReadQueries({company:{id:companyId},employee:{id:'employee-a',companyId},currentUser:{id:'employee-a',companyId},isManager:['owner','manager','accounting'].includes(role)},()=>true),activeTabForSyncRef:ref('orders'),
+    collectionReadinessCommittedRef:ref(null),
     createReadOwnerAccess,retryCustomerBootstrapRef:ref(null),customerBootstrapCommitRef:ref(null),
     CUSTOMER_FINANCIAL_SOURCES,
     startupUiAdmission:{close:noop},startupUiAdmissionRef:ref(null),
@@ -167,7 +168,7 @@ function createHarness({ companyId = 'company-a', customer = false, role = 'sale
     appId, tenantCompanyId: companyId, sessionCustomerId: customer ? 'customer-a' : '',
     customerSession: customer, currentUser: { id: 'employee-a', employeeId: 'employee-a', role },
     db: {}, activeFirebaseConfig: { projectId }, isVpsMode: false, isPreviewDataMode: preview,
-    firebaseUser: { getIdToken: async refresh => {
+    firebaseUser: {uid:'fixture-actor', getIdToken: async refresh => {
       tokens.push(refresh);
       return tokenRead ? tokenRead(refresh) : `${companyId}-${refresh ? 'refreshed' : 'original'}`;
     } },
@@ -266,6 +267,9 @@ function createHarness({ companyId = 'company-a', customer = false, role = 'sale
     let publicationScheduler;
     const yieldPublicationWork = ${expression('yieldPublicationWork')};
     let foregroundCollectionRecency = [];
+    const serverPendingCollectionNames=new Set();
+    const foregroundRetention=createActiveSourceRetention({isCurrent:isReadAccessCurrent});
+    let foregroundRetentionTimer=null,lastForegroundCollectionNames=[];
     ${declarations}
     const activeRealtimeCollectionListeners = new Map();
     const stopCollectionListener = ${expression('stopCollectionListener')};
@@ -305,6 +309,7 @@ function createHarness({ companyId = 'company-a', customer = false, role = 'sale
     };
   `)(...Object.values(bindings));
   return { ...runtime, calls, tokens, sdkCalls, scans, events, clock, active, serverAt, snapshotAt, subscriptions,
+    commitServerSource:name=>{bindings.collectionReadinessCommittedRef.current={actorUid:'fixture-actor',serverConfirmed:{tenantId:companyId,ownerKey:'fixture-session',collections:{[name]:true}}};},
     commitPublications:()=>pendingCommits.splice(0).forEach(commit=>commit()) };
 }
 
@@ -1114,6 +1119,7 @@ test('active listener and fresh server snapshot skip ordinary REST fallback', as
   h.active.add('orders');
   await h.readCollection('orders', noop);
   h.serverAt.set('products', Date.now());
+  h.commitServerSource('products');
   await h.readCollection('products', noop);
   assert.deepEqual(h.calls, []);
   assert.equal(h.controllers.size, 0);
@@ -1156,13 +1162,15 @@ test('assigned-employee message scopes keep both SDK queries rather than broad R
   assert.equal(h.calls.length, 0);
   assert.equal(h.scans.length, 0);
   assert.equal(h.sdkCalls.length, 2);
-  assert.deepEqual(h.sdkCalls[0].constraints.filter(entry => entry.kind === 'where'), [
+  const assigned=h.sdkCalls.find(q=>q.constraints.some(entry=>entry.kind==='where'&&entry.field==='conversationType'&&entry.value==='customer_support'));
+  const internal=h.sdkCalls.find(q=>q.constraints.some(entry=>entry.kind==='where'&&entry.field==='conversationType'&&entry.op==='in'));
+  assert.deepEqual(assigned.constraints.filter(entry => entry.kind === 'where'), [
     { kind: 'where', field: 'companyId', op: '==', value: 'company-a' },
     { kind: 'where', field: 'conversationType', op: '==', value: 'customer_support' },
     { kind: 'where', field: 'assignedEmployeeId', op: '==', value: 'employee-a' },
     { kind: 'where', field: 'assignmentState', op: '==', value: 'assigned' },
   ]);
-  assert.deepEqual(h.sdkCalls[1].constraints.filter(entry => entry.kind === 'where'), [
+  assert.deepEqual(internal.constraints.filter(entry => entry.kind === 'where'), [
     { kind: 'where', field: 'companyId', op: '==', value: 'company-a' },
     { kind: 'where', field: 'conversationType', op: 'in', value: ['internal', 'internal_group', 'support'] },
   ]);

@@ -3,7 +3,9 @@ import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebas
 import { doc, setDoc, updateDoc, deleteDoc } from 'firebase/firestore';
 
 const deadline = setTimeout(() => { console.error('WiFi rules timeout 60s'); process.exit(1); }, 60000);
-const env = await initializeTestEnvironment({ projectId: 'demo-company-wifi', firestore: { rules: await readFile('firestore.rules', 'utf8') } });
+const endpoint=process.env.FIRESTORE_EMULATOR_HOST||'127.0.0.1:8185';
+if(!/^(?:localhost|127\.0\.0\.1):8185$/.test(endpoint))throw Error('WiFi Rules require loopback 8185');
+const env = await initializeTestEnvironment({ projectId: 'demo-company-wifi-'+process.pid, firestore: { host:'127.0.0.1',port:8185,rules: await readFile(new URL('../firestore.rules',import.meta.url), 'utf8') } });
 const path = 'artifacts/test/public/data/companies/co';
 const patch = { attendanceWifiSsid: 'Office', attendanceWifiBssid: 'aa:bb:cc:dd:ee:01', attendanceWifiEnabled: true };
 try {

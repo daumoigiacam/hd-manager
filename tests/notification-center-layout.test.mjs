@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const app = readFileSync(new URL('../development/hd-manager/application/src/App.jsx', import.meta.url), 'utf8');
 const notificationCenterStart = app.indexOf('{showNotificationCenter && (');
-const notificationCenterEnd = app.indexOf('{showFloatingQuickActionButton && (', notificationCenterStart);
+// The floating actions now live in the shared navigation, immediately after
+// the notification dialog. Keep the same dialog/header assertions below.
+const notificationCenterEnd = app.indexOf('<HDNavigation ', notificationCenterStart);
 assert(notificationCenterStart >= 0, 'Notification center must be rendered conditionally.');
-assert(notificationCenterEnd > notificationCenterStart, 'Notification center must end before the floating action button.');
+assert(notificationCenterEnd > notificationCenterStart, 'Notification center must end before the shared action navigation.');
+assert.match(app.slice(notificationCenterEnd), /quickActions=\{showFloatingQuickActionButton\?quickActionItems:mobileContextualQuickActionItems\}/,
+  'Floating quick actions must remain wired through the navigation after the dialog.');
 const notificationCenter = app.slice(notificationCenterStart, notificationCenterEnd);
 
 assert.match(

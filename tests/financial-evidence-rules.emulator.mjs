@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
-import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
+import { initializeTestEnvironment, assertSucceeds } from '@firebase/rules-unit-testing';
 import { doc, setDoc, updateDoc, deleteDoc, getDoc } from 'firebase/firestore';
 
-if (!/^(localhost|127\.0\.0\.1):\d+$/.test(process.env.FIRESTORE_EMULATOR_HOST || '')) throw new Error('Local emulator required');
+if (!/^(localhost|127\.0\.0\.1):8185$/.test(process.env.FIRESTORE_EMULATOR_HOST || '')) throw new Error('Loopback emulator port 8185 required');
+const assertFails=operation=>assert.rejects(operation,error=>error.code==='permission-denied'&&!/maximum of 1000 expressions/.test(error.message));
 const protectedCollections = ['orderReturns', 'orderReturnStates', 'inventoryReturnStates', 'inventoryDamagedReturns',
   'paymentCorrections', 'paymentCorrectionStates', 'refundReceipts'];
-const env = await initializeTestEnvironment({ projectId: 'demo-financial-evidence-rules', firestore: {
+const env = await initializeTestEnvironment({ projectId: 'demo-financial-evidence-rules-'+process.pid, firestore: {
   rules: readFileSync(new URL('../firestore.rules', import.meta.url), 'utf8'),
 } });
 const ref = (db, name, id = 'server-evidence') => doc(db, `artifacts/test-evidence/public/data/${name}/${id}`);
@@ -41,7 +42,8 @@ try {
   evidence.error = error.message;
   throw error;
 } finally {
-  mkdirSync('test-results/core-gaps', { recursive: true });
-  writeFileSync('test-results/core-gaps/financial-evidence-rules.json', JSON.stringify(evidence, null, 2));
+  const reportDirectory=new URL('../test-results/core-gaps/',import.meta.url);
+  mkdirSync(reportDirectory, { recursive: true });
+  writeFileSync(new URL('financial-evidence-rules.json',reportDirectory), JSON.stringify(evidence, null, 2));
   await env.cleanup();
 }

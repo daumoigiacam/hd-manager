@@ -8,8 +8,8 @@ import {extractEmployeeHomeScreenModel} from '../scripts/helpers/employee-home-m
 import {buildEmployeeHomeScreenDto,validateEmployeeHomeScreenDto} from '../src/services/employeeHomeScreenDto.js';
 const source=readFileSync('src/App.jsx','utf8');
 const helpers=['parseLooseMoneyValue','getAssetDisplayLabel','getAssetStatusLabel','formatShiftRangeLabel','formatAttendanceMomentForWorkDate','getAttendanceCompactSource'];
-const extracted=extractEmployeeHomeScreenModel(source,path.resolve('src'),helpers);
-const bundled=await build({stdin:{contents:extracted.code,resolveDir:path.resolve('src')},bundle:true,write:false,platform:'node',format:'esm'});
+const extracted=extractEmployeeHomeScreenModel(source,path.resolve('development/hd-manager/application/src'),helpers);
+const bundled=await build({stdin:{contents:extracted.code,resolveDir:path.resolve('development/hd-manager/application/src')},bundle:true,write:false,platform:'node',format:'esm'});
 const domain=await import('data:text/javascript;base64,'+Buffer.from(bundled.outputFiles[0].text).toString('base64'));
 const view=parse(source,{sourceType:'module',plugins:['jsx']}).program.body.find(n=>n.type==='FunctionDeclaration'&&n.id.name==='EmployeePersonalHomeView');
 const returned=view.body.body.find(n=>n.type==='ReturnStatement');
@@ -60,8 +60,8 @@ test('compact allowlist preserves display amounts and labels without raw documen
 
 test('extraction refuses new browser dependencies and does not silently drop a direct identifier dependency',()=>{
  const replaceView=(before,after)=>source.slice(0,view.start)+source.slice(view.start,view.end).replace(before,after)+source.slice(view.end);
- assert.throws(()=>extractEmployeeHomeScreenModel(replaceView("const positionLabel = getEmployeePositionLabel(employee?.position);","const positionLabel = window.location.href;"),path.resolve('src')),/global.*window/);
+ assert.throws(()=>extractEmployeeHomeScreenModel(replaceView("const positionLabel = getEmployeePositionLabel(employee?.position);","const positionLabel = window.location.href;"),path.resolve('development/hd-manager/application/src')),/global.*window/);
  const changed=replaceView('const salesOrderCount = employeeSalesOrderRows.length;','const salesOrderCount = notificationUnreadCount;');
- const result=extractEmployeeHomeScreenModel(changed,path.resolve('src'));
+ const result=extractEmployeeHomeScreenModel(changed,path.resolve('development/hd-manager/application/src'));
  assert(result.parameters.includes('notificationUnreadCount'));assert.match(result.code,/const salesOrderCount = notificationUnreadCount;/);
 });

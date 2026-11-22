@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 
-const appSource = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const appSource = readApplicationSource();
 const detailStart = appSource.indexOf('{selectedOrder && (() => {');
 const detailEnd = appSource.indexOf('{zaloPreviewOrder &&', detailStart);
 assert.ok(detailStart >= 0 && detailEnd > detailStart, 'sales invoice detail section should be present');

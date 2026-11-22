@@ -1,19 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFile} from 'node:fs/promises';
-import path from 'node:path';
-import {pathToFileURL} from 'node:url';
 import {appFunction} from './helpers/app-source-function.mjs';
-import {extractEmployeeHomeDomain} from '../scripts/helpers/employee-home-domain-extraction.mjs';
+import {currentAppDomain} from './helpers/current-app-domain.mjs';
 import {retainCollectionRecordIdentityAsync} from '../src/utils/cooperativeCollectionIdentity.js';
 import {createCollectionCommitWitness} from '../src/services/collectionCommitWitness.js';
 
 // Execute the current payroll dependency closure and real source imports in
 // memory. No generated domain bundle, ignored artifact, build or Firebase read.
-const source=await readFile(new URL('../src/App.jsx',import.meta.url),'utf8');
-const code=extractEmployeeHomeDomain(source,path.resolve('src'),['buildDashboardPayrollCostSteps'])
- .replace(/from ("[^"\n]+")/g,(_match,quoted)=>'from '+JSON.stringify(pathToFileURL(JSON.parse(quoted)).href));
-const {buildDashboardPayrollCostSteps}=await import('data:text/javascript;base64,'+Buffer.from(code).toString('base64'));
+const buildDashboardPayrollCostSteps=currentAppDomain()('buildDashboardPayrollCostSteps');
 const minimum={employees:[{id:'fiction-worker',companyId:'fiction-company',position:'Giao hàng',role:'employee',baseSalary:6000000,startDate:'2026-01-01'}],
  company:{id:'fiction-company'},now:new Date('2026-11-04T05:00:00.000Z'),attendanceLoaded:true,complaintsLoaded:true};
 const payroll=complaints=>{const iterator=buildDashboardPayrollCostSteps({...minimum,customerComplaints:complaints});let step;

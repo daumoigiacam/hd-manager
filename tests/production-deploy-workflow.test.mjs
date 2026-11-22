@@ -40,6 +40,19 @@ assert.doesNotMatch(workflow, /app\.hdconnect\.net\/api\/v1|hd-connect-platform/
 
 console.log('Production deployment workflow safety checks passed.');
 
+// Every financial/security Rules suite must use the guarded loopback port,
+// without inheriting Hosting/Functions or a real default Firebase project.
+const rulesConfig=JSON.parse(await readFile(new URL('../firebase.rules-tests.json',import.meta.url),'utf8'));
+assert.deepEqual(Object.keys(rulesConfig).sort(),['emulators','firestore']);
+assert.equal(rulesConfig.firestore.rules,'firestore.rules');
+assert.deepEqual(rulesConfig.emulators.firestore,{host:'127.0.0.1',port:8185});
+assert.equal(rulesConfig.emulators.singleProjectMode,false);
+const scripts=JSON.parse(await readFile(new URL('../package.json',import.meta.url),'utf8')).scripts;
+for(const name of ['test:firestore-payroll-rules','test:firestore-tenant-rules','test:firestore-company-employee-reviews','test:firestore-sales-commission-tiers','test:identity:firestore']){
+ assert.match(scripts[name],/emulators:exec --config firebase\.rules-tests\.json --project demo-hdmanager-rules --only firestore/);
+}
+assert.match(steps.find(step=>step.name==='Verify customer product atomic sync and permissions').run,/--config firebase\.rules-tests\.json/);
+
 assert.match(workflow,/id: home_release_backup/);
 assert.match(workflow,/if: failure\(\) && steps\.home_release_backup\.outcome == 'success'/);
 assert(workflow.indexOf('Preserve active frontend')<workflow.indexOf('Deploy frontend to VPS'));

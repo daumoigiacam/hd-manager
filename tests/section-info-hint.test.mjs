@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import {readApplicationSource} from '../scripts/helpers/application-source.cjs';
 
-const appSource = await readFile(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const appSource = readApplicationSource();
 
 assert.match(appSource, /function SectionInfoHint\(\{ description, label = 'phần này'/);
 assert.match(appSource, /role="tooltip"/);
@@ -11,13 +11,17 @@ assert.match(appSource, /event\.key === 'Escape'/);
 assert.match(appSource, /setIsOpen\(prev => !prev\)/);
 assert.match(appSource, /className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded-full bg-transparent/);
 assert.match(appSource, /<span className="text-sm font-black leading-none" aria-hidden="true">i<\/span>/);
-assert.match(appSource, /<SectionInfoHint description=\{subtitle\} label=\{title\} \/>/);
 assert.match(appSource, /<span>Ngày lễ trong năm<\/span>[\s\S]*?<SectionInfoHint/);
-assert.match(appSource, /<span>Mô hình tài khoản<\/span>[\s\S]*?<SectionInfoHint/);
-assert.match(appSource, /<span>Doanh thu<\/span>[\s\S]*?<SectionInfoHint/);
-assert.match(appSource, /formatMonthYearShortLabel\(salesRevenueMonth\)/);
-assert.match(appSource, /type="month"[\s\S]*?aria-label="Chọn tháng doanh thu"/);
-assert.match(appSource, /<h2 className="text-lg font-bold text-gray-800">Tài khoản bộ phận<\/h2>[\s\S]*?<span>Doanh thu<\/span>[\s\S]*?<span>Mô hình tài khoản<\/span>/);
+// The current employee screen no longer contains the legacy revenue/account
+// model panels. Check the reusable hint's interaction and accessibility contract.
+const hint = appSource.slice(appSource.indexOf('function SectionInfoHint('), appSource.indexOf('function WorkflowGuideCard('));
+assert.match(hint, /if \(!description\) return null/);
+assert.match(hint, /aria-expanded=\{isOpen\}/);
+assert.match(hint, /aria-describedby=\{isOpen \? tooltipId : undefined\}/);
+assert.match(hint, /event\.stopPropagation\(\)/);
+assert.match(hint, /onMouseLeave=\{\(\) => setIsOpen\(false\)\}/);
+assert.match(hint, /onBlur=\{\(\) => setIsOpen\(false\)\}/);
+assert.match(hint, /id=\{tooltipId\}[\s\S]*role="tooltip"/);
 const holidayCardSource = appSource.slice(
   appSource.indexOf('function HolidayConfigCard'),
   appSource.indexOf('function EmployeeView')
@@ -28,11 +32,10 @@ const employeeHeaderSource = appSource.slice(
 );
 const bankPaymentCenterSource = appSource.slice(
   appSource.indexOf('function BankPaymentCenterView'),
-  appSource.indexOf('const MAP_TILE_SIZE')
+  appSource.indexOf('function MoreMenu(', appSource.indexOf('function BankPaymentCenterView'))
 );
-assert.match(bankPaymentCenterSource, />Trung tâm giao dịch<\/h2>/);
-assert.match(bankPaymentCenterSource, /aria-label="Cài đặt tài khoản ngân hàng"/);
-assert.match(bankPaymentCenterSource, /Danh sách TK/);
+assert.match(bankPaymentCenterSource, /data-bank-page="customers"/);
+assert.match(bankPaymentCenterSource, /aria-label="Quay lại TT giao dịch"/);
 assert.match(bankPaymentCenterSource, /TK Khách hàng/);
 assert.doesNotMatch(bankPaymentCenterSource, /<SectionInfoHint/);
 assert.doesNotMatch(

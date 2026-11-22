@@ -459,15 +459,24 @@ test('an existing inbound expense cannot be overwritten when its operation recor
   assert.equal(db.get(`${collectionPath(appId, 'expenses')}/${expenseId}`).amount, 999);
 });
 
-test('client and rules route inventory creates through the server command', () => {
-  const appSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'App.jsx'), 'utf8');
+test('active Firebase inventory client preserves durable confirmation and current tenant/RBAC rules', () => {
+  // The optional HTTP inventory engine tested above is not an enabled client
+  // backend. Inspect the configured product source and its actual Firebase
+  // boundary instead of requiring deployment of that experimental endpoint.
+  const root=path.join(__dirname,'..');
+  const configuration=JSON.parse(fs.readFileSync(path.join(root,'config/application-source.json'),'utf8'));
+  const sourceRoot=path.resolve(root,configuration.developmentRoot,'src');
+  const appSource = fs.readFileSync(path.join(sourceRoot, 'App.jsx'), 'utf8');
   const rulesSource = fs.readFileSync(path.join(__dirname, '..', 'firestore.rules'), 'utf8');
-  const functionsSource = fs.readFileSync(path.join(__dirname, '..', 'functions', 'index.js'), 'utf8');
-  assert.match(appSource, /commitAtomicInventoryOperation\(\{/);
+  const useCases=fs.readFileSync(path.join(sourceRoot,'features/warehouse/warehouseDispatchUseCases.js'),'utf8');
+  assert.match(appSource, /return createWarehouseDispatch\(empId, dispatchData,/);
   assert.doesNotMatch(
     appSource.slice(appSource.indexOf('const handleAddWarehouseDispatch'), appSource.indexOf('const handleEditWarehouseDispatch')),
-    /enqueuePendingFirebaseWrite/,
+    /enqueuePendingFirebaseWrite\s*\(/,
   );
-  assert.match(rulesSource, /isServerManagedInventoryCollection/);
-  assert.match(functionsSource, /exports\.inventoryAtomicOperation/);
+  assert.match(useCases,/durable: true/);
+  assert.match(useCases,/await requireSharedWriteConfirmation\(saveResult, 'warehouseDispatches', id\)/);
+  assert.ok(useCases.indexOf('const saveResult = enqueuePendingFirebaseWrite(')<useCases.indexOf('setRawWarehouseDispatches(prev =>'));
+  assert.match(rulesSource,/belongsToSignedInCompany\(collectionId, docId, request.resource.data\)/);
+  assert.match(rulesSource,/canCreateWarehouseDispatch\(appId, docId, request.resource.data\)/);
 });

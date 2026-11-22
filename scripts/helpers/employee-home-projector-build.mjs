@@ -4,7 +4,8 @@ export const EMPLOYEE_HOME_PROJECTOR_ROOTS=['withSalesRevenueIndex','calculateMo
  'parseLooseMoneyValue','getAssetDisplayLabel','getAssetStatusLabel','formatShiftRangeLabel','formatAttendanceMomentForWorkDate','getAttendanceCompactSource'];
 const roots=EMPLOYEE_HOME_PROJECTOR_ROOTS;
 export async function buildEmployeeHomeProjector(output){
- const source=await readFile('src/App.jsx','utf8'),extracted=extractEmployeeHomeScreenModel(source,path.resolve('src'),roots);
+ const sourceDirectory=path.resolve('development/hd-manager/application/src');
+ const source=await readFile(path.join(sourceDirectory,'App.jsx'),'utf8'),extracted=extractEmployeeHomeScreenModel(source,sourceDirectory,roots);
  const contents=extracted.code+`\nimport {buildEmployeeHomeScreenDto,validateEmployeeHomeScreenDto} from './services/employeeHomeScreenDto.js';
  import {buildEmployeeHomeSnapshotInput} from './services/employeeHomeSnapshotInput.js';
  export function projectEmployeeHomeSnapshot(scope,snapshot){
@@ -13,7 +14,7 @@ export async function buildEmployeeHomeProjector(output){
   return buildEmployeeHomeScreenDto(buildEmployeeHomeScreenModel(input),input,helpers);
  }
  export {validateEmployeeHomeScreenDto};`;
- const bundled=await build({stdin:{contents,resolveDir:path.resolve('src')},bundle:true,write:false,platform:'node',format:'cjs',target:'node22',metafile:true});
+ const bundled=await build({stdin:{contents,resolveDir:sourceDirectory},bundle:true,write:false,platform:'node',format:'cjs',target:'node22',metafile:true});
  const inputs=Object.keys(bundled.metafile.inputs);
  if(inputs.some(n=>/firebase|react|capacitor|html2canvas|jspdf|html-to-image|tesseract/i.test(n)))throw Error('Unapproved dependency entered the pure server Home projector.');
  const code=bundled.outputFiles[0].text,domainVersion=createHash('sha256').update(code).digest('hex');

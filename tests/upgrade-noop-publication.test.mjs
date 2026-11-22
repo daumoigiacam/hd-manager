@@ -11,7 +11,7 @@ function fixture(initial){
  const witness=createCollectionCommitWitness({getCommittedStates:()=>committed.current,onCommitted:name=>confirmed.push(name)});
  const merge=appFunction('mergePendingArrayItems',{expandPendingWrites:writes=>writes,pendingFirebaseWritesRef:pending,pruneRecentLocalMutations(){},getRecentLocalDeleteIds:()=>deleted,recentLocalWritesRef:{current:recent}});
  const worker={isPublicationCurrent:(_name,v)=>v===version,expectCommit:(_name,v,value)=>{expected.push({v,value});witness.expectCommit('orders',v,value)},publicationScheduled:()=>witness.publicationScheduled()};
- const apply=appFunction('setCollectionSafely',{readWorker:worker,cancelled:false,readWorkerCommittedStateRef:committed,mergePendingArrayItems:merge,retainCollectionRecordIdentityAsync,
+ const apply=appFunction('setCollectionSafely',{isReadAccessCurrent:()=>true,readWorker:worker,cancelled:false,readWorkerCommittedStateRef:committed,mergePendingArrayItems:merge,retainCollectionRecordIdentityAsync,
   runNonBlockingStateUpdate:fn=>queue.push(fn),hasCollectionValue:(v,object)=>object?Object.keys(v||{}).length>0:v?.length>0,getPreviousStableCollectionValue:()=>committed.current.orders,rememberStableCollectionValue(){},markCollectionLoaded(){throw Error('Source receipt cannot bypass commit witness')}});
  return{recent,pending,deleted,expected,confirmed,committed,queue,get state(){return state},get dispatches(){return dispatches},
   publish:async(value,object=false)=>{version=witness.begin('orders');return apply('orders',updater=>{dispatches++;state=updater(state)},value,object,{workerCommitVersion:version})},
@@ -48,10 +48,10 @@ test('unchanged publication diagnostics remain valid when timing is explicitly e
 test('already committed readiness flags do not enqueue repeated state actions; another actor/tenant still schedules readiness',()=>{
  for(const scope of ['same','actor','tenant']){
   const names=new Set(),serverNames=new Set();let scheduled=0,confirmed=0;
-  const committed={actorUid:scope==='actor'?'other':'actor',tenantId:scope==='tenant'?'other':'company',loaded:{orders:true},serverConfirmed:{tenantId:scope==='tenant'?'other':'company',collections:{orders:true}}};
-  const bindings={activeTenantScopeRef:{current:'company'},tenantCompanyId:'company',firebaseUser:{uid:'actor'},collectionReadinessCommittedRef:{current:committed},
+  const committed={actorUid:scope==='actor'?'other':'actor',tenantId:scope==='tenant'?'other':'company',loaded:{orders:true},serverConfirmed:{ownerKey:'owner-current',tenantId:scope==='tenant'?'other':'company',collections:{orders:true}}};
+  const bindings={isReadAccessCurrent:()=>true,activeTenantScopeRef:{current:'company'},tenantCompanyId:'company',firebaseUser:{uid:'actor'},collectionReadinessCommittedRef:{current:committed},
    pendingLoadedCollectionMarks:names,loadedCollectionMarkTimer:null,window:{setTimeout:()=>++scheduled},flushLoadedCollectionMarks(){},pendingServerConfirmedCollectionMarks:serverNames,serverConfirmedCollectionMarkTimer:null,
-   startupNotificationBarrier:{confirm:()=>confirmed++},cancelled:true};
+   startupNotificationBarrier:{confirm:()=>confirmed++},serverPendingCollectionNames:new Set(),readOwnerKey:'owner-current',customerSession:false,flushServerConfirmedCollectionMarks(){},cancelled:true};
   const mark=appFunction('markCollectionLoaded',bindings);bindings.markCollectionLoaded=mark;
   const server=appFunction('markCollectionServerConfirmed',bindings);
   for(let i=0;i<100;i++)server('orders');

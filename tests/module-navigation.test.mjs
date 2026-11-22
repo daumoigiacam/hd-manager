@@ -46,7 +46,7 @@ test('navigation updates only the subscribing shell; source lifecycle follows ro
 test('App uses the independent shell store and route effects without root activeTab state', async () => {
   const source=await readFile('src/App.jsx','utf8');
   const ast=parse(source,{sourceType:'module',plugins:['jsx']});
-  const root=ast.program.body.find(node=>node.type==='ExportDefaultDeclaration').declaration;
+  const root=ast.program.body.find(node=>node.type==='FunctionDeclaration'&&node.id?.name==='ApplicationView')||ast.program.body.find(node=>node.type==='ExportDefaultDeclaration').declaration;
   const declarations=root.body.body.filter(node=>node.type==='VariableDeclaration').flatMap(node=>node.declarations);
   assert(!declarations.some(node=>node.id.type==='ArrayPattern'&&node.id.elements[0]?.name==='activeTab'));
   const effects=root.body.body.filter(node=>node.type==='ExpressionStatement'&&node.expression.callee?.name==='useModuleNavigationEffect');

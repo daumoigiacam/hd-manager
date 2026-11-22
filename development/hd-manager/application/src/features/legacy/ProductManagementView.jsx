@@ -57,7 +57,7 @@ export function createProductManagementView(runtime) {
                     aria-label={`Xóa sản phẩm ${p.name}`}
                     onClick={(event) => {
                       event.stopPropagation();
-                      if(window.confirm('Xóa vĩnh viễn sản phẩm này?')) onDelete(p.id);
+                      if(window.confirm('Ẩn sản phẩm này khỏi danh sách? Dữ liệu và lịch sử cũ vẫn được giữ lại.')) onDelete(p.id);
                     }}
                   >
                     <Trash2 size={14}/>

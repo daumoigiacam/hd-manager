@@ -1,4 +1,6 @@
 import PreloadedWorkspace from '../../layout/PreloadedWorkspace.jsx';
+import {customerManagerChoices} from '../../utils/customerManagerChoices.js';
+import { customerLoanFingerprint, customerLoanSnapshot, parseCustomerLoanQuantity, prepareCustomerLoanEdit, validateCustomerLoanState } from '../../utils/customerLoanIntegrity.js';
 import {createPreloadableModule} from '../../utils/preloadableModule.js';
 const deferredCustomerDetailRender=createPreloadableModule(()=>import('./CustomerDetailRender.jsx'));
 const deferredCustomerCreateRender=createPreloadableModule(()=>import('./CustomerCreateRender.jsx'));
@@ -94,6 +96,10 @@ export function createCustomerCRMView(runtime) {
   const [isSavingCustomerLoan, setIsSavingCustomerLoan] = useState(false);
   const [savingCustomerLoanReturnId, setSavingCustomerLoanReturnId] = useState('');
   const [savingCustomerLoanEditId, setSavingCustomerLoanEditId] = useState('');
+  const customerLoanCommandsRef = useRef({ create: new Map(), returns: new Map(), edits: new Map() });
+  const customerLoanInFlightRef = useRef(new Set());
+  const customerLoanReturnBasesRef = useRef(new Map());
+  const customerLoanEditBasesRef = useRef(new Map());
   const [isSavingCustomerDebtLimit, setIsSavingCustomerDebtLimit] = useState(false);
   const [isSavingCustomerOpeningDebt, setIsSavingCustomerOpeningDebt] = useState(false);
   const [customerDetailOpenSections, setCustomerDetailOpenSections] = useState({});
@@ -1733,6 +1739,8 @@ export function createCustomerCRMView(runtime) {
   };
 
   const updateCustomerLoanReturnDraft = (loanId, field, value) => {
+    const loan = selectedCustomerLoans.find(item => item.id === loanId);
+    if (loan && !customerLoanReturnBasesRef.current.has(loanId)) customerLoanReturnBasesRef.current.set(loanId, customerLoanSnapshot(loan));
     setCustomerLoanReturnDrafts(prev => ({
       ...prev,
       [loanId]: {
@@ -1745,6 +1753,7 @@ export function createCustomerCRMView(runtime) {
 
   const openCustomerLoanEditor = (loan) => {
     if (!loan?.id) return;
+    if (!customerLoanEditBasesRef.current.has(loan.id)) customerLoanEditBasesRef.current.set(loan.id, customerLoanSnapshot(loan));
     setEditingCustomerLoanId(prev => prev === loan.id ? '' : loan.id);
     setCustomerLoanEditDrafts(prev => ({
       ...prev,
@@ -1787,39 +1796,39 @@ export function createCustomerCRMView(runtime) {
       setCustomerLoanStatus('Tài khoản hiện tại chưa có quyền tạo phiếu vay.');
       return;
     }
-    const productName = `${customerLoanDraft.productName || ''}`.trim();
-    const quantity = parseLooseQuantityValue(customerLoanDraft.quantity);
-    const weightKg = parseLooseQuantityValue(customerLoanDraft.weightKg);
-    if (!productName) {
-      setCustomerLoanStatus('Vui lòng nhập tên hàng khách vay.');
-      return;
-    }
-    if (quantity <= 0 && weightKg <= 0) {
-      setCustomerLoanStatus('Vui lòng nhập số lượng hoặc số kg khách vay.');
-      return;
-    }
+    const operationKey = `create:${selectedCustomer.companyId}:${selectedCustomer.id}`;
+    if (customerLoanInFlightRef.current.has(operationKey)) return;
+    customerLoanInFlightRef.current.add(operationKey);
     setIsSavingCustomerLoan(true);
     setCustomerLoanStatus('');
     try {
-      const result = await onAddCustomerLoan(selectedCustomer.id, {
-        productName,
-        quantity,
+      const fields = {
+        productName: `${customerLoanDraft.productName || ''}`.trim(),
+        quantity: parseCustomerLoanQuantity(customerLoanDraft.quantity),
         unit: customerLoanDraft.unit || 'Kg',
-        weightKg,
+        weightKg: parseCustomerLoanQuantity(customerLoanDraft.weightKg),
         loanDate: customerLoanDraft.loanDate || getTodayString(),
         dueDate: customerLoanDraft.dueDate || '',
         note: customerLoanDraft.note || ''
-      });
-      if (result?.success === false) {
-        setCustomerLoanStatus(result.message || 'Không thể lưu phiếu vay.');
-        return;
+      };
+      if (!fields.productName) throw new Error('Vui lòng nhập tên hàng khách vay.');
+      validateCustomerLoanState(fields);
+      const fingerprint = customerLoanFingerprint(fields);
+      let command = customerLoanCommandsRef.current.create.get(operationKey);
+      if (!command || command.fingerprint !== fingerprint) {
+        command = { fingerprint, id: crypto.randomUUID() };
+        customerLoanCommandsRef.current.create.set(operationKey, command);
       }
+      const result = await onAddCustomerLoan(selectedCustomer.id, { ...fields, clientMutationId: command.id });
+      if (result?.success !== true) throw new Error(result?.message || 'Không thể xác nhận phiếu vay đã lưu.');
+      customerLoanCommandsRef.current.create.delete(operationKey);
       setCustomerLoanDraft({ productName: '', quantity: '', unit: 'Kg', weightKg: '', loanDate: getTodayString(), dueDate: '', note: '' });
       setCustomerDetailOpenSections(prev => ({ ...prev, customerLoans: true }));
       setCustomerLoanStatus('Đã lưu phiếu khách vay.');
     } catch (error) {
       setCustomerLoanStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể lưu phiếu vay. Vui lòng thử lại.'));
     } finally {
+      customerLoanInFlightRef.current.delete(operationKey);
       setIsSavingCustomerLoan(false);
     }
   };
@@ -1830,44 +1839,36 @@ export function createCustomerCRMView(runtime) {
       setCustomerLoanStatus('Tài khoản hiện tại chưa có quyền ghi trả hàng.');
       return;
     }
-    const draft = customerLoanReturnDrafts[loan.id] || { quantity: '', weightKg: '', returnDate: getTodayString(), note: '' };
-    const quantity = parseLooseQuantityValue(draft.quantity);
-    const weightKg = parseLooseQuantityValue(draft.weightKg);
-    if (quantity <= 0 && weightKg <= 0) {
-      setCustomerLoanStatus('Vui lòng nhập số lượng hoặc số kg khách trả.');
-      return;
-    }
+    const operationKey = `return:${loan.companyId}:${loan.id}`;
+    if (customerLoanInFlightRef.current.has(operationKey)) return;
+    customerLoanInFlightRef.current.add(operationKey);
     setSavingCustomerLoanReturnId(loan.id);
     setCustomerLoanStatus('');
     try {
-      const returns = Array.isArray(loan.returns) ? loan.returns : [];
-      const nextReturns = [
-        ...returns,
-        {
-          id: `clr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-          quantity,
-          weightKg,
-          returnDate: draft.returnDate || getTodayString(),
-          note: `${draft.note || ''}`.trim(),
-          createdAt: new Date().toISOString(),
-          createdByEmpId: employee?.id || ''
-        }
-      ];
-      const nextBalance = getCustomerLoanBalance({ ...loan, returns: nextReturns });
-      const result = await onEditCustomerLoan(loan.id, {
-        returns: nextReturns,
-        status: nextBalance.isClosed ? 'closed' : 'open',
-        closedAt: nextBalance.isClosed ? new Date().toISOString() : ''
-      });
-      if (result?.success === false) {
-        setCustomerLoanStatus(result.message || 'Không thể ghi nhận trả hàng.');
-        return;
+      const draft = customerLoanReturnDrafts[loan.id] || {};
+      const expectedLoan = customerLoanReturnBasesRef.current.get(loan.id) || customerLoanSnapshot(loan);
+      customerLoanReturnBasesRef.current.set(loan.id, expectedLoan);
+      const fields = { quantity: parseCustomerLoanQuantity(draft.quantity), weightKg: parseCustomerLoanQuantity(draft.weightKg),
+        returnDate: draft.returnDate || getTodayString(), note: `${draft.note || ''}`.trim() };
+      const fingerprint = customerLoanFingerprint({ expectedLoan, fields });
+      let command = customerLoanCommandsRef.current.returns.get(operationKey);
+      if (!command || command.fingerprint !== fingerprint) {
+        const id = crypto.randomUUID();
+        command = { fingerprint, id, entry: { ...fields, id: `clr_${id}`, createdAt: new Date().toISOString(), createdByEmpId: employee?.id || '' } };
+        customerLoanCommandsRef.current.returns.set(operationKey, command);
       }
+      const patch = { returns: [...(expectedLoan.returns || []), command.entry], clientMutationId: command.id };
+      const intent = prepareCustomerLoanEdit(loan.id, patch, expectedLoan);
+      const result = await onEditCustomerLoan(loan.id, patch, expectedLoan);
+      if (result?.success !== true) throw new Error(result?.message || 'Không thể xác nhận lần trả đã lưu.');
+      customerLoanCommandsRef.current.returns.delete(operationKey);
+      customerLoanReturnBasesRef.current.delete(loan.id);
       setCustomerLoanReturnDrafts(prev => ({ ...prev, [loan.id]: { quantity: '', weightKg: '', returnDate: getTodayString(), note: '' } }));
-      setCustomerLoanStatus(nextBalance.isClosed ? 'Đã ghi trả và đóng phiếu vay.' : 'Đã ghi nhận khách trả hàng.');
+      setCustomerLoanStatus((result.loan ? result.loan.status === 'closed' : intent.isClosed) ? 'Đã ghi trả và đóng phiếu vay.' : 'Đã ghi nhận khách trả hàng.');
     } catch (error) {
       setCustomerLoanStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể ghi nhận trả hàng. Vui lòng thử lại.'));
     } finally {
+      customerLoanInFlightRef.current.delete(operationKey);
       setSavingCustomerLoanReturnId('');
     }
   };
@@ -1878,39 +1879,43 @@ export function createCustomerCRMView(runtime) {
       setCustomerLoanStatus('Tài khoản hiện tại chưa có quyền chỉnh sửa phiếu vay.');
       return;
     }
-    const draft = customerLoanEditDrafts[loan.id] || {};
-    const productName = `${draft.productName || ''}`.trim();
-    const quantity = parseLooseQuantityValue(draft.quantity);
-    const weightKg = parseLooseQuantityValue(draft.weightKg);
-    if (!productName) {
-      setCustomerLoanStatus('Vui lòng nhập tên hàng hóa trước khi lưu sửa.');
-      return;
-    }
-    if (quantity <= 0 && weightKg <= 0) {
-      setCustomerLoanStatus('Vui lòng nhập số lượng hoặc số kg trước khi lưu sửa.');
-      return;
-    }
+    const operationKey = `edit:${loan.companyId}:${loan.id}`;
+    if (customerLoanInFlightRef.current.has(operationKey)) return;
+    customerLoanInFlightRef.current.add(operationKey);
     setSavingCustomerLoanEditId(loan.id);
     setCustomerLoanStatus('');
     try {
-      const result = await onEditCustomerLoan(loan.id, {
-        productName,
-        quantity,
+      const draft = customerLoanEditDrafts[loan.id] || {};
+      const expectedLoan = customerLoanEditBasesRef.current.get(loan.id) || customerLoanSnapshot(loan);
+      customerLoanEditBasesRef.current.set(loan.id, expectedLoan);
+      const fields = {
+        productName: `${draft.productName || ''}`.trim(),
+        quantity: parseCustomerLoanQuantity(draft.quantity),
         unit: draft.unit || loan.unit || 'Kg',
-        weightKg,
-        loanDate: draft.loanDate || loan.loanDate || getTodayString(),
+        weightKg: parseCustomerLoanQuantity(draft.weightKg),
+        loanDate: draft.loanDate || expectedLoan.loanDate || getTodayString(),
         dueDate: draft.dueDate || '',
         note: draft.note || ''
-      });
-      if (result?.success === false) {
-        setCustomerLoanStatus(result.message || 'Không thể lưu chỉnh sửa phiếu vay.');
-        return;
+      };
+      const fingerprint = customerLoanFingerprint({ expectedLoan, fields });
+      let command = customerLoanCommandsRef.current.edits.get(operationKey);
+      if (!command || command.fingerprint !== fingerprint) {
+        command = { fingerprint, id: crypto.randomUUID() };
+        customerLoanCommandsRef.current.edits.set(operationKey, command);
       }
+      const patch = { ...fields, clientMutationId: command.id };
+      prepareCustomerLoanEdit(loan.id, patch, expectedLoan);
+      const result = await onEditCustomerLoan(loan.id, patch, expectedLoan);
+      if (result?.success !== true) throw new Error(result?.message || 'Không thể xác nhận chỉnh sửa đã lưu.');
+      customerLoanCommandsRef.current.edits.delete(operationKey);
+      customerLoanEditBasesRef.current.delete(loan.id);
+      setCustomerLoanEditDrafts(prev => { const next = { ...prev }; delete next[loan.id]; return next; });
       setEditingCustomerLoanId('');
       setCustomerLoanStatus('Đã cập nhật phiếu vay/trả.');
     } catch (error) {
       setCustomerLoanStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể lưu chỉnh sửa phiếu vay. Vui lòng thử lại.'));
     } finally {
+      customerLoanInFlightRef.current.delete(operationKey);
       setSavingCustomerLoanEditId('');
     }
   };
@@ -2770,7 +2775,7 @@ export function createCustomerCRMView(runtime) {
 
   if (selectedCustomer) {
     return (
-      <PreloadedWorkspace module={deferredCustomerDetailRender} viewProps={{context:{AlertCircle,CUSTOMER_HONORIFIC_OPTIONS,CUSTOMER_RECONCILIATION_FILTERS,CalendarDays,Check,ChevronDown,ChevronRight,ChevronUp,Download,Filter,Gift,Loader2,MapPin,PRODUCT_PRICING_UNIT_OPTIONS,Package,Phone,Receipt,Search,ShareActionGrid,Trash2,UserCircle,Wallet,X,accountLoginEnabled,activeProductsForPricing,addCustomerBranchDraft,addCustomerPriceVariantDraft,allowedDriverIdsDraft,availableCustomerProductOptions,availableOrderMonths,buildCustomerLoanQuantityLabel,canCallVisibleCustomerPhone,canCreateCustomerLoanRecord,canDeleteCustomer,canDeleteCustomerLoanRecord,canEditCustomer,canEditCustomerContactFields,canEditCustomerLoanRecord,canEditCustomerLocationFields,canEditCustomerProfile,canManageCustomerDebtLimit,canManageCustomerPrices,canManageDriverDebtPermission,canManageFixedProducts,canOpenOrderDetails,canReassignCustomerManager,canReturnCustomerLoanRecord,canSeeCustomerDebt,canSeeCustomerDebtLimitAlerts,canSeeCustomerLoans,canSeeCustomerLocation,canSeeCustomerOrderHistory,canSeeCustomerPaymentHistory,canSeeCustomerPhone,canSeeCustomerStats,canUseCustomerLoyalty,clearCustomerPriceDraft,currentCompany,customerBranchStatus,customerBranchesDraft,customerDebtLimitStatus,customerEditForm,customerEditPhoneDuplicate,customerEditStatus,customerLoanDraft,customerLoanEditDrafts,customerLoanReturnDrafts,customerLoanStatus,customerLoansRef,customerLocationStatus,customerOpeningDebtStatus,customerOrderHistoryRef,customerPaymentHistoryRef,customerPriceDrafts,customerPriceStatus,customerPricingProducts,customerProductPickerSearch,customerProductUsageStats,customerReconciliationExportStatus,customerReconciliationFilter,customerReconciliationFilterCounts,customerReconciliationReportPages,customerReconciliationReportRef,customerReconciliationSummary,debtShareStatus,driverDebtAccessEnabledDraft,driverEmployees,editingCustomerLoanId,filteredCustomerReconciliationRows,filteredOrders,filteredPricingProducts,formatCurrency,formatCustomerLocationForDisplay,formatCustomerNameDraft,formatDateLabel,formatInputCurrency,formatNumber,formatOrderCode,formatReturnGoodsQty,getCustomerBranchDisplayName,getCustomerDisplayName,getCustomerLoanBalance,getCustomerOpeningDebtAmount,getCustomerOpeningPayableAmount,getCustomerReconciliationDirectionLabel,getCustomerReconciliationFilterLabel,getDuplicateCustomerDisplayName,getLedgerOrderDisplayCode,getPaymentDateKey,getPaymentMethodLabel,getPaymentSourceLabel,getProductAttributes,getProductPrimaryPricingUnit,getProductShortName,getTodayString,handleApplyCustomerEditLocationInput,handleArchiveCustomerLoan,handleCaptureCustomerEditLocation,handleCopyDebt,handleCreateCustomerLoan,handleDeleteCustomerProfile,handleDownloadDebt,handleExportCustomerReconciliationExcel,handleExportCustomerReconciliationPdf,handleOpenCustomerMaps,handleOpenSelectedCustomerDebt,handleRecordCustomerLoanReturn,handleSaveAndNotifyCustomerPrices,handleSaveCustomerBranches,handleSaveCustomerDebtLimit,handleSaveCustomerLoanEdit,handleSaveCustomerOpeningDebt,handleSaveCustomerPriceSettings,handleSaveCustomerProfile,handleSaveDriverAccess,handleShareDebt,handleShareDebtReminder,hasCustomerOrderConfigurationValue,inferCustomerHonorificFromName,isCustomerDetailSectionOpen,isCustomerFixedProductsOpen,isDeletingCustomer,isExportingCustomerReconciliation,isSales,isSavingCustomerBranches,isSavingCustomerDebtLimit,isSavingCustomerLoan,isSavingCustomerOpeningDebt,isSavingCustomerPrices,isSavingCustomerProfile,isSavingDriverAccess,isUpdatingSelectedCustomerLocation,localCustomerSource,normalizeLookupText,normalizeProductPricingUnit,onOpenOrder,openCustomerDetailSection,openCustomerLoanEditor,orderMonth,orderSearch,orderSort,parseInputCurrency,parseLooseMoneyValue,removeCustomerBranchDraft,removeCustomerPriceVariantDraft,salesEmployees,savingCustomerLoanEditId,savingCustomerLoanReturnId,selectedCustomer,selectedCustomerDebtOrders,selectedCustomerDirectionsUrl,selectedCustomerLoanStats,selectedCustomerLoans,selectedCustomerLocationText,selectedCustomerNeedsImmediateCollection,selectedCustomerPendingReturnGoods,selectedCustomerPendingReturnSummary,selectedCustomerProductIdSet,selectedCustomerReconciliationRows,setCustomerEditForm,setCustomerProductPickerSearch,setCustomerReconciliationExportStatus,setCustomerReconciliationFilter,setEditingCustomerLoanId,setIsCustomerFixedProductsOpen,setOrderMonth,setOrderSearch,setOrderSort,setShowCustomerDebtList,setShowCustomerEditForm,showCustomerDebtList,showCustomerEditForm,toggleAllowedDriver,toggleCustomerBranchProduct,toggleCustomerDetailSection,toggleCustomerProductForPricing,toggleDriverDebtAccess,updateCustomerBranchDraft,updateCustomerLoanDraft,updateCustomerLoanEditDraft,updateCustomerLoanReturnDraft,updateCustomerPriceDraft,updateCustomerPriceVariantDraft}}} label="chi tiết khách hàng" />
+      <PreloadedWorkspace module={deferredCustomerDetailRender} viewProps={{context:{AlertCircle,CUSTOMER_HONORIFIC_OPTIONS,CUSTOMER_RECONCILIATION_FILTERS,CalendarDays,Check,ChevronDown,ChevronRight,ChevronUp,Download,Filter,Gift,Loader2,MapPin,PRODUCT_PRICING_UNIT_OPTIONS,Package,Phone,Receipt,Search,ShareActionGrid,Trash2,UserCircle,Wallet,X,accountLoginEnabled,activeProductsForPricing,addCustomerBranchDraft,addCustomerPriceVariantDraft,allowedDriverIdsDraft,availableCustomerProductOptions,availableOrderMonths,buildCustomerLoanQuantityLabel,canCallVisibleCustomerPhone,canCreateCustomerLoanRecord,canDeleteCustomer,canDeleteCustomerLoanRecord,canEditCustomer,canEditCustomerContactFields,canEditCustomerLoanRecord,canEditCustomerLocationFields,canEditCustomerProfile,canManageCustomerDebtLimit,canManageCustomerPrices,canManageDriverDebtPermission,canManageFixedProducts,canOpenOrderDetails,canReassignCustomerManager,canReturnCustomerLoanRecord,canSeeCustomerDebt,canSeeCustomerDebtLimitAlerts,canSeeCustomerLoans,canSeeCustomerLocation,canSeeCustomerOrderHistory,canSeeCustomerPaymentHistory,canSeeCustomerPhone,canSeeCustomerStats,canUseCustomerLoyalty,clearCustomerPriceDraft,currentCompany,customerBranchStatus,customerBranchesDraft,customerDebtLimitStatus,customerEditForm,customerEditPhoneDuplicate,customerEditStatus,customerLoanDraft,customerLoanEditDrafts,customerLoanReturnDrafts,customerLoanStatus,customerLoansRef,customerLocationStatus,customerOpeningDebtStatus,customerOrderHistoryRef,customerPaymentHistoryRef,customerPriceDrafts,customerPriceStatus,customerPricingProducts,customerProductPickerSearch,customerProductUsageStats,customerReconciliationExportStatus,customerReconciliationFilter,customerReconciliationFilterCounts,customerReconciliationReportPages,customerReconciliationReportRef,customerReconciliationSummary,debtShareStatus,driverDebtAccessEnabledDraft,driverEmployees,editingCustomerLoanId,filteredCustomerReconciliationRows,filteredOrders,filteredPricingProducts,formatCurrency,formatCustomerLocationForDisplay,formatCustomerNameDraft,formatDateLabel,formatInputCurrency,formatNumber,formatOrderCode,formatReturnGoodsQty,getCustomerBranchDisplayName,getCustomerDisplayName,getCustomerLoanBalance,getCustomerOpeningDebtAmount,getCustomerOpeningPayableAmount,getCustomerReconciliationDirectionLabel,getCustomerReconciliationFilterLabel,getDuplicateCustomerDisplayName,getLedgerOrderDisplayCode,getPaymentDateKey,getPaymentMethodLabel,getPaymentSourceLabel,getProductAttributes,getProductPrimaryPricingUnit,getProductShortName,getTodayString,handleApplyCustomerEditLocationInput,handleArchiveCustomerLoan,handleCaptureCustomerEditLocation,handleCopyDebt,handleCreateCustomerLoan,handleDeleteCustomerProfile,handleDownloadDebt,handleExportCustomerReconciliationExcel,handleExportCustomerReconciliationPdf,handleOpenCustomerMaps,handleOpenSelectedCustomerDebt,handleRecordCustomerLoanReturn,handleSaveAndNotifyCustomerPrices,handleSaveCustomerBranches,handleSaveCustomerDebtLimit,handleSaveCustomerLoanEdit,handleSaveCustomerOpeningDebt,handleSaveCustomerPriceSettings,handleSaveCustomerProfile,handleSaveDriverAccess,handleShareDebt,handleShareDebtReminder,hasCustomerOrderConfigurationValue,inferCustomerHonorificFromName,isCustomerDetailSectionOpen,isCustomerFixedProductsOpen,isDeletingCustomer,isExportingCustomerReconciliation,isSales,isSavingCustomerBranches,isSavingCustomerDebtLimit,isSavingCustomerLoan,isSavingCustomerOpeningDebt,isSavingCustomerPrices,isSavingCustomerProfile,isSavingDriverAccess,isUpdatingSelectedCustomerLocation,localCustomerSource,normalizeLookupText,normalizeProductPricingUnit,onOpenOrder,openCustomerDetailSection,openCustomerLoanEditor,orderMonth,orderSearch,orderSort,parseInputCurrency,parseLooseMoneyValue,removeCustomerBranchDraft,removeCustomerPriceVariantDraft,salesEmployees:customerManagerChoices(salesEmployees,employees,customerEditForm.empId),savingCustomerLoanEditId,savingCustomerLoanReturnId,selectedCustomer,selectedCustomerDebtOrders,selectedCustomerDirectionsUrl,selectedCustomerLoanStats,selectedCustomerLoans,selectedCustomerLocationText,selectedCustomerNeedsImmediateCollection,selectedCustomerPendingReturnGoods,selectedCustomerPendingReturnSummary,selectedCustomerProductIdSet,selectedCustomerReconciliationRows,setCustomerEditForm,setCustomerProductPickerSearch,setCustomerReconciliationExportStatus,setCustomerReconciliationFilter,setEditingCustomerLoanId,setIsCustomerFixedProductsOpen,setOrderMonth,setOrderSearch,setOrderSort,setShowCustomerDebtList,setShowCustomerEditForm,showCustomerDebtList,showCustomerEditForm,toggleAllowedDriver,toggleCustomerBranchProduct,toggleCustomerDetailSection,toggleCustomerProductForPricing,toggleDriverDebtAccess,updateCustomerBranchDraft,updateCustomerLoanDraft,updateCustomerLoanEditDraft,updateCustomerLoanReturnDraft,updateCustomerPriceDraft,updateCustomerPriceVariantDraft}}} label="chi tiết khách hàng" />
     );
   }
 
@@ -3032,11 +3037,11 @@ return (
       )}
 
       {showAddCustomer && (
-        <PreloadedWorkspace module={deferredCustomerCreateRender} viewProps={{context:{AlertCircle,CUSTOMER_HONORIFIC_OPTIONS,Check,ChevronLeft,Loader2,MapPin,Phone,Search,X,activeProductsForPricing,canAddCustomerLocationFields,canManageCustomerDebtLimit,canPickCustomerContact,canSeeCustomerDebt,closeAddCustomerModal,customerContactStatus,formatCustomerLocationForDisplay,formatCustomerNameDraft,formatInputCurrency,getCustomerContactPickerUnavailableMessage,getDuplicateCustomerDisplayName,handleAddCustomerSubmit,handleApplyNewCustomerLocationInput,handleCaptureNewCustomerLocation,handlePickCustomerContact,inferCustomerHonorificFromName,isCapturingNewCustomerLocation,isPickingCustomerContact,isSales,isSavingNewCustomer,localCustomerSource,newCus,newCustomerPhoneDuplicate,newCustomerProductIds,newCustomerProductOptions,newCustomerProductSearch,newCustomerProductSuggestionLimit,newCustomerProductUsageById,parseInputCurrency,salesEmployees,selectedNewCustomerProductIdSet,setNewCus,setNewCustomerProductSearch,toTitleCase,toggleNewCustomerProduct}}} label="tạo khách hàng" />
+        <PreloadedWorkspace module={deferredCustomerCreateRender} viewProps={{context:{AlertCircle,CUSTOMER_HONORIFIC_OPTIONS,Check,ChevronLeft,Loader2,MapPin,Phone,Search,X,activeProductsForPricing,canAddCustomerLocationFields,canManageCustomerDebtLimit,canPickCustomerContact,canSeeCustomerDebt,closeAddCustomerModal,customerContactStatus,formatCustomerLocationForDisplay,formatCustomerNameDraft,formatInputCurrency,getCustomerContactPickerUnavailableMessage,getDuplicateCustomerDisplayName,handleAddCustomerSubmit,handleApplyNewCustomerLocationInput,handleCaptureNewCustomerLocation,handlePickCustomerContact,inferCustomerHonorificFromName,isCapturingNewCustomerLocation,isPickingCustomerContact,isSales,isSavingNewCustomer,localCustomerSource,newCus,newCustomerPhoneDuplicate,newCustomerProductIds,newCustomerProductOptions,newCustomerProductSearch,newCustomerProductSuggestionLimit,newCustomerProductUsageById,parseInputCurrency,salesEmployees:customerManagerChoices(salesEmployees,employees,newCus.empId),selectedNewCustomerProductIdSet,setNewCus,setNewCustomerProductSearch,toTitleCase,toggleNewCustomerProduct}}} label="tạo khách hàng" />
       )}
 
       {showCustomerImportModal && (
-        <PreloadedWorkspace module={deferredCustomerImportRender} viewProps={{context:{X,customerImportInputRef,customerImportManagerId,customerImportStatus,handleCustomerImportFileChange,isImportingCustomers,isSales,salesEmployees,setCustomerImportManagerId,setCustomerImportStatus,setShowCustomerImportModal}}} label="nhập khách hàng" />
+        <PreloadedWorkspace module={deferredCustomerImportRender} viewProps={{context:{X,customerImportInputRef,customerImportManagerId,customerImportStatus,handleCustomerImportFileChange,isImportingCustomers,isSales,salesEmployees:customerManagerChoices(salesEmployees,employees,customerImportManagerId),setCustomerImportManagerId,setCustomerImportStatus,setShowCustomerImportModal}}} label="nhập khách hàng" />
       )}
     </div>
   );

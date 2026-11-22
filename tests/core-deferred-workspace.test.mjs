@@ -12,16 +12,19 @@ test('extracted workspace receives exactly its declared local bindings, with dir
   const root=parse(await readFile('src/App.jsx','utf8'),{sourceType:'module',plugins:['jsx']});
   const traverse=traverseModule.default||traverseModule;
   for(const view of manifest.views){
-    const source=parse(await readFile(view.file,'utf8'),{sourceType:'module',plugins:['jsx']});
+    const external=view.name==='CustomerCRMView';
+    const source=parse(await readFile(external?'src/features/legacy/CustomerCRMController.jsx':view.file,'utf8'),{sourceType:'module',plugins:['jsx']});
+    const bindingsRoot=external?parse(await readFile('src/features/customers/productCRMShared.jsx','utf8'),{sourceType:'module',plugins:['jsx']}):root;
     let factory,component,destructured;
     traverse(source,{FunctionDeclaration(p){if(p.node.id?.name===view.factory)factory=p;if(p.node.id?.name===view.name)component=p;},
       VariableDeclarator(p){if(p.node.id.type==='ObjectPattern'&&p.node.init?.name==='runtime')destructured=p.node.id.properties.map(property=>property.key.name).sort();}});
-    assert(factory&&component);assert.deepEqual(destructured,view.runtimeBindings);
+    const expected=external?[...view.runtimeBindings,'buildCustomerDirectionsUrl','sortOrdersByNewest'].sort():view.runtimeBindings;
+    assert(factory&&component);assert.deepEqual(destructured,expected);
     const supplied=[];
-    traverse(root,{CallExpression(p){if(p.node.callee.name===view.factory){const object=p.node.arguments[0]?.arguments?.[0];assert.equal(object?.type,'ObjectExpression');supplied.push(...object.properties.map(property=>property.key.name))}}});
-    assert.deepEqual(supplied.sort(),view.runtimeBindings);
+    traverse(bindingsRoot,{CallExpression(p){if(p.node.callee.name===view.factory){const object=p.node.arguments[0]?.arguments?.[0];assert.equal(object?.type,'ObjectExpression');supplied.push(...object.properties.map(property=>property.key.name))}}});
+    assert.deepEqual(supplied.sort(),expected);
     const missing=[];
-    component.traverse({ReferencedIdentifier(p){if(!p.scope.getBinding(p.node.name)&&!view.browserGlobals.includes(p.node.name))missing.push(p.node.name)}});
+    component.traverse({ReferencedIdentifier(p){if(!p.scope.getBinding(p.node.name)&&![...view.browserGlobals,'String','globalThis','JSON','navigator','crypto'].includes(p.node.name))missing.push(p.node.name)}});
     assert.deepEqual(missing,[],'no invisible App closure dependency may become undefined in the split bundle');
   }
 });

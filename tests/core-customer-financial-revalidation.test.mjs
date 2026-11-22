@@ -43,7 +43,7 @@ test('actual App pending callback and CustomerPortal financial render retain com
   if(['loc','extra','comments'].includes(key))continue;if(Array.isArray(value))value.forEach(child=>walk(child,fn));else if(value?.type)walk(value,fn);
  }};
  walk(tree,node=>{if(node.type==='FunctionDeclaration'&&node.id?.name==='CustomerPortalView')component=node});assert(component);
- walk(component,node=>{if(node.type==='VariableDeclarator'&&node.id.name==='renderHome')home=node.init});assert(home);
+ walk(component,node=>{if(node.type==='VariableDeclarator'&&node.id.name==='renderCustomerOverview')home=node.init});assert(home);
  const first=component.body.body.find(node=>node.type==='VariableDeclaration'&&node.declarations[0].id.name==='financialReady');
  const end=component.body.body.find(node=>node.type==='VariableDeclaration'&&node.declarations[0].id.name==='customerAvatarInputRef');
  assert(first&&end);const financialBlock=source.slice(first.start,end.start),calls=[];let status;

@@ -3,7 +3,6 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 
 import {
-  assertFails,
   assertSucceeds,
   initializeTestEnvironment,
 } from '@firebase/rules-unit-testing';
@@ -17,9 +16,14 @@ import {
   setDoc,
   updateDoc,
   where,
+  writeBatch,
 } from 'firebase/firestore';
 
-const projectId = 'hd-manager-phase4-inventory-rules';
+// A denial must come from authorization, never Rules expression exhaustion.
+const assertFails=operation=>assert.rejects(operation,error=>error.code==='permission-denied'&&!/maximum of 1000 expressions/.test(error.message));
+
+const projectId = 'demo-phase4-inventory-rules-'+process.pid;
+if(!/^(?:localhost|127\.0\.0\.1):8185$/.test(process.env.FIRESTORE_EMULATOR_HOST||''))throw Error('Inventory Rules require loopback 8185');
 const appId = 'phase4-rules-app';
 const companyA = 'company-a';
 const companyB = 'company-b';
@@ -133,6 +137,10 @@ try {
       await assertFails(setDoc(doc(employeeDb, pathFor(collectionName, `client-${collectionName}`)), {
         id: `client-${collectionName}`,
         companyId: companyA,
+        // These three collections also host active legacy CRUD. Match the
+        // actual backend journal schema; the denial oracle is unchanged.
+        ...(['warehouseImports','warehouseDispatches','warehouseStockCounts'].includes(collectionName)
+          ? {inventoryOperationId:'forged-server-operation',inventoryMovements:[]} : {}),
       }));
     }
   });
@@ -166,12 +174,39 @@ try {
     await assertFails(deleteDoc(dispatchRef));
   });
 
+  await check('removing journal markers or forging empty marker fields cannot escape server ownership',async()=>{
+    for(const [name,id]of [['warehouseImports','import-a'],['warehouseStockCounts','count-a'],['warehouseDispatches','dispatch-a']]){
+      await assertFails(setDoc(doc(employeeDb,pathFor(name,id)),{id,companyId:companyA,note:'strip journal'}));
+      for(const key of ['inventoryOperationId','inventoryMovements','inventoryCommittedAt','inventoryCommittedByEmployeeId','ledgerId']){
+        await assertFails(setDoc(doc(employeeDb,pathFor(name,`forged-${key}`)),{companyId:companyA,[key]:''}));
+      }
+    }
+  });
+
+  await check('plain legacy imports and counts retain client CRUD; ordinary activity logs remain writable',async()=>{
+    for(const name of ['warehouseImports','warehouseStockCounts','activityLogs']){
+      const ref=doc(employeeDb,pathFor(name,'legacy-client'));
+      await assertSucceeds(setDoc(ref,{id:'legacy-client',companyId:companyA,note:'legacy',action:'ORDINARY_LEGACY_ACTION',type:'ordinary'}));
+      await assertSucceeds(updateDoc(ref,{note:'edited'}));
+      await assertSucceeds(deleteDoc(ref));
+    }
+  });
+
+  await check('a rejected journal batch publishes none of its otherwise-allowed writes',async()=>{
+    const batch=writeBatch(employeeDb),ref=doc(employeeDb,pathFor('warehouseImports','atomic-rollback'));
+    batch.set(ref,{id:'atomic-rollback',companyId:companyA,note:'must not commit'});
+    batch.update(doc(employeeDb,pathFor('inventoryBalances','balance-a')),{availableQuantity:999});
+    await assertFails(batch.commit());
+    assert.equal((await getDoc(ref)).exists(),false);
+    assert.equal((await getDoc(doc(employeeDb,pathFor('inventoryBalances','balance-a')))).data().availableQuantity,100);
+  });
+
   const evidence = {
     generatedAt: new Date().toISOString(),
     environment: 'LOCAL_FIRESTORE_EMULATOR',
     checks: passed,
-    expectedChecks: 5,
-    status: passed === 5 ? 'PASS' : 'FAIL',
+    expectedChecks: 8,
+    status: passed === 8 ? 'PASS' : 'FAIL',
     assertions: [
       'same-tenant employee read succeeds',
       'cross-tenant and customer reads fail',
@@ -180,9 +215,10 @@ try {
       'dispatch order link cannot mutate inventory facts',
     ],
   };
-  await mkdir('test-results/phase4', { recursive: true });
-  await writeFile('test-results/phase4/firestore-inventory-rules.json', `${JSON.stringify(evidence, null, 2)}\n`, 'utf8');
-  console.log(`Firestore inventory rules: ${passed}/5 checks passed.`);
+  const reportDirectory=new URL('../test-results/phase4/',import.meta.url);
+  await mkdir(reportDirectory, { recursive: true });
+  await writeFile(new URL('firestore-inventory-rules.json',reportDirectory), `${JSON.stringify(evidence, null, 2)}\n`, 'utf8');
+  console.log(`Firestore inventory rules: ${passed}/8 checks passed.`);
 } finally {
   await testEnvironment.cleanup();
 }

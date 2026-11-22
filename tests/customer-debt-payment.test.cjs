@@ -1,6 +1,8 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const {readApplicationSource,readApplicationSourceRoot} = require('../scripts/helpers/application-source.cjs');
+const {parse} = require('@babel/parser');
 const {
   MAX_CUSTOMER_DEBT_PAYMENT_ORDERS,
   allocateCustomerDebtPayment,
@@ -287,11 +289,38 @@ assert.strictEqual(
 
 const firestoreRules = fs.readFileSync(path.join(__dirname, '..', 'firestore.rules'), 'utf8');
 const functionsSource = fs.readFileSync(path.join(__dirname, '..', 'functions', 'index.js'), 'utf8');
-const appSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'App.jsx'), 'utf8');
-assert.ok(
-  appSource.includes('isUnconfirmedPaymentIntent'),
-  'The customer portal must exclude pending payment intents from its payment history and debt summary.'
-);
+const appSource = readApplicationSource();
+// The actual split portal uses the shared official-cashflow predicate. Bind
+// that current predicate and execute the real payment-history memo rather
+// than requiring its transitive helper name to occur in the App wrapper.
+const sharedSource=fs.readFileSync(path.join(readApplicationSourceRoot(),'src/features/customers/productCRMShared.jsx'),'utf8');
+const sharedTree=parse(sharedSource,{sourceType:'module',plugins:['jsx']});
+const sharedDeclarations=new Map(sharedTree.program.body.filter(node=>node.type==='VariableDeclaration')
+  .flatMap(node=>node.declarations.map(item=>[item.id.name,item.init])));
+const predicateNames=['CASHFLOW_APPROVAL_STATUS','UNCONFIRMED_PAYMENT_STATUSES','PAYMENT_INTENT_SOURCE_TYPES',
+  'isUnconfirmedPaymentIntent','requiresCashflowApproval','isCashflowOfficial'];
+const isOfficial=Function(predicateNames.map(name=>{
+  const node=sharedDeclarations.get(name);assert.ok(node,`Missing actual shared predicate ${name}`);
+  return `const ${name}=(${sharedSource.slice(node.start,node.end)});`;
+}).join('\n')+'\nreturn isCashflowOfficial;')();
+const portal=parse(appSource,{sourceType:'module',plugins:['jsx']}).program.body.find(node=>node.type==='FunctionDeclaration'&&node.id?.name==='CustomerPortalView');
+assert.ok(portal,'Inspect the actual reconstructed CustomerPortalView');
+const history=portal.body.body.filter(node=>node.type==='VariableDeclaration').flatMap(node=>node.declarations)
+  .find(node=>node.id.name==='customerPayments')?.init?.arguments?.[0];
+assert.ok(history,'Actual customer payment-history memo');
+const receipts=[{id:'confirmed',customerId:'customer-a',amount:60000,approvalStatus:'approved'},
+  {id:'pending',customerId:'customer-a',amount:990000,status:'pending'},
+  {id:'intent',customerId:'customer-a',amount:880000,sourceType:'customer_debt_payment_intent'},
+  {id:'rejected',customerId:'customer-a',amount:770000,requiresApproval:true,approvalStatus:'rejected'},
+  {id:'foreign',customerId:'customer-b',amount:660000,approvalStatus:'approved'}];
+const ownHistory=Function('safePayments','customerProfile','isCashflowOfficial',
+  `return (${appSource.slice(history.start,history.end)})();`)(receipts,{id:'customer-a'},isOfficial);
+assert.deepStrictEqual(ownHistory.map(item=>item.id),['confirmed'],
+  'Actual portal history must exclude unconfirmed intents, rejected amounts and another customer');
+assert.strictEqual(ownHistory.reduce((sum,item)=>sum+item.amount,0),60000);
+for(const status of ['pending','created','processing','awaiting_transfer','failed','cancelled','expired']){
+  assert.strictEqual(isOfficial({amount:990000,status}),false,`Unconfirmed ${status} must never enter official debt receipts`);
+}
 assert.ok(
   functionsSource.includes('normalizeCustomerDebtPaymentLookupTokens(tokens)'),
   'The webhook intent lookup must accept both a single HD invoice code and an HDP aggregate code.'

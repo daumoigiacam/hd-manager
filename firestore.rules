@@ -79,10 +79,8 @@ service cloud.firestore {
         'payrollPolicies','salaryPolicyHistory','salaryPolicyVersion','salaryPolicyEffectiveFrom'];
     }
 
-    function employeeCommissionActionEnabled(appId) {
-      let employee = get(dispatchEmployeePath(appId)).data;
+    function employeeCommissionRoleActionEnabled(appId, roleKey) {
       let company = get(dispatchCompanyPath(appId)).data;
-      let roleKey = dispatchRoleKey(employee);
       let overridden = request.auth.token.appUserId in company.get('employeeRolePermissions', {});
       let permissions = overridden
         ? company.get('employeeRolePermissions', {}).get(request.auth.token.appUserId, {})
@@ -90,9 +88,15 @@ service cloud.firestore {
       let actions = overridden
         ? company.get('employeeRolePermissionActions', {}).get(request.auth.token.appUserId, {})
         : company.get('rolePermissionActions', {}).get(roleKey, {});
+      return actions.get('employees', {}).get('edit_employee_salary_policy', permissions.get('employees', roleKey == 'accounting')) == true;
+    }
+
+    function employeeCommissionActionEnabled(appId) {
+      let employee = get(dispatchEmployeePath(appId)).data;
+      let roleKey = dispatchRoleKey(employee);
       return employee.companyId == request.auth.token.companyId
         && employee.get('isArchived', false) != true
-        && (roleKey == 'owner' || actions.get('employees', {}).get('edit_employee_salary_policy', permissions.get('employees', roleKey == 'accounting')) == true);
+        && (roleKey == 'owner' ? exists(dispatchCompanyPath(appId)) : employeeCommissionRoleActionEnabled(appId,roleKey));
     }
 
     function canManageEmployeeCommissionPolicy(appId) {
@@ -130,10 +134,11 @@ service cloud.firestore {
       let rate = tier.rate;
       let end = tier.to;
       let bonus = tier.fixedBonus;
-      return tier.from == start && tier.enabled is bool
-        && (last ? end == null : end is int && end > start && end <= 9007199254740991)
-        && rate >= 0 && rate <= 1
-        && bonus is int && bonus >= 0 && bonus <= 9007199254740991;
+      // One bounded conjunction avoids a deep boolean expression tree for
+      // every range. Each entry must be true; malformed fields still deny.
+      return [tier.from == start, tier.enabled is bool,
+        (last ? end == null : end is int && end > start && end <= 9007199254740991),
+        rate >= 0, rate <= 1, bonus is int, bonus >= 0, bonus <= 9007199254740991].hasOnly([true]);
     }
 
     function validCommissionPolicy(policy, draft) {
@@ -159,8 +164,7 @@ service cloud.firestore {
 
     // A bounded employee-only branch avoids evaluating unrelated payroll,
     // customer, warehouse and messaging rules for each salary-policy write.
-    function canChangeEmployeeCompanyAuthority(appId, oldData, newData, creating) {
-      let changed = creating ? newData.keys() : newData.diff(oldData).affectedKeys();
+    function canChangeEmployeeCompanyAuthority(appId, oldData, newData, creating, changed) {
       return !changed.hasAny(['role', 'position', 'isOwner', 'isCompanyOwner'])
         || ((!creating && dispatchRoleKey(oldData) != 'owner') && dispatchRoleKey(newData) != 'owner')
         || (creating && dispatchRoleKey(newData) != 'owner')
@@ -172,7 +176,7 @@ service cloud.firestore {
       return request.auth.token.accountType != 'employee' ? false
         : newData.companyId != request.auth.token.companyId ? false
         : (!creating && oldData.companyId != request.auth.token.companyId) ? false
-        : !canChangeEmployeeCompanyAuthority(appId, oldData, newData, creating) ? false
+        : !canChangeEmployeeCompanyAuthority(appId, oldData, newData, creating, changed) ? false
         : ((creating || changed.hasAny(employeeAttendanceSecurityKeys())) && !isPayrollManager(appId)) ? false
         : !changed.hasAny(employeeCommissionPolicyKeys()) ? true
         : !canManageEmployeeCommissionPolicy(appId) ? false
@@ -249,6 +253,262 @@ service cloud.firestore {
             && dispatchRoleKey(get(dispatchEmployeePath(appId)).data) == 'owner'
           )
         );
+    }
+
+    // Company writes have a bounded policy of their own. Reads retain the
+    // existing tenant/query contract; server-owned identity/billing fields are
+    // deliberately absent from this client mutation catalog.
+    function companyMutationKeys() {
+      return ['id','companyId','updatedAt','name','displayName','companyPhone','companyAddress','logoUrl','logo',
+        'bankId','bankName','bankAccountName','bankAccountNumber','companyBankAccounts','primaryCompanyBankAccountId',
+        'sepayVirtualAccountNumber','sepayVaAccountNumber','sepayVaNumber','sepayReceivingAccountNumber',
+        'bankVirtualAccountNumber','virtualBankAccountNumber','vaAccountNumber','virtualAccountNumber','sepayUseVirtualAccount','autoReconcileByOrderCode',
+        'invoiceQrTemplate','invoiceTemplateId','customerLoyaltyEnabled','loyaltyEarnMode','loyaltyRevenuePercent',
+        'loyaltyEarnAmountPerPoint','loyaltyRedeemValuePerPoint','loyaltyEligibilityConditions',
+        'customerCareReminderEnabled','customerCareInactiveDays','customerCareRules','warehouseOrderAutoCancelDays','floatingQuickActionEnabled',
+        'warehouseStockResetAt','warehouseStockVisibilitySettings','warehouseQuantityUnits','warehouseQtyUnits','productGroups',
+        'employeeDepartments','companyDepartments','salaryAdvancePercent','salaryAdvancePercentByDepartment','employeeReviewCriteriaLabels',
+        'dailyInventorySnapshots','processingInventorySnapshots','rolePermissions','rolePermissionActions','employeeRolePermissions','employeeRolePermissionActions',
+        'attendanceWifi','attendanceWifiEnabled','attendanceWifiSsid','attendanceWifiBssid','attendanceWifiUpdatedAt',
+        'defaultAttendanceWifiSsid','defaultAttendanceWifiBssid','attendanceBiometricRequired',
+        'employeeReviewsEnabled','employeeReviewsUpdatedByEmpId','employeeReviewsUpdatedAt',
+        'zaloDispatcherEnabled','zaloDispatcherDisabled','zaloDispatcherMachineId','zaloDispatcherMachineName','zaloDispatcherHeartbeatAt',
+        'zaloDispatcherWakeAt','zaloDispatcherDelayMinSec','zaloDispatcherDelayMaxSec','zaloDispatcherSendInvoicesEnabled',
+        'zaloDispatcherSendCampaignsEnabled','zaloDispatcherPaused','zaloDispatcherMaxPerHour','zaloInboxBridgeEnabled',
+        'zaloInboxBridgeMachineId','zaloInboxBridgeMachineName','zaloInboxBridgeHeartbeatAt','zaloInboxBridgeScanIntervalSec',
+        'zaloInboxBridgeClipboardEnabled','zaloInboxBridgeAutoProcessEnabled','enableAiAutoReply','aiAutoReplyDryRun',
+        'aiAutoReplyStartTime','aiAutoReplyEndTime','aiAutoReplyMaxPerGroupPerHour','zaloSchedulerMode','zaloSchedulerDailyTime',
+        'zaloSchedulerDelayMinutes','zaloSchedulerEditHoldMinutes'];
+    }
+
+    function companyMutationContext(appId) {
+      let employee = get(dispatchEmployeePath(appId)).data;
+      let company = exists(dispatchCompanyPath(appId)) ? get(dispatchCompanyPath(appId)).data : {};
+      let roleKey = dispatchRoleKey(employee);
+      let individual = request.auth.token.appUserId in company.get('employeeRolePermissions', {});
+      return {'roleKey':roleKey,
+        'valid':employee.companyId == request.auth.token.companyId && employee.get('isArchived', false) != true,
+        'modules':individual ? company.get('employeeRolePermissions', {}).get(request.auth.token.appUserId, {}) : company.get('rolePermissions', {}).get(roleKey, {}),
+        'actions':individual ? company.get('employeeRolePermissionActions', {}).get(request.auth.token.appUserId, {}) : company.get('rolePermissionActions', {}).get(roleKey, {})};
+    }
+
+    function companyDefaultModule(roleKey, module) {
+      return roleKey == 'owner' || roleKey == 'accounting'
+        || (module == 'warehouse_import' && roleKey == 'warehouse')
+        || (module in ['payroll','employee_reviews'])
+        || (module == 'orders' && roleKey == 'sales');
+    }
+
+    function companyDefaultAction(roleKey, module, action) {
+      // Match App's current DEFAULT_ROLE_PERMISSION_ACTIONS, including the
+      // explicit-grant overrides applied after buildPermissionActionSet.
+      return !(module == 'employee_reviews' && action == 'manage_employee_review_criteria')
+        && !(module == 'payroll' && action == 'configure_salary_advance_limit' && roleKey != 'accounting')
+        && !(module == 'settings' && action == 'manage_employee_review_settings')
+        && module != 'role_permissions' && companyDefaultModule(roleKey, module);
+    }
+
+    function companyAction(context, module, action) {
+      let explicit = context.actions.get(module, {}).get(action, null);
+      return context.valid && (context.roleKey == 'owner'
+        || (explicit != null ? explicit == true
+          : context.modules.get(module, companyDefaultModule(context.roleKey, module)) == true && companyDefaultAction(context.roleKey, module, action)));
+    }
+
+    function companyResetAction(context) {
+      return companyAction(context,'settings','reset_company_data') || companyAction(context,'settings','reset_selected_data_scopes');
+    }
+
+    function companyBankQrAllowed(context, oldData, newData) {
+      let legacy = {'id':'legacy-primary','bankId':oldData.get('bankId',''),'bankName':oldData.get('bankName',''),
+        'bankAccountName':oldData.get('bankAccountName',''),'bankAccountNumber':oldData.get('bankAccountNumber',''),
+        'invoiceQrTemplate':oldData.get('invoiceQrTemplate','qr_only'),'autoReconcileByOrderCode':oldData.get('autoReconcileByOrderCode',true) != false,
+        'sepayVirtualAccountNumber':oldData.get('sepayVirtualAccountNumber',oldData.get('sepayVaAccountNumber','')),
+        'sepayUseVirtualAccount':oldData.get('sepayUseVirtualAccount',false) == true};
+      let before = oldData.get('companyBankAccounts', oldData.get('bankAccountNumber','') != '' ? [legacy] : []);
+      let after = newData.get('companyBankAccounts', []);
+      let removed = before is list && after is list ? before.removeAll(after) : [];
+      let added = before is list && after is list ? after.removeAll(before) : [];
+      // The existing bank form changes one account per intent. The account
+      // list itself is unbounded, and reordering/deleting unchanged rows works.
+      return companyAction(context,'settings','manage_payment_qr')
+        || (before is list && after is list && added.size() <= 1 && removed.size() <= 1
+          && (added.size() == 0 || (added[0] is map
+            && added[0].get('invoiceQrTemplate','qr_only') == (removed.size() == 0 ? 'qr_only' : removed[0].get('invoiceQrTemplate','qr_only')))));
+    }
+
+    function companyBasicSettingsAllowed(context, changed, oldData, newData) {
+      return (!changed.hasAny(['name','displayName','companyPhone','companyAddress','logoUrl','logo']) || companyAction(context,'settings','edit_company_profile'))
+        && (!changed.hasAny(['bankId','bankName','bankAccountName','bankAccountNumber','companyBankAccounts','primaryCompanyBankAccountId',
+          'sepayVirtualAccountNumber','sepayVaAccountNumber','sepayVaNumber','sepayReceivingAccountNumber','bankVirtualAccountNumber','virtualBankAccountNumber',
+          'vaAccountNumber','virtualAccountNumber','sepayUseVirtualAccount','autoReconcileByOrderCode']) || companyAction(context,'settings','manage_bank_accounts'))
+        && (!changed.hasAny(['companyBankAccounts']) || companyBankQrAllowed(context,oldData,newData))
+        && (!changed.hasAny(['invoiceQrTemplate','invoiceTemplateId']) || companyAction(context,'settings','manage_payment_qr'))
+        && (!changed.hasAny(['customerLoyaltyEnabled','loyaltyEarnMode','loyaltyRevenuePercent','loyaltyEarnAmountPerPoint','loyaltyRedeemValuePerPoint','loyaltyEligibilityConditions']) || companyAction(context,'settings','manage_loyalty_settings'))
+        && (!changed.hasAny(['customerCareReminderEnabled','customerCareInactiveDays','customerCareRules']) || companyAction(context,'settings','manage_customer_care_reminders'))
+        && (!changed.hasAny(['warehouseOrderAutoCancelDays']) || companyAction(context,'settings','manage_warehouse_dispatch_settings') || companyAction(context,'settings','manage_order_request_auto_cancel'))
+        && (!changed.hasAny(['floatingQuickActionEnabled']) || companyAction(context,'settings','manage_quick_action_defaults'));
+    }
+
+    function companyDomainSettingsAllowed(appId, context, changed) {
+      return (!changed.hasAny(['warehouseStockResetAt','warehouseStockVisibilitySettings','dailyInventorySnapshots','processingInventorySnapshots'])
+          || companyAction(context,'warehouse_import','edit_inventory_balance') || companyResetAction(context))
+        && (!changed.hasAny(['warehouseQuantityUnits','warehouseQtyUnits']) || companyAction(context,'warehouse_import','create_warehouse_import') || companyAction(context,'warehouse_import','edit_warehouse_import'))
+        && (!changed.hasAny(['productGroups']) || companyAction(context,'products','create_product') || companyAction(context,'products','edit_product') || companyAction(context,'warehouse_import','create_warehouse_import'))
+        && (!changed.hasAny(['employeeDepartments','companyDepartments']) || companyAction(context,'employees','edit_employee'))
+        && (!changed.hasAny(['salaryAdvancePercent','salaryAdvancePercentByDepartment']) || companyAction(context,'payroll','configure_salary_advance_limit'))
+        && (!changed.hasAny(['employeeReviewCriteriaLabels']) || companyAction(context,'employee_reviews','manage_employee_review_criteria'))
+        && (!changed.hasAny(companyPermissionKeys()) || canManageCompanyPermissions(appId))
+        && (!changed.hasAny(companyWifiKeys()) || (canManageCompanyWifi() && companyAction(context,'settings','manage_attendance_wifi')));
+    }
+
+    function companyZaloFieldsAllowed(context, changed, oldData, newData) {
+      let runtime = ['zaloDispatcherMachineId','zaloDispatcherMachineName','zaloDispatcherHeartbeatAt','updatedAt'];
+      let healing = ['zaloDispatcherSendInvoicesEnabled','zaloDispatcherSendCampaignsEnabled','zaloDispatcherPaused','zaloDispatcherDisabled','updatedAt'];
+      let wake = ['zaloDispatcherEnabled','zaloDispatcherDisabled','zaloDispatcherSendInvoicesEnabled','zaloDispatcherPaused',
+        'zaloDispatcherDelayMinSec','zaloDispatcherDelayMaxSec','zaloDispatcherWakeAt','zaloDispatcherMachineId','zaloDispatcherMachineName','zaloDispatcherHeartbeatAt','updatedAt'];
+      return companyAction(context,'settings','manage_gemini_api') || changed.hasOnly(runtime)
+        || (changed.hasOnly(healing) && oldData.get('zaloDispatcherEnabled',false) == true
+          && newData.get('zaloDispatcherSendInvoicesEnabled',true) == true && newData.get('zaloDispatcherSendCampaignsEnabled',true) == true
+          && newData.get('zaloDispatcherPaused',false) == false && newData.get('zaloDispatcherDisabled',false) == false)
+        || (changed.hasOnly(wake) && companyAction(context,'orders','edit_order_items')
+          && newData.get('zaloDispatcherEnabled',false) == true && newData.get('zaloDispatcherDisabled',false) == false
+          && newData.get('zaloDispatcherPaused',false) == false && newData.get('zaloDispatcherSendInvoicesEnabled',false) == true);
+    }
+
+    function companyAnyMutationAction(context) {
+      let settings = context.actions.get('settings', {});
+      let stock = context.actions.get('warehouse_import', {});
+      let products = context.actions.get('products', {});
+      let employees = context.actions.get('employees', {});
+      let reviews = context.actions.get('employee_reviews', {});
+      let payroll = context.actions.get('payroll', {});
+      let roles = context.actions.get('role_permissions', {});
+      let settingDefault = context.roleKey == 'accounting' && context.modules.get('settings',true) == true;
+      let stockDefault = context.roleKey in ['accounting','warehouse'] && context.modules.get('warehouse_import',true) == true;
+      let productDefault = context.roleKey == 'accounting' && context.modules.get('products',true) == true;
+      return context.valid && (context.roleKey == 'owner'
+        || settings.get('edit_company_profile',settingDefault) == true || settings.get('manage_bank_accounts',settingDefault) == true
+        || settings.get('manage_payment_qr',settingDefault) == true || settings.get('manage_loyalty_settings',settingDefault) == true
+        || settings.get('manage_customer_care_reminders',settingDefault) == true || settings.get('manage_warehouse_dispatch_settings',settingDefault) == true
+        || settings.get('manage_order_request_auto_cancel',settingDefault) == true || settings.get('manage_quick_action_defaults',settingDefault) == true
+        || settings.get('manage_employee_review_settings',false) == true || settings.get('manage_attendance_wifi',settingDefault) == true || settings.get('manage_gemini_api',settingDefault) == true
+        || stock.get('create_warehouse_import',stockDefault) == true || stock.get('edit_warehouse_import',stockDefault) == true || stock.get('edit_inventory_balance',stockDefault) == true
+        || products.get('create_product',productDefault) == true || products.get('edit_product',productDefault) == true
+        || employees.get('edit_employee',context.roleKey == 'accounting' && context.modules.get('employees',true) == true) == true
+        || reviews.get('manage_employee_review_criteria',false) == true || payroll.get('configure_salary_advance_limit',context.roleKey == 'accounting' && context.modules.get('payroll',true) == true) == true
+        || roles.get('manage_role_permissions',false) == true || roles.get('manage_employee_permission_override',false) == true);
+    }
+
+    function companyFieldsAllowed(appId, context, changed, oldData, newData) {
+      let ordinary = changed.difference(['id','companyId','updatedAt'].toSet());
+      let zalo = changed.intersection(['zaloDispatcherEnabled','zaloDispatcherDisabled','zaloDispatcherMachineId','zaloDispatcherMachineName','zaloDispatcherHeartbeatAt',
+        'zaloDispatcherWakeAt','zaloDispatcherDelayMinSec','zaloDispatcherDelayMaxSec','zaloDispatcherSendInvoicesEnabled','zaloDispatcherSendCampaignsEnabled',
+        'zaloDispatcherPaused','zaloDispatcherMaxPerHour','zaloInboxBridgeEnabled','zaloInboxBridgeMachineId','zaloInboxBridgeMachineName','zaloInboxBridgeHeartbeatAt',
+        'zaloInboxBridgeScanIntervalSec','zaloInboxBridgeClipboardEnabled','zaloInboxBridgeAutoProcessEnabled','enableAiAutoReply','aiAutoReplyDryRun',
+        'aiAutoReplyStartTime','aiAutoReplyEndTime','aiAutoReplyMaxPerGroupPerHour','zaloSchedulerMode','zaloSchedulerDailyTime','zaloSchedulerDelayMinutes','zaloSchedulerEditHoldMinutes'].toSet());
+      return context.valid && changed.hasOnly(companyMutationKeys())
+        && (!changed.hasAny(['id']) || newData.get('id','') == request.auth.token.companyId)
+        && (!changed.hasAny(['companyId']) || newData.get('companyId','') == request.auth.token.companyId)
+        && (context.roleKey == 'owner' || (companyBasicSettingsAllowed(context,changed,oldData,newData)
+          && companyDomainSettingsAllowed(appId,context,changed)
+          && (zalo.size() == 0 || companyZaloFieldsAllowed(context,changed,oldData,newData))
+          && (ordinary.size() > 0 || companyAnyMutationAction(context))));
+    }
+
+    function companyBoundedFieldsAllowed(appId, context, changed, oldData, newData) {
+      let business = changed.difference(['id','companyId','updatedAt'].toSet());
+      return context.valid
+        && (!changed.hasAny(['id']) || newData.get('id','') == request.auth.token.companyId)
+        && (!changed.hasAny(['companyId']) || newData.get('companyId','') == request.auth.token.companyId)
+        && (context.roleKey == 'owner' ? changed.hasOnly(companyMutationKeys())
+          : business.size() == 0 ? companyAnyMutationAction(context)
+          : business.hasOnly(['name','displayName','companyPhone','companyAddress','logoUrl','logo']) ? companyAction(context,'settings','edit_company_profile')
+          : business.hasOnly(['bankId','bankName','bankAccountName','bankAccountNumber','companyBankAccounts','primaryCompanyBankAccountId',
+            'sepayVirtualAccountNumber','sepayVaAccountNumber','sepayVaNumber','sepayReceivingAccountNumber','bankVirtualAccountNumber','virtualBankAccountNumber',
+            'vaAccountNumber','virtualAccountNumber','sepayUseVirtualAccount','autoReconcileByOrderCode','invoiceQrTemplate','invoiceTemplateId'])
+            ? companyBasicSettingsAllowed(context,business,oldData,newData)
+          : business.hasOnly(['customerLoyaltyEnabled','loyaltyEarnMode','loyaltyRevenuePercent','loyaltyEarnAmountPerPoint','loyaltyRedeemValuePerPoint',
+            'loyaltyEligibilityConditions','customerCareReminderEnabled','customerCareInactiveDays','customerCareRules','warehouseOrderAutoCancelDays','floatingQuickActionEnabled'])
+            ? companyBasicSettingsAllowed(context,business,oldData,newData)
+          : business.hasOnly(['warehouseStockResetAt','warehouseStockVisibilitySettings','dailyInventorySnapshots','processingInventorySnapshots',
+            'warehouseQuantityUnits','warehouseQtyUnits','productGroups','employeeDepartments','companyDepartments','salaryAdvancePercent',
+            'salaryAdvancePercentByDepartment','employeeReviewCriteriaLabels','rolePermissions','rolePermissionActions','employeeRolePermissions','employeeRolePermissionActions'])
+            ? companyDomainSettingsAllowed(appId,context,business)
+          : business.hasOnly(['zaloDispatcherEnabled','zaloDispatcherDisabled','zaloDispatcherMachineId','zaloDispatcherMachineName','zaloDispatcherHeartbeatAt',
+            'zaloDispatcherWakeAt','zaloDispatcherDelayMinSec','zaloDispatcherDelayMaxSec','zaloDispatcherSendInvoicesEnabled','zaloDispatcherSendCampaignsEnabled',
+            'zaloDispatcherPaused','zaloDispatcherMaxPerHour','zaloInboxBridgeEnabled','zaloInboxBridgeMachineId','zaloInboxBridgeMachineName','zaloInboxBridgeHeartbeatAt',
+            'zaloInboxBridgeScanIntervalSec','zaloInboxBridgeClipboardEnabled','zaloInboxBridgeAutoProcessEnabled','enableAiAutoReply','aiAutoReplyDryRun',
+            'aiAutoReplyStartTime','aiAutoReplyEndTime','aiAutoReplyMaxPerGroupPerHour','zaloSchedulerMode','zaloSchedulerDailyTime','zaloSchedulerDelayMinutes','zaloSchedulerEditHoldMinutes'])
+            ? companyZaloFieldsAllowed(context,changed,oldData,newData)
+          : companyFieldsAllowed(appId,context,changed,oldData,newData));
+    }
+
+    function canWriteCompanyDocument(appId, companyId, oldData, newData) {
+      let changed = newData.diff(oldData).affectedKeys();
+      return isEmployeeIdentity() && companyId == request.auth.token.companyId
+        && (changed.size() == 0
+          || (changed.hasOnly(companyWifiKeys()) && !('appUserId' in request.auth.token) && canManageCompanyWifi())
+          || (!changed.hasAny(companyEmployeeReviewKeys()) && companyBoundedFieldsAllowed(appId,companyMutationContext(appId),changed,oldData,newData)));
+    }
+
+    function companyCommandMetadata(data) {
+      return data.companyId == request.auth.token.companyId && data.actorId == request.auth.token.appUserId
+        && data.commandId is string && data.commandId.matches('^[A-Za-z0-9_-]{1,160}$')
+        && data.fingerprint is string && data.fingerprint.matches('^[a-f0-9]{64}$')
+        && data.mutationAt is string && data.mutationAt.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z$');
+    }
+
+    function canCreateSettingsCommand(appId, docId, data) {
+      let context = companyMutationContext(appId);
+      let before = get(dispatchCompanyPath(appId)).data;
+      let after = getAfter(dispatchCompanyPath(appId)).data;
+      let changed = after.diff(before).affectedKeys();
+      return isEmployeeIdentity() && data.keys().hasOnly(['companyId','actorId','commandId','fingerprint','mutationAt'])
+        && companyCommandMetadata(data) && docId == data.companyId + '_' + data.actorId + '_' + data.commandId
+        && companyAnyMutationAction(context)
+        && (changed.hasAny(companyEmployeeReviewKeys()) ? changed.hasOnly(companyEmployeeReviewKeys())
+            && companyAction(context,'settings','manage_employee_review_settings')
+            && after.get('employeeReviewsEnabled',null) is bool
+            && after.get('employeeReviewsUpdatedByEmpId','') == request.auth.token.appUserId
+            && after.get('employeeReviewsUpdatedAt',null) == request.time
+          : companyBoundedFieldsAllowed(appId,context,changed,before,after));
+    }
+
+    function companyDataCommandAction(context, kind) {
+      return kind == 'restore' ? companyAction(context,'settings','restore_data') || companyAction(context,'settings','backup_restore_data')
+        : kind == 'reset' && companyResetAction(context);
+    }
+
+    function validCompanyDataRoot(data, docId) {
+      return data.keys().hasOnly(['companyId','actorId','kind','commandId','fingerprint','requestFingerprint','mutationAt','totalChunks','status'])
+        && companyCommandMetadata(data) && docId == data.companyId + '_' + data.actorId + '_' + data.commandId
+        && data.requestFingerprint is string && data.requestFingerprint.matches('^[a-f0-9]{64}$')
+        && data.totalChunks is int && data.totalChunks >= 0 && data.kind in ['restore','reset']
+        && data.status in ['preparing','prepared','complete'];
+    }
+
+    function companyDataPartAllowed(appId, docId, data, context) {
+      let rootId = docId.replace('__part_[0-9]+$', '');
+      let root = getAfter(/databases/$(database)/documents/artifacts/$(appId)/public/data/companyDataCommands/$(rootId)).data;
+      return data.keys().hasOnly(['companyId','actorId','fingerprint','index','status','expected','operations'])
+        && validCompanyDataRoot(root,rootId) && companyDataCommandAction(context,root.kind)
+        && data.companyId == root.companyId && data.actorId == root.actorId && data.fingerprint == root.fingerprint
+        && data.index is int && data.index >= 0 && data.index < root.totalChunks && docId == rootId + '__part_' + string(data.index)
+        && data.expected is list && data.expected.size() <= 80 && data.status in ['prepared','done']
+        && (root.kind == 'reset' ? data.operations is list && data.operations.size() == data.expected.size() : !('operations' in data));
+    }
+
+    function canWriteCompanyDataCommand(appId, docId, oldData, data, creating) {
+      let context = companyMutationContext(appId);
+      let part = 'index' in data;
+      return isEmployeeIdentity() && context.valid
+        && (part ? companyDataPartAllowed(appId,docId,data,context)
+          : validCompanyDataRoot(data,docId) && companyDataCommandAction(context,data.kind))
+        && (creating ? data.status == (part ? 'prepared' : 'preparing')
+          : data.diff(oldData).affectedKeys().hasOnly(['status'])
+            && (data.status == oldData.status || (part ? oldData.status == 'prepared' && data.status == 'done'
+              : oldData.status == 'preparing' && data.status == 'prepared' || oldData.status == 'prepared' && data.status == 'complete')));
     }
 
     function dispatchActionEnabled(appId, actionId) {
@@ -363,63 +623,145 @@ service cloud.firestore {
         && data[fieldName].size() > 0;
     }
 
-    function hasCustomerMessagingAssignment(appId, customerId) {
-      return exists(customerPath(appId, customerId))
-        && get(customerPath(appId, customerId)).data.companyId == request.auth.token.companyId
-        && (
-          hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'empId')
-          || hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'assignedEmployeeId')
-          || hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'salesEmpId')
-          || hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'managerEmpId')
-          || hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'employeeId')
-          || hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'responsibleEmployeeId')
-        );
+    function customerMessagingAssignment(data) {
+      return hasNonEmptyStringField(data, 'empId') ? data.empId
+        : hasNonEmptyStringField(data, 'assignedEmployeeId') ? data.assignedEmployeeId
+        : hasNonEmptyStringField(data, 'salesEmpId') ? data.salesEmpId
+        : hasNonEmptyStringField(data, 'managerEmpId') ? data.managerEmpId
+        : hasNonEmptyStringField(data, 'employeeId') ? data.employeeId
+        : hasNonEmptyStringField(data, 'responsibleEmployeeId') ? data.responsibleEmployeeId : '';
     }
 
-    function messageMatchesCustomerAssignment(appId, customerId, employeeId) {
-      return exists(customerPath(appId, customerId))
-        && get(customerPath(appId, customerId)).data.companyId == request.auth.token.companyId
-        && (
-          (
-            hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'empId')
-            && get(customerPath(appId, customerId)).data.empId == employeeId
-          )
-          || (
-            !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'empId')
-            && hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'assignedEmployeeId')
-            && get(customerPath(appId, customerId)).data.assignedEmployeeId == employeeId
-          )
-          || (
-            !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'empId')
-            && !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'assignedEmployeeId')
-            && hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'salesEmpId')
-            && get(customerPath(appId, customerId)).data.salesEmpId == employeeId
-          )
-          || (
-            !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'empId')
-            && !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'assignedEmployeeId')
-            && !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'salesEmpId')
-            && hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'managerEmpId')
-            && get(customerPath(appId, customerId)).data.managerEmpId == employeeId
-          )
-          || (
-            !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'empId')
-            && !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'assignedEmployeeId')
-            && !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'salesEmpId')
-            && !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'managerEmpId')
-            && hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'employeeId')
-            && get(customerPath(appId, customerId)).data.employeeId == employeeId
-          )
-          || (
-            !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'empId')
-            && !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'assignedEmployeeId')
-            && !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'salesEmpId')
-            && !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'managerEmpId')
-            && !hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'employeeId')
-            && hasNonEmptyStringField(get(customerPath(appId, customerId)).data, 'responsibleEmployeeId')
-            && get(customerPath(appId, customerId)).data.responsibleEmployeeId == employeeId
-          )
-        );
+    function customerMessagingAssignmentForCompany(appId, customerId) {
+      let path = customerPath(appId, customerId);
+      let customer = exists(path) ? get(path).data : null;
+      return customer != null && customer.companyId == request.auth.token.companyId
+        ? customerMessagingAssignment(customer) : null;
+    }
+
+    function customerMessageAssignmentStateMatches(appId, data) {
+      let employeeId = customerMessagingAssignmentForCompany(appId, data.customerId);
+      return employeeId != null && (employeeId != ''
+        ? (data.assignmentState == 'assigned'
+          && hasNonEmptyStringField(data, 'assignedEmployeeId')
+          && data.assignedEmployeeId == employeeId)
+        : (data.assignmentState == 'unclassified' && !('assignedEmployeeId' in data)));
+    }
+
+    // Resolve the current, authoritative catalog once per message write.
+    // Read helpers below deliberately retain their existing query contract.
+    function messagePermissionContext(appId) {
+      let employee = get(dispatchEmployeePath(appId)).data;
+      let company = get(dispatchCompanyPath(appId)).data;
+      let roleKey = dispatchRoleKey(employee);
+      let individual = request.auth.token.appUserId in company.get('employeeRolePermissions', {});
+      let modules = individual ? company.get('employeeRolePermissions', {}).get(request.auth.token.appUserId, {})
+        : company.get('rolePermissions', {}).get(roleKey, {});
+      let actions = individual ? company.get('employeeRolePermissionActions', {}).get(request.auth.token.appUserId, {}).get('messages', {})
+        : company.get('rolePermissionActions', {}).get(roleKey, {}).get('messages', {});
+      return {'employee': employee, 'roleKey': roleKey, 'actions': actions,
+        'valid': employee.companyId == request.auth.token.companyId && employee.get('isArchived', false) != true,
+        'enabled': roleKey == 'owner' || modules.get('messages', true) == true};
+    }
+
+    function messageDefaultAction(roleKey, actionId) {
+      // Actual App initializes the enabled module, then restricts these fine
+      // defaults for staff. Explicit stored actions still override the module.
+      return roleKey in ['owner','accounting']
+        || (actionId in ['view_message_center','view_internal_messages','send_internal_messages',
+          'view_own_notifications','send_image_attachment','send_contact_attachment',
+          'send_location_attachment','call_from_message'])
+        || (roleKey in ['sales','warehouse'] && actionId in ['send_order_attachment','send_order_request_attachment']);
+    }
+
+    function messageActionEnabled(context, actionId) {
+      return context.valid
+        && (context.roleKey == 'owner'
+          || context.actions.get(actionId, context.enabled && messageDefaultAction(context.roleKey,actionId)) == true);
+    }
+
+    function messageAttachmentAction(type) {
+      return type == 'image' ? 'send_image_attachment'
+        : type in ['contact', 'customer'] ? 'send_contact_attachment'
+        : type == 'location' ? 'send_location_attachment'
+        : type == 'bank' ? 'send_bank_qr_attachment'
+        : type == 'order' ? 'send_order_attachment'
+        : type == 'order_request' ? 'send_order_request_attachment' : 'send_report_attachment';
+    }
+
+    function messageAttachmentsAllowed(context, data) {
+      let type = data.get('attachmentType', '');
+      return type in ['', 'image', 'contact', 'customer', 'location', 'bank', 'order', 'order_request', 'report']
+        && (type == '' || messageActionEnabled(context, messageAttachmentAction(type)))
+        && (data.get('attachmentImage', '') == ''
+          || (data.attachmentImage is string && messageActionEnabled(context, 'send_image_attachment')));
+    }
+
+    function validMessageEmployee(appId, id) {
+      return id is string && id.matches('^[A-Za-z0-9_-]{1,200}$')
+        && exists(employeePath(appId, id))
+        && get(employeePath(appId, id)).data.companyId == request.auth.token.companyId
+        && get(employeePath(appId, id)).data.get('isArchived', false) != true;
+    }
+
+    function messageDirectRecipientValid(appId, data) {
+      let id = data.get('recipientEmpId', data.get('receiverEmpId', ''));
+      return validMessageEmployee(appId, id) && id != request.auth.token.appUserId
+        && data.get('receiverEmpId', id) == id && data.get('targetEmpId', id) == id && data.get('assignedEmployeeId', id) == id
+        && data.get('conversationId', '') in ['internal-' + request.auth.token.appUserId + '-' + id, 'internal-' + id + '-' + request.auth.token.appUserId];
+    }
+
+    function messageGroupRecipientsValid(appId, data) {
+      let ids = data.get('participantEmpIds', []);
+      let serialized = ids is list ? ids.join(',') : '';
+      // Group metadata grants no read access: company-isolated reads below are
+      // unchanged. Parent validation checks every profile; avoid an arbitrary
+      // member cap or a per-member lookup that exceeds Firestore's read budget.
+      return ids is list && ids.size() >= 2 && ids.toSet().size() == ids.size()
+        && serialized.matches('^[A-Za-z0-9_-]{1,200}(,[A-Za-z0-9_-]{1,200})+$')
+        && ids == serialized.split(',')
+        && request.auth.token.appUserId in ids
+        && data.get('recipientEmpId', '') == '' && data.get('receiverEmpId', '') == ''
+        && data.get('targetEmpId', '') == '' && data.get('assignedEmployeeId', '') == ''
+        && hasNonEmptyStringField(data, 'conversationId')
+        && data.get('groupId', data.conversationId) == data.conversationId;
+    }
+
+    function messagePlatformSupportValid(appId, data) {
+      let customerId = data.get('customerId', '');
+      let emptyRecipients = data.get('recipientEmpId', '') == '' && data.get('receiverEmpId', '') == ''
+        && data.get('targetEmpId', '') == '' && data.get('assignedEmployeeId', '') == '';
+      return emptyRecipients && (data.get('conversationId', '') == 'support-hd-manager'
+        || (hasNonEmptyStringField(data, 'customerId') && data.get('conversationId', '') == 'support-customer-' + customerId
+          && exists(customerPath(appId, customerId)) && get(customerPath(appId, customerId)).data.companyId == request.auth.token.companyId));
+    }
+
+    function employeeMessageCreateAllowed(appId, data) {
+      let context = messagePermissionContext(appId);
+      let type = data.get('conversationType', '');
+      return type in ['internal', 'internal_group', 'support', 'customer_support']
+        && data.get('senderType', '') == 'employee'
+        && data.get('senderEmpId', '') == request.auth.token.appUserId
+        && data.get('senderCustomerId', '') == ''
+        && (!('senderName' in data) || !hasNonEmptyStringField(context.employee, 'name') || data.senderName == context.employee.name)
+        && data.get('isArchived', false) == false
+        && messageActionEnabled(context, type in ['support', 'customer_support'] ? 'send_support_messages' : 'send_internal_messages')
+        && messageAttachmentsAllowed(context, data)
+        && (type == 'internal' ? messageDirectRecipientValid(appId, data)
+          : type == 'internal_group' ? messageGroupRecipientsValid(appId, data)
+          : type == 'support' ? messagePlatformSupportValid(appId, data)
+          : hasValidCustomerMessageRouting(appId, data)
+            && (isMessagingManager(appId) || data.assignedEmployeeId == request.auth.token.appUserId));
+    }
+
+    function employeeMessageMetadataAllowed(appId, data) {
+      let context = messagePermissionContext(appId);
+      let support = data.get('conversationType', '') in ['support', 'customer_support'];
+      return (messageActionEnabled(context, support ? 'view_support_messages' : 'view_internal_messages')
+          || messageActionEnabled(context, support ? 'send_support_messages' : 'send_internal_messages'))
+        && (context.roleKey == 'owner' || data.get('senderEmpId', '') == request.auth.token.appUserId
+          || data.get('recipientEmpId', '') == request.auth.token.appUserId
+          || request.auth.token.appUserId in data.get('participantEmpIds', []));
     }
 
     function isMessagingManager(appId) {
@@ -446,21 +788,7 @@ service cloud.firestore {
         && data.conversationId == 'customer_' + data.customerId
         && 'assignmentState' in data
         && data.assignmentState is string
-        && (
-          (
-            hasCustomerMessagingAssignment(appId, data.customerId)
-            && data.assignmentState == 'assigned'
-            && 'assignedEmployeeId' in data
-            && data.assignedEmployeeId is string
-            && data.assignedEmployeeId.size() > 0
-            && messageMatchesCustomerAssignment(appId, data.customerId, data.assignedEmployeeId)
-          )
-          || (
-            !hasCustomerMessagingAssignment(appId, data.customerId)
-            && data.assignmentState == 'unclassified'
-            && !('assignedEmployeeId' in data)
-          )
-        );
+        && customerMessageAssignmentStateMatches(appId, data);
     }
 
     function customerOwnsDocument(collectionId, docId, data) {
@@ -636,63 +964,60 @@ service cloud.firestore {
         );
     }
 
-    function canEmployeeReadMessage(appId, data) {
-      return isEmployeeIdentity()
-        && (
-          !('conversationType' in data)
-          || data.conversationType != 'customer_support'
-          || canEmployeeReadCustomerSupportMessage(appId, data)
-        );
+    function canEmployeeReadMessage(appId, data, listing) {
+      let context = messagePermissionContext(appId);
+      let internal = messageActionEnabled(context, 'view_internal_messages');
+      let support = messageActionEnabled(context, 'view_support_messages');
+      return isEmployeeIdentity() && context.valid
+        && ((internal && support && isMessagingManager(appId))
+          || (!listing && internal && (!('conversationType' in data)
+            || (data.conversationType != 'customer_support' && data.conversationType != 'support')))
+          || (internal && data.conversationType in ['internal','internal_group'])
+          || (support && data.conversationType == 'support')
+          || (support && data.conversationType == 'customer_support' && canEmployeeReadCustomerSupportMessage(appId,data)));
     }
 
     function canEmployeeCreateMessage(appId, data) {
       return isEmployeeIdentity()
-        && (
-          !('conversationType' in data)
-          || data.conversationType != 'customer_support'
-          || (
-            'senderType' in data
-            && data.senderType is string
-            && data.senderType == 'employee'
-            && 'senderEmpId' in data
-            && data.senderEmpId is string
-            && data.senderEmpId == request.auth.token.appUserId
-            && hasValidCustomerMessageRouting(appId, data)
-            && (
-              isMessagingManager(appId)
-              || (
-                data.assignmentState == 'assigned'
-                && data.assignedEmployeeId == request.auth.token.appUserId
-              )
-            )
-          )
-        );
+        && exists(dispatchEmployeePath(appId)) && exists(dispatchCompanyPath(appId))
+        && employeeMessageCreateAllowed(appId, data);
     }
 
     function canEmployeeUpdateMessage(appId, oldData, newData) {
       return isEmployeeIdentity()
-        && (
-          (
-            (!('conversationType' in oldData) || oldData.conversationType != 'customer_support')
-            && (!('conversationType' in newData) || newData.conversationType != 'customer_support')
-          )
-          || (isMessagingManager(appId) && hasValidCustomerMessageRouting(appId, newData))
-        );
+        && exists(dispatchEmployeePath(appId)) && exists(dispatchCompanyPath(appId))
+        && newData.diff(oldData).affectedKeys().hasOnly(['status', 'isArchived', 'archivedAt', 'archivedByEmpId',
+          'employeeReadAt', 'employeeReadById', 'readAt', 'isRead', 'updatedAt'])
+        && (!newData.diff(oldData).affectedKeys().hasAny(['employeeReadById']) || newData.employeeReadById == request.auth.token.appUserId)
+        && (!newData.diff(oldData).affectedKeys().hasAny(['archivedByEmpId']) || newData.archivedByEmpId == request.auth.token.appUserId)
+        && employeeMessageMetadataAllowed(appId, oldData);
     }
 
     function canEmployeeDeleteMessage(appId, data) {
       return isEmployeeIdentity()
-        && (
-          !('conversationType' in data)
-          || data.conversationType != 'customer_support'
-          || isMessagingManager(appId)
-        );
+        && exists(dispatchEmployeePath(appId)) && exists(dispatchCompanyPath(appId))
+        && employeeMessageMetadataAllowed(appId, data);
     }
 
-    function canReadApplicationDocument(appId, collectionId, docId, data) {
+    // Messages cannot be payroll/warehouse/customer-payment documents. Keep
+    // their auth, tenant, sender and action checks in this bounded branch rather
+    // than evaluating unrelated collection policies before each attachment.
+    function canCreateTenantMessage(appId, data) {
+      return data.companyId == request.auth.token.companyId
+        && (request.auth.token.accountType == 'employee'
+          ? canEmployeeCreateMessage(appId, data) : canCustomerCreateMessage(appId, data));
+    }
+
+    function canUpdateTenantMessage(appId, oldData, newData) {
+      return oldData.companyId == request.auth.token.companyId && newData.companyId == oldData.companyId
+        && (request.auth.token.accountType == 'employee'
+          ? canEmployeeUpdateMessage(appId, oldData, newData) : canCustomerMarkMessageRead(oldData, newData));
+    }
+
+    function canReadApplicationDocument(appId, collectionId, docId, data, listing) {
       return (isEmployeeIdentity()
         && collectionId != 'customer_accounts'
-        && (collectionId != 'messages' || canEmployeeReadMessage(appId, data)))
+        && (collectionId != 'messages' || canEmployeeReadMessage(appId, data, listing)))
         || canCustomerReadDocument(collectionId, docId, data);
     }
 
@@ -1159,6 +1484,63 @@ service cloud.firestore {
       );
     }
 
+    // Paused endpoints retain server ownership of their authoritative journal.
+    // Plain legacy warehouse documents continue to use existing client CRUD.
+    function isServerOwnedJournalCollection(collectionId) {
+      return collectionId in ['inventoryBalances','inventoryLedger','inventoryOperations',
+        'orderReturns','orderReturnStates','inventoryReturnStates','inventoryDamagedReturns',
+        'paymentCorrections','paymentCorrectionStates','refundReceipts'];
+    }
+
+    function isInventoryManagedWarehouseDocument(collectionId, data) {
+      return collectionId in ['warehouseImports','warehouseDispatches','warehouseStockCounts']
+        && data.keys().hasAny(['inventoryOperationId','inventoryOperationVersion','inventoryMovements',
+          'inventoryCommittedAt','inventoryCommittedByEmployeeId','ledgerId','stockLedgerId',
+          'inventoryLedgerId','inventoryTransactionId','ledgerTransactionId']);
+    }
+
+    function isServerOwnedJournalAudit(collectionId, docId, data) {
+      return collectionId == 'activityLogs' && (docId.matches('^audit_(iop_|ort_).*')
+        || data.get('id','').matches('^audit_(iop_|ort_).*')
+        || data.get('action','') in ['INVENTORY_COMMITTED','ORDER_RETURN_COMMITTED']);
+    }
+
+    function canUpdateInventoryJournalLink(collectionId, oldData, newData) {
+      return collectionId == 'warehouseDispatches'
+        && oldData.companyId == newData.companyId
+        && newData.diff(oldData).affectedKeys().hasOnly(['linkedOrderId','linkedOrderCreatedAt','updatedAt']);
+    }
+
+    function canUpdateWarehouseJournalDocument(appId, collectionId, docId, oldData, newData) {
+      // These collections are not customer, payroll, review or cashflow docs.
+      // Keep their existing employee/tenant/dispatch policy bounded, including
+      // failed setDoc creates which Firestore also evaluates as updates.
+      return isEmployeeIdentity()
+        && oldData.companyId == request.auth.token.companyId
+        && newData.companyId == oldData.companyId
+        && ((!isInventoryManagedWarehouseDocument(collectionId,oldData)
+          && !isInventoryManagedWarehouseDocument(collectionId,newData))
+          || canUpdateInventoryJournalLink(collectionId,oldData,newData))
+        && (collectionId != 'warehouseDispatches' || canUpdateWarehouseDispatch(appId,docId,oldData,newData));
+    }
+
+    function validOrderCreationMarker(docId, oldData, newData, creating) {
+      let marker = newData.get('orderCreationCommand', null);
+      let before = oldData.get('orderCreationCommand', null);
+      return creating ? (marker == null || (marker is map
+        && marker.keys().hasOnly(['id','fingerprint']) && marker.keys().hasAll(['id','fingerprint'])
+        && marker.id is string && marker.id.matches('^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$')
+        && marker.fingerprint is string && marker.fingerprint.size() > 0
+        && newData.get('clientMutationId','') == marker.id
+        && docId.matches('^o_[a-z0-9]+_[a-z0-9]+_' + marker.id + '$')))
+        : (marker == before && (before == null || newData.get('clientMutationId','') == oldData.get('clientMutationId','')));
+    }
+
+    function canChangeOrderArchive(appId, oldData, newData) {
+      return oldData.get('isArchived',false) == newData.get('isArchived',false)
+        || (newData.get('isArchived',false) is bool && companyAction(companyMutationContext(appId),'orders','delete_order'));
+    }
+
     match /artifacts/{appId}/public/data/{collectionId}/{docId} {
       allow get: if hasIdentitySession()
         && (
@@ -1166,20 +1548,28 @@ service cloud.firestore {
             ? (!isProtectedPayrollCollection(collectionId) || isPayrollManager(appId))
             : (
               belongsToSignedInCompany(collectionId, docId, resource.data)
-              && canReadApplicationDocument(appId, collectionId, docId, resource.data)
+              && canReadApplicationDocument(appId, collectionId, docId, resource.data, false)
               && canReadPayrollDocument(collectionId, resource.data)
             )
         );
 
       allow list: if hasIdentitySession()
         && belongsToSignedInCompany(collectionId, docId, resource.data)
-        && canReadApplicationDocument(appId, collectionId, docId, resource.data)
+        && canReadApplicationDocument(appId, collectionId, docId, resource.data, true)
         && canReadPayrollDocument(collectionId, resource.data);
 
       allow create: if hasIdentitySession()
+        && (collectionId != 'orders' || validOrderCreationMarker(docId,{},request.resource.data,true))
         && !isServerManagedCustomerPaymentCollection(collectionId)
-        && (collectionId == 'employees' ? canWriteEmployeeDocument(appId, {}, request.resource.data, true) : (
-          employeeReviewWritesEnabled(appId, collectionId)
+        && (collectionId == 'companySettingsCommands' ? canCreateSettingsCommand(appId,docId,request.resource.data)
+          : collectionId == 'companyDataCommands' ? canWriteCompanyDataCommand(appId,docId,{},request.resource.data,true)
+          : collectionId == 'companies' ? canWriteCompanyDocument(appId,docId,{},request.resource.data)
+          : collectionId == 'messages' ? canCreateTenantMessage(appId, request.resource.data)
+          : collectionId == 'employees' ? canWriteEmployeeDocument(appId, {}, request.resource.data, true) : (
+          !isServerOwnedJournalCollection(collectionId)
+        && !isInventoryManagedWarehouseDocument(collectionId,request.resource.data)
+        && !isServerOwnedJournalAudit(collectionId,docId,request.resource.data)
+        && employeeReviewWritesEnabled(appId, collectionId)
         && !isServerManagedSalaryVoucher(collectionId, request.resource.data)
         && (collectionId != 'attendance' || isPayrollManager(appId))
         && (collectionId != 'companies' || !request.resource.data.keys().hasAny(companyWifiKeys()) || canManageCompanyWifi())
@@ -1207,11 +1597,26 @@ service cloud.firestore {
         )));
 
       allow update: if hasIdentitySession()
+        && resource != null
+        && (collectionId != 'orders' || validOrderCreationMarker(docId,resource.data,request.resource.data,false))
+        && (collectionId != 'orders' || canChangeOrderArchive(appId,resource.data,request.resource.data))
         && !isServerManagedCustomerPaymentCollection(collectionId)
-        && (collectionId == 'companies' && request.resource.data.diff(resource.data).affectedKeys().hasAny(companyEmployeeReviewKeys())
+        && (collectionId == 'companySettingsCommands' ? false
+          : collectionId == 'companyDataCommands' ? canWriteCompanyDataCommand(appId,docId,resource.data,request.resource.data,false)
+          : collectionId == 'messages' ? canUpdateTenantMessage(appId, resource.data, request.resource.data)
+          : collectionId == 'companies' && request.resource.data.diff(resource.data).affectedKeys().hasAny(companyEmployeeReviewKeys())
           ? canWriteCompanyEmployeeReviewSettings(appId, docId)
-          : collectionId == 'employees' ? canWriteEmployeeDocument(appId, resource.data, request.resource.data, false) : (
-          employeeReviewWritesEnabled(appId, collectionId)
+          : collectionId == 'companies' ? canWriteCompanyDocument(appId,docId,resource.data,request.resource.data)
+          : collectionId == 'employees' ? canWriteEmployeeDocument(appId, resource.data, request.resource.data, false)
+          : collectionId in ['warehouseImports','warehouseDispatches','warehouseStockCounts']
+            ? canUpdateWarehouseJournalDocument(appId,collectionId,docId,resource.data,request.resource.data) : (
+          !isServerOwnedJournalCollection(collectionId)
+        && ((!isInventoryManagedWarehouseDocument(collectionId,resource.data)
+          && !isInventoryManagedWarehouseDocument(collectionId,request.resource.data))
+          || canUpdateInventoryJournalLink(collectionId,resource.data,request.resource.data))
+        && !isServerOwnedJournalAudit(collectionId,docId,resource.data)
+        && !isServerOwnedJournalAudit(collectionId,docId,request.resource.data)
+        && employeeReviewWritesEnabled(appId, collectionId)
         && !isServerManagedSalaryVoucher(collectionId, resource.data)
         && !isServerManagedSalaryVoucher(collectionId, request.resource.data)
         && (collectionId != 'customers'
@@ -1256,6 +1661,10 @@ service cloud.firestore {
         )));
 
       allow delete: if hasIdentitySession()
+        && !(collectionId in ['companies','companySettingsCommands','companyDataCommands'])
+        && !isServerOwnedJournalCollection(collectionId)
+        && !isInventoryManagedWarehouseDocument(collectionId,resource.data)
+        && !isServerOwnedJournalAudit(collectionId,docId,resource.data)
         && employeeReviewWritesEnabled(appId, collectionId)
         && !isServerManagedSalaryVoucher(collectionId, resource.data)
         && !isServerManagedCustomerPaymentCollection(collectionId)

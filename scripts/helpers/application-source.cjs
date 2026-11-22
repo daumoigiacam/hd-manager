@@ -32,8 +32,15 @@ function readApplicationSource() {
   }
   for(const view of manifest.views){
     const wrapper=tree.program.body.find(node=>node.type==='FunctionDeclaration'&&node.id?.name===view.name);
-    if(!wrapper||!source.slice(wrapper.start,wrapper.end).includes('module={'+view.moduleVariable+'}'))throw Error('Missing live workspace wrapper: '+view.name);
-    const file=path.resolve(root,view.file),relative=path.relative(root,file);
+    // CRM now imports its stable wrapper from productCRMShared and defers the
+    // controller behind the directory. Inspect that real controller instead
+    // of an obsolete re-export, preserving all behavioral test assertions.
+    const externalController = !wrapper && view.name==='CustomerCRMView'
+      && tree.program.body.find(node=>node.type==='ImportDeclaration'
+        && node.source.value==='./features/customers/productCRMShared.jsx'
+        && node.specifiers.some(spec=>spec.local.name===view.name));
+    if(!externalController&&(!wrapper||!source.slice(wrapper.start,wrapper.end).includes('module={'+view.moduleVariable+'}')))throw Error('Missing live workspace wrapper: '+view.name);
+    const file=path.resolve(root,externalController?'src/features/legacy/CustomerCRMController.jsx':view.file),relative=path.relative(root,file);
     if(relative.startsWith('..')||path.isAbsolute(relative))throw Error('Workspace source outside repository.');
     const componentSource=fs.readFileSync(file,'utf8'),componentTree=parseSource(componentSource),component=namedFunction(componentTree,view.name);
     if(!component)throw Error('Missing actual component implementation: '+view.name);
@@ -52,7 +59,11 @@ function readApplicationSource() {
         bindings.add(specifier.local.name);
       }
     }
-    edits.push({start:wrapper.start,end:wrapper.end,text:componentSource.slice(component.start,component.end)});
+    if(externalController){
+      const kept=externalController.specifiers.filter(spec=>spec.local.name!==view.name).map(spec=>source.slice(spec.start,spec.end));
+      edits.push({start:externalController.start,end:externalController.end,text:'import {'+kept.join(',')+'} from '+JSON.stringify(externalController.source.value)+';'});
+      edits.push({start:source.length,end:source.length,text:'\n'+componentSource.slice(component.start,component.end)});
+    }else edits.push({start:wrapper.start,end:wrapper.end,text:componentSource.slice(component.start,component.end)});
   }
   for(const edit of edits.sort((a,b)=>b.start-a.start))source=source.slice(0,edit.start)+edit.text+source.slice(edit.end);
   // Append so helpers located before the first extracted view keep the same
@@ -62,3 +73,4 @@ function readApplicationSource() {
 
 exports.readApplicationSource=readApplicationSource;
 exports.readApplicationRootSource=()=>fs.readFileSync(path.join(root,'src/App.jsx'),'utf8');
+exports.readApplicationSourceRoot=()=>root;

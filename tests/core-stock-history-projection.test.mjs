@@ -42,7 +42,7 @@ function historyPorts(){return {
   customerLookup:new Map([['c',{id:'c',name:'Customer'}]]),productLookup:new Map([['p',{id:'p',name:'Product'}]]),
   resolveEntityDateKey:row=>row.date,getTodayString:()=> '2026-11-01',getProductShortName:p=>p?.name||'',
   getDispatchRowQuantityUnit:row=>row.unit||'Con',getDispatchDriverId:row=>row.driverId||'',getDispatchDriverName:row=>row.driverId||'',
-  normalizeLookupText:bindings.normalizeLookupText,getDispatchRowQuantity:row=>Number(row.pieceCount)||0,parseLooseQuantityValue:bindings.parseLooseQuantityValue,
+  normalizeLookupText:bindings.normalizeLookupText,getDispatchRowQuantity:row=>Number(row.pieceCount)||0,getDispatchRowWeight:row=>Number(row.weightKg)||0,parseLooseQuantityValue:bindings.parseLooseQuantityValue,
 };}
 test('dispatch history keeps date ordering, complete source rows, driver groups and exact floating-point sums',async()=>{
   const ports=historyPorts(),before=structuredClone(ports.warehouseDispatches);let yields=0;

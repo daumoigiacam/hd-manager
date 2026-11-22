@@ -3,15 +3,16 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { posix } from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse } from '@babel/parser';
 import babelTraverse from '@babel/traverse';
-import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
+import { readApplicationSource, readApplicationSourceRoot } from '../scripts/helpers/application-source.cjs';
 import { createRecordCalculationCache } from '../src/services/recordCalculationCache.js';
 import { retainCollectionRecordIdentity } from '../src/utils/collectionIdentity.js';
 
 const traverse = babelTraverse.default || babelTraverse;
 const root = new URL('../', import.meta.url);
+const currentSourceRoot = pathToFileURL(readApplicationSourceRoot() + '/');
 const frozenRoot = new URL('test-results/master-baseline/', root);
 const baselineRevision = '5f162f5ce85fd4dc746382f13a6a4170e4a29775';
 const hasFrozenApp = existsSync(new URL('src/App.jsx', frozenRoot));
@@ -32,7 +33,7 @@ function moduleAst(revision, path = 'src/App.jsx') {
   assert.ok(path.startsWith('src/') && !path.includes('..'), `Unexpected source dependency: ${path}`);
   const frozenFile = new URL(path, frozenRoot);
   let source;
-  if (revision === 'current') source = path === 'src/App.jsx' ? readApplicationSource() : readFileSync(new URL(path, root), 'utf8');
+  if (revision === 'current') source = path === 'src/App.jsx' ? readApplicationSource() : readFileSync(new URL(path, currentSourceRoot), 'utf8');
   else if (revision === 'frozen' && existsSync(frozenFile)) source = readFileSync(frozenFile, 'utf8');
   else {
     if (!gitSources.has(path)) gitSources.set(path, execFileSync('git', ['show', `${baselineRevision}:${path}`], {
@@ -45,10 +46,16 @@ function moduleAst(revision, path = 'src/App.jsx') {
   const scoped = new Map();
   const imports = new Map();
   const exports = new Map();
+  const propDefaults = new Map();
   const add = (node, destination) => {
     if (node?.type === 'VariableDeclaration') {
       for (const entry of node.declarations) {
         if (entry.id.type === 'Identifier' && entry.init) destination.set(entry.id.name, entry.init);
+        if (entry.id.type === 'ObjectPattern' && entry.init) for (const property of entry.id.properties) {
+          if (property.type === 'ObjectProperty' && property.value.type === 'Identifier') destination.set(property.value.name, {
+            ...entry.init, testExpression:`(${source.slice(entry.init.start,entry.init.end)})[${JSON.stringify(property.key.name || property.key.value)}]`,
+          });
+        }
       }
     }
     if (node?.type === 'FunctionDeclaration') destination.set(node.id.name, node);
@@ -57,6 +64,10 @@ function moduleAst(revision, path = 'src/App.jsx') {
     const declaration = statement.type === 'ExportNamedDeclaration' ? statement.declaration : statement;
     add(declaration, top);
     if (declaration?.type === 'FunctionDeclaration' && declaration.id.name === 'OrderRequestView') {
+      for (const property of declaration.params[0]?.properties || []) if (property.value?.type === 'AssignmentPattern') {
+        const initial=property.value.right;
+        if (['BooleanLiteral','NumericLiteral','StringLiteral'].includes(initial.type)) propDefaults.set(property.value.left.name,initial.value);
+      }
       for (const child of declaration.body.body) add(child, scoped);
     }
     if (statement.type === 'ImportDeclaration') {
@@ -72,14 +83,14 @@ function moduleAst(revision, path = 'src/App.jsx') {
       for (const specifier of statement.specifiers || []) exports.set(specifier.exported.name, specifier.local.name);
     }
   }
-  const result = { source, top, scoped, imports, exports, expressions: new Map() };
+  const result = { source, top, scoped, imports, exports, propDefaults, expressions: new Map() };
   modules.set(key, result);
   return result;
 }
 
 function expressionDependencies(module, name, node) {
   if (module.expressions.has(node)) return module.expressions.get(node);
-  const text = `const ${name} = (${module.source.slice(node.start, node.end)});`;
+  const text = `const ${name} = (${node.testExpression || module.source.slice(node.start, node.end)});`;
   const dependencies = new Set();
   traverse(parse(text, { sourceType: 'module' }), {
     ReferencedIdentifier(reference) {
@@ -117,6 +128,11 @@ function requestHarness(revision) {
         const scoped = allowScoped && module.scoped.has(name);
         const key = `${path}:${scoped ? 'OrderRequestView:' : ''}${name}`;
         if (path === 'src/App.jsx' && Object.hasOwn(input, name)) return input[name];
+        // Earlier snapshots exposed one edit permission. Map that explicit
+        // fixture grant to the current general-edit prop; retain real defaults
+        // for all other newly split optional component props.
+        if (path === 'src/App.jsx' && name === 'canEditOrderRequest') return Boolean(input.canEdit);
+        if (path === 'src/App.jsx' && module.propDefaults.has(name)) return module.propDefaults.get(name);
         if (Object.hasOwn(globals, name)) return globals[name];
         if (values.has(key)) return values.get(key);
         if (!scoped && helpers.has(key)) return helpers.get(key);
@@ -190,6 +206,7 @@ function deepFreeze(value) {
 }
 const fixture = (overrides = {}) => ({
   employee: { id: 'e1', name: 'Sales One', companyId: 'tenant-a' },
+  requestDataReady:true,dispatchDataReady:true,requestCacheReady:false,dispatchCacheReady:false,
   customers: [], products: [], orderRequests: [], employees: [],
   isSales: false, canViewAllRequests: true, salesVisibleEmployeeIdSet: new Set(['e1']),
   isOwnerAccount: false, canEdit: false, warehouseDispatches: [],

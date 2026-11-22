@@ -43,7 +43,7 @@ function listener(f) {
 function reader(f, error) {
   return appFunction('readCollection', { ...f, ...f.refs, console: silent,
     activeRealtimeCollectionsRef: { current: new Set() }, hasActiveRealtimeListener: () => false,
-    isServerSnapshotFresh: () => false, collectionReadRevisions: new Map(), collectionReadControllers: new Map(),
+    isServerSnapshotFresh: () => false,hasCommittedServerSnapshot:()=>false,firebaseUser:{uid:'actor-a'},tenantCompanyId:'tenant',readOwnerKey:'owner-a',serverPendingCollectionNames:new Set(), collectionReadRevisions: new Map(), collectionReadControllers: new Map(),
     window: { setTimeout: () => 1, clearTimeout() {} }, isPreviewDataMode: false, customerSession: false,
     getTenantCollectionSources: () => [{}], withTimeout: promise => promise,
     markCollectionServerPending() {}, publicationWitness: { begin: () => 1 },
@@ -139,7 +139,7 @@ test('actual cleanup closes reads/worker/witness/listeners and clears retries ex
   const read = new AbortController(), overflow = new AbortController();
   const collections = new Set(['orders']), timers = new Map([['orders', 41]]), controllers = new Map([['orders', overflow]]);
   const window = { clearTimeout: id => calls.push(['timeout', id]), clearInterval: id => calls.push(['interval', id]) };
-  const env = { window, customerSession: false, startupNotificationBarrier: { dispose: () => calls.push('barrier') },
+  const env = { window,foregroundRetention:close('retention'), customerSession: false, startupNotificationBarrier: { dispose: () => calls.push('barrier') },
     startupUiAdmission: ui, startupUiAdmissionRef: { current: ui }, restReadAdmission: close('admission'),
     publicationScheduler: close('scheduler'), readWorker: worker, publicationWitness: witness,
     collectionCommitWitnessRef: { current: witness }, readWorkerControllerRef: { current: worker },
@@ -152,7 +152,7 @@ test('actual cleanup closes reads/worker/witness/listeners and clears retries ex
     forceRefreshCollectionRef: { current() {} }, collectionRefreshTimersRef: { current: new Map([['orders', [43]]]) } };
   env.cancelForegroundReadOnlyCollection = appFunction('cancelForegroundReadOnlyCollection', env);
   const run = new Function(...Object.keys(env), `let cancelled=false,loadedCollectionMarkTimer=44,
-    serverConfirmedCollectionMarkTimer={},foregroundCollectionRecency=[],refreshTimer=45;
+    serverConfirmedCollectionMarkTimer={},foregroundCollectionRecency=[],foregroundRetentionTimer=null,lastForegroundCollectionNames=[],refreshTimer=45;
     return (${appFunction('stopReadSources').toString()});`)(...Object.values(env));
   run(); const count = calls.length; run(); assert.equal(calls.length, count);
   for (const name of ['worker', 'witness', 'ui', 'admission', 'scheduler', 'barrier', 'unsubscribe']) assert.ok(calls.includes(name), name);

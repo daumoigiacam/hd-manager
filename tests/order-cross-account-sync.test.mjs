@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readApplicationSource } from '../scripts/helpers/application-source.cjs';
 import test from 'node:test';
 
-const appSource = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+const appSource = readApplicationSource();
 
 const getSection = (startMarker, endMarker) => {
   const start = appSource.indexOf(startMarker);
@@ -15,8 +15,13 @@ const getSection = (startMarker, endMarker) => {
 test('new sales orders wait for Firestore confirmation before returning success', () => {
   const section = getSection('const handleAddOrder = async', 'const handleGetCustomerProductPreference');
 
-  assert.match(section, /const writeResult = await saveDataDocument\(/);
-  assert.match(section, /await requireSharedWriteConfirmation\(writeResult, 'orders', id\)/);
+  if (section.includes('saveAtomicDocuments(`order_${id}`')) {
+    assert.match(section, /const writeResult = saveAtomicDocuments\(`order_\$\{id\}`/);
+    assert.match(section, /await requireSharedWriteConfirmation\(writeResult, ATOMIC_SAVE_COLLECTION, `order_\$\{id\}`\)/);
+  } else {
+    assert.match(section, /const writeResult = await saveDataDocument\(/);
+    assert.match(section, /await requireSharedWriteConfirmation\(writeResult, 'orders', id\)/);
+  }
   assert.doesNotMatch(section, /saveDataDocument\('orders'[\s\S]*?\.then\(/);
   assert.match(section, /throw error;/);
 });
@@ -56,15 +61,22 @@ test('queued shared writes are retried once per document and remain tenant-scope
   assert.match(tenantSourceSection, /firebaseWhere\('companyId', '==', tenantCompanyId\)/);
 });
 
-test('order request form uses background persistence while normal sales order save retains confirmation', () => {
+test('order request and sales forms preserve their server-confirmation and configuration guards', () => {
   const requestSubmitSection = getSection('const handleSubmitOrderRequests = async', 'const orderCellEditorConfig');
   const salesSubmitSection = getSection('const handleSubmitBulkOrders = async', 'const openAddOrderModal');
   const singleOrderSubmitSection = getSection('const handleAddSubmit = async', 'const openAddOrderModal');
 
-  assert.match(requestSubmitSection, /backgroundSync: true/);
-  assert.match(requestSubmitSection, /onPersisted:/);
-  assert.match(requestSubmitSection, /onSettled:/);
-  assert.match(requestSubmitSection, /Dang luu \$\{normalizedRequests\.length\} don dat hang/);
+  if (requestSubmitSection.includes('expectedCustomerConfig:')) {
+    assert.match(requestSubmitSection, /await onAddOrderRequest\(/);
+    assert.match(requestSubmitSection, /expectedCustomerConfig:/);
+    assert.match(requestSubmitSection, /onDefaultsSynced:/);
+    assert.ok(requestSubmitSection.indexOf('closeOrderRequestForm();', requestSubmitSection.indexOf('const skippedDefaults')) > requestSubmitSection.indexOf('await onAddOrderRequest('));
+  } else {
+    assert.match(requestSubmitSection, /backgroundSync: true/);
+    assert.match(requestSubmitSection, /onPersisted:/);
+    assert.match(requestSubmitSection, /onSettled:/);
+    assert.match(requestSubmitSection, /Dang luu \$\{normalizedRequests\.length\} don dat hang/);
+  }
   assert.doesNotMatch(salesSubmitSection, /flushSync\(\(\) => \{[\s\S]*?setShowAddOrder\(false\)/);
   assert.match(singleOrderSubmitSection, /setBulkOrderStatus\('Đang xác nhận đơn với máy chủ\.\.\.'\)/);
   assert.match(singleOrderSubmitSection, /await submitOrderDraft\(newOrder, \{ allowDescriptionOnly: false \}\)/);

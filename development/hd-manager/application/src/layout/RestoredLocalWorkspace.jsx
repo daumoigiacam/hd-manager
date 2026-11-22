@@ -1,6 +1,7 @@
 import {runtimeOnline} from '../services/nativeConnectivity.js';
 import React,{useEffect,useState,useRef,useLayoutEffect} from 'react';
-import {Capacitor,registerPlugin} from '@capacitor/core';
+import {Capacitor} from '@capacitor/core';
+import {getCapacitorPlugin} from '../utils/nativePluginRegistry.js';
 import {App as CapacitorApp} from '@capacitor/app';
 import {subscribeScopedNativeEvent} from '../services/scopedNativeListener.js';
 import NativeBusinessRoute,{availableNativeBusinessRoutes,permittedNativeBusinessRoutes,prepareNativeBusinessRoute} from './NativeBusinessRoute.jsx';
@@ -13,7 +14,7 @@ import {localWorkspaceTab,localWorkspaceInitialSource} from '../services/workspa
 import PreloadedWorkspace from './PreloadedWorkspace.jsx';
 import {createPreloadableModule} from '../utils/preloadableModule.js';
 const homeModule=createPreloadableModule(()=>import('../features/customers/OfflineHome.jsx'));
-const systemBars=registerPlugin('SystemBars');
+const systemBars=getCapacitorPlugin('SystemBars');
 const adapter=createPreloadableModule(()=>import('../features/customers/OfflineCustomerRuntimeContext.jsx').then(value=>({default:value.OfflineCustomerAppRoute})));
 function OfflineCustomerAppRoute(props){return <PreloadedWorkspace module={adapter} viewProps={props} label="danh bạ cục bộ"/>;}
 

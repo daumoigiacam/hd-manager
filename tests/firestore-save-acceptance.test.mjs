@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { initializeTestEnvironment, assertFails } from '@firebase/rules-unit-testing';
 import { doc, setDoc, getDocFromServer, disableNetwork, enableNetwork, onSnapshot, runTransaction } from 'firebase/firestore';
 import { coalescePendingWrite } from '../src/utils/localFirstSave.js';
 import { commitAtomicWrites } from '../src/utils/atomicSave.js';
 
 assert.match(process.env.FIRESTORE_EMULATOR_HOST || '', /^127\.0\.0\.1:\d+$/, 'Local emulator is required');
+const projectId = process.env.HD_SAVE_ACCEPTANCE_PROJECT || 'demo-hd-save-acceptance';
+assert.match(projectId, /^demo-/, 'Save acceptance must use an isolated demo project');
 const env = await initializeTestEnvironment({
-  projectId: 'demo-hd-save-acceptance',
+  projectId,
   firestore: { rules: await readFile(new URL('../firestore.rules', import.meta.url), 'utf8') },
 });
 const claims = { companyId: 'acceptance', identityId: 'identity', appUserId: 'employee', accountType: 'employee', role: 'super_admin' };
@@ -17,15 +19,19 @@ const path = (collection, id) => `artifacts/acceptance/public/data/${collection}
 const samples = [];
 try {
   await env.withSecurityRulesDisabled(async context => {
-    await setDoc(doc(context.firestore(), path('companies', 'acceptance')), { id: 'acceptance', name: 'Test only' });
-    await setDoc(doc(context.firestore(), path('employees', 'employee')), { id: 'employee', companyId: 'acceptance', name: 'Test only' });
+    await setDoc(doc(context.firestore(), path('companies', 'acceptance')), { id: 'acceptance', name: 'Test only', ownerEmployeeId: 'employee' });
+    await setDoc(doc(context.firestore(), path('employees', 'employee')), { id: 'employee', companyId: 'acceptance', name: 'Test only', role: 'owner', position: 'Chủ doanh nghiệp' });
   });
   for (const collection of ['customers', 'products', 'orders', 'orderRequests', 'warehouseImports', 'warehouseDispatches', 'expenses', 'payments', 'deliveryReports', 'employees']) {
     for (let iteration = 0; iteration < 3; iteration += 1) {
-      const id = `${collection}-${iteration}`;
+      // Dispatch creation uses the same mandatory command/path identity as the
+      // application. This suite exercises transport, not a bypass of that guard.
+      const mutationId = `transport-${iteration}`;
+      const id = collection === 'warehouseDispatches' ? `wd_acceptance_${mutationId}` : `${collection}-${iteration}`;
       const reference = doc(db, path(collection, id));
       const start = performance.now();
-      await setDoc(reference, { id, companyId: 'acceptance', amount: 60000, revision: 1 });
+      await setDoc(reference, { id, companyId: 'acceptance', amount: 60000, revision: 1,
+        ...(collection === 'warehouseDispatches' ? {clientMutationId: mutationId} : {}) });
       const createMs = performance.now() - start;
       const editStart = performance.now();
       await setDoc(reference, { amount: 63000, revision: 2 }, { merge: true });
@@ -179,7 +185,9 @@ try {
   assert.equal(restored.data().amount, 63000);
   await assertFails(setDoc(doc(db, path('orders', 'wrong-tenant')), { companyId: 'other', amount: 1 }));
   const report = { environment: 'Firestore Emulator, actual SDK and security rules; not app UI or production network', samples, coalescedReplayMatchesSequentialWrites: true, offlineLatestEditPreserved: true, permissionDeniedVerified: true, assetCostAtomicRollback: true, deliveryCompoundAtomicRollback: true, deliveryPenaltyAtomicRollback: true, deliveryResolutionCompetingDecisionsRejected: true, deliveryResolutionRetryPreservesLaterOrderEdit: true, paymentConditionalRetryPreservesReadAndSent: true, paymentIdReuseRejected: true, reconnectMs: Math.round(performance.now() - reconnectStart) };
-  await writeFile('test-results/firestore-save-acceptance.json', JSON.stringify(report, null, 2));
+  const reportFile = new URL('../test-results/firestore-save-acceptance.json', import.meta.url);
+  await mkdir(new URL('./', reportFile), {recursive:true});
+  await writeFile(reportFile, JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report));
 } finally {
   await env.cleanup();

@@ -16,6 +16,7 @@ export function createDeliverySavePlan(commandId) {
     editReport: (id, payload) => edit('editReport', id, payload),
     editOrder: (id, payload) => edit('editOrder', id, payload),
     addPayment: payload => add('addPayment', { ...payload, id: payload.clientMutationId }, 'p'),
+    editPayment: (id, payload) => edit('editPayment', id, payload),
     addExpense: payload => add('addExpense', payload, 'exp'),
     editExpense: (id, payload) => edit('editExpense', id, payload),
     addCost: payload => add('addCost', payload, 'acl'),

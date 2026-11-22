@@ -1,11 +1,28 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import test from 'node:test';
+import {mkdir,writeFile} from 'node:fs/promises';
+import path from 'node:path';
+import test,{after} from 'node:test';
+import {createLegacyAuditFixture,legacyAuditScope} from './helpers/legacy-audit-fixture.mjs';
+// Current financial behavior is a separate canonical gate, never inferred
+// from the legacy source flags or the synthetic benchmark's timings.
+import '../development/hd-manager/application/tests/manual-order-integrity.test.mjs';
 
-const evidence = JSON.parse(readFileSync(new URL('../test-results/critical-business-audit/summary.json', import.meta.url), 'utf8'));
-const report = readFileSync(new URL('../docs/reports/HD-Manager-Performance-Audit.html', import.meta.url), 'utf8');
+const fixture=await createLegacyAuditFixture();after(fixture.dispose);
+await fixture.run('scripts/audit-critical-business-modules.mjs');
+await mkdir(path.join(fixture.directory,'docs/reports'),{recursive:true});
+await writeFile(path.join(fixture.directory,'docs/reports/HD-Manager-Performance-Audit.html'),'<!doctype html><main></main>');
+await fixture.run('scripts/report-critical-business-audit.mjs');
+const evidence=JSON.parse(await fixture.read('test-results/critical-business-audit/summary.json'));
+const report=await fixture.read('docs/reports/HD-Manager-Performance-Audit.html');
+const classification=JSON.parse(await fixture.read('test-results/harness-scope.json'));
 
-test('critical business evidence covers all requested modules and dataset sizes', () => {
+test('legacy audit generator fixture is explicitly outside canonical Firebase acceptance',()=>{
+  assert.equal(classification.scope,legacyAuditScope);
+  assert.equal(evidence.scope.productionAccess,false);
+  assert.match(evidence.scope.notMeasured,/Authenticated API latency/);
+});
+
+test('legacy-root tooling: generated synthetic evidence covers all requested modules and dataset sizes', () => {
   assert.deepEqual(evidence.datasetSizes, [100, 1_000, 10_000, 50_000]);
   assert.deepEqual(
     [...new Set(evidence.moduleBenchmarks.map((row) => row.module))].sort(),
@@ -23,9 +40,10 @@ test('critical business evidence covers all requested modules and dataset sizes'
   }
 });
 
-test('audit preserves integrity blockers instead of claiming unsupported PASS', () => {
+test('legacy-root tooling: audit preserves integrity blockers instead of claiming unsupported PASS', () => {
   assert.equal(evidence.idempotency.pass, true);
-  assert.equal(evidence.sourceEvidence.orderAwaitsAtomicServerConfirmation, true);
+  assert.equal(evidence.sourceEvidence.orderAwaitsAtomicServerConfirmation, false,
+    'The checked-in legacy handler lacks the canonical exact atomic receipt check');
   assert.equal(evidence.sourceEvidence.warehouseDispatchUsesStockTransaction, false);
   assert.equal(evidence.sourceEvidence.warehouseDispatchChecksAvailableStock, false);
   assert.equal(evidence.sourceEvidence.tenantReadsHaveCursorPagination, false);
@@ -34,7 +52,7 @@ test('audit preserves integrity blockers instead of claiming unsupported PASS', 
   assert.equal(evidence.acceptance.warehouseDispatch, 'NOT PASS');
 });
 
-test('HTML report contains every required deep-audit section and honest load status', () => {
+test('legacy-root tooling: generated HTML contains every required deep-audit section and honest load status', () => {
   const headings = [
     'Critical Business Module Deep Audit',
     'Xuất kho',

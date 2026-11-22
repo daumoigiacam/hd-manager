@@ -2973,6 +2973,7 @@ var ROLE_PERMISSION_MODULES = [
       { id: "share_customer_quote", label: "Chia s\u1EBB b\xE1o gi\xE1 cho kh\xE1ch" },
       { id: "customer_debt_limit", label: "C\u1EA5u h\xECnh h\u1EA1n m\u1EE9c c\xF4ng n\u1EE3 kh\xE1ch" },
       { id: "view_customer_debt_limit_alerts", label: "Xem nh\xE3n ph\u1EA3i thu ti\u1EC1n ngay" },
+      { id: "view_customer_care_reminders", label: "Xem nh\u1EAFc ch\u0103m s\xF3c kh\xE1ch h\xE0ng" },
       { id: "send_customer_debt_reminder", label: "Nh\u1EAFc n\u1EE3 kh\xE1ch h\xE0ng" },
       { id: "driver_debt_permission", label: "Ph\xE2n quy\u1EC1n t\xE0i x\u1EBF" },
       { id: "customer_loyalty_points", label: "T\xEDch \u0111i\u1EC3m kh\xE1ch h\xE0ng" },
@@ -3295,6 +3296,169 @@ var DEFAULT_ROLE_PERMISSION_ACTIONS = Object.entries(DEFAULT_ROLE_PERMISSIONS).r
   acc[departmentKey].settings.manage_employee_review_settings = departmentKey === "owner";
   return acc;
 }, {});
+["sales", "driver", "production", "warehouse"].forEach((departmentKey) => {
+  if (!DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey]?.finance) return;
+  DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey].finance = {
+    ...DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey].finance,
+    view_own_cashflow: true,
+    view_all_cashflow: false,
+    view_cashflow_groups: true,
+    open_cashflow_group_detail: true,
+    edit_cashflow: false,
+    edit_income_voucher: false,
+    edit_expense_voucher: false,
+    approve_driver_cashflow: false,
+    delete_cashflow: false,
+    delete_income_voucher: false,
+    delete_expense_voucher: false
+  };
+});
+["sales", "driver", "production", "warehouse"].forEach((departmentKey) => {
+  if (!DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey]?.payroll) return;
+  DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey].payroll = {
+    ...DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey].payroll,
+    configure_salary_advance_limit: false
+  };
+});
+["accounting", "sales", "driver", "production", "warehouse"].forEach((departmentKey) => {
+  if (!DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey]?.payroll) return;
+  DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey].payroll = {
+    ...DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey].payroll,
+    create_salary_advance_for_others: false
+  };
+});
+["sales", "driver", "production", "warehouse"].forEach((departmentKey) => {
+  if (!DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey]?.messages) return;
+  DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey].messages = {
+    ...DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey].messages,
+    view_message_center: true,
+    view_support_messages: false,
+    send_support_messages: false,
+    view_internal_messages: true,
+    send_internal_messages: true,
+    view_own_notifications: true,
+    view_all_notifications: false,
+    send_image_attachment: true,
+    send_contact_attachment: true,
+    send_location_attachment: true,
+    send_bank_qr_attachment: false,
+    send_order_attachment: departmentKey === "sales" || departmentKey === "warehouse",
+    send_order_request_attachment: departmentKey === "sales" || departmentKey === "warehouse",
+    send_report_attachment: false,
+    call_from_message: true
+  };
+});
+["sales", "driver", "production", "warehouse"].forEach((departmentKey) => {
+  if (!DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey]?.employee_reviews) return;
+  DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey].employee_reviews = {
+    ...DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey].employee_reviews,
+    view_employee_reviews: true,
+    view_own_employee_reviews: true,
+    view_all_employee_reviews: false,
+    create_employee_review: true,
+    manage_employee_review_criteria: false,
+    view_employee_review_radar: true
+  };
+});
+if (DEFAULT_ROLE_PERMISSION_ACTIONS.accounting?.employee_reviews) {
+  DEFAULT_ROLE_PERMISSION_ACTIONS.accounting.employee_reviews = {
+    ...DEFAULT_ROLE_PERMISSION_ACTIONS.accounting.employee_reviews,
+    view_employee_reviews: true,
+    view_own_employee_reviews: true,
+    view_all_employee_reviews: true,
+    create_employee_review: true,
+    manage_employee_review_criteria: false,
+    view_employee_review_radar: true
+  };
+}
+if (DEFAULT_ROLE_PERMISSION_ACTIONS.sales?.debt) {
+  DEFAULT_ROLE_PERMISSION_ACTIONS.sales.debt = {
+    ...DEFAULT_ROLE_PERMISSION_ACTIONS.sales.debt,
+    view_debt: true,
+    view_all_debt: false,
+    view_assigned_debt: true,
+    record_payment: false,
+    edit_debt: false,
+    delete_debt: false,
+    edit_order_payment_from_debt: false,
+    apply_deposit_to_debt: false,
+    view_debt_limit_alerts: true,
+    manage_debt_limit_followup: false,
+    share_debt: false
+  };
+}
+if (DEFAULT_ROLE_PERMISSION_ACTIONS.sales?.pricing) {
+  DEFAULT_ROLE_PERMISSION_ACTIONS.sales.pricing = {
+    ...DEFAULT_ROLE_PERMISSION_ACTIONS.sales.pricing,
+    view_pricing: true,
+    view_today_price_table: true,
+    edit_today_price_table: false,
+    hide_today_price_group: false,
+    delete_pricing_data: false,
+    manage_input_costs: false,
+    manage_loss_standards: false,
+    manage_cutting_standards: false,
+    manage_cost_allocation: false,
+    manage_margin_rules: false,
+    view_ai_price_suggestions: false,
+    run_pricing_sandbox: false,
+    approve_ai_price: false,
+    auto_apply_ai_price: false
+  };
+}
+if (DEFAULT_ROLE_PERMISSION_ACTIONS.driver?.warehouse_dispatch) {
+  DEFAULT_ROLE_PERMISSION_ACTIONS.driver.warehouse_dispatch = {
+    ...DEFAULT_ROLE_PERMISSION_ACTIONS.driver.warehouse_dispatch,
+    view_warehouse_dispatch: true,
+    create_warehouse_dispatch: false,
+    create_dispatch_without_order_request: false,
+    manual_search_dispatch_customer: true,
+    manual_search_dispatch_product: true,
+    select_dispatch_order_date: true,
+    edit_dispatch_piece_count: false,
+    edit_dispatch_weight: false,
+    edit_dispatch_weight_entries: false,
+    assign_dispatch_driver: false,
+    match_dispatch_with_order_request: false,
+    edit_warehouse_dispatch: false,
+    delete_warehouse_dispatch: false,
+    view_dispatch_shortage: false,
+    update_shortage_after_dispatch: false,
+    view_dispatch_history_calendar: true,
+    open_dispatch_history_detail: true,
+    edit_dispatch_history_detail: false,
+    delete_dispatch_history_detail: false,
+    share_warehouse_dispatch: false,
+    change_warehouse_dispatch_date: false
+  };
+}
+if (DEFAULT_ROLE_PERMISSION_ACTIONS.driver?.asset_management) {
+  DEFAULT_ROLE_PERMISSION_ACTIONS.driver.asset_management = {
+    ...DEFAULT_ROLE_PERMISSION_ACTIONS.driver.asset_management,
+    view_asset_management: false,
+    view_assets: false,
+    create_asset: false,
+    edit_asset: false,
+    delete_asset: false,
+    manage_asset_handover: false,
+    view_asset_cost_logs: false,
+    create_asset_cost_log: false,
+    edit_asset_cost_log: false,
+    delete_asset_cost_log: false,
+    upload_asset_cost_images: false,
+    view_asset_dashboard: false,
+    view_asset_warnings: false,
+    view_driver_asset_score: false
+  };
+}
+["accounting", "sales", "driver", "production", "warehouse"].forEach((departmentKey) => {
+  DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey].customers.view_customer_care_reminders = false;
+  if (!DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey]?.warehouse_dispatch) return;
+  DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey].warehouse_dispatch = {
+    ...DEFAULT_ROLE_PERMISSION_ACTIONS[departmentKey].warehouse_dispatch,
+    delete_dispatch_history_detail: false
+  };
+});
 var getEmployeeRolePermissionKey = (employee = null, currentUser = null) => {
   const position = normalizeEmployeePosition(employee?.position || "");
   if (isOwnerAccountUser(employee, currentUser)) return "owner";

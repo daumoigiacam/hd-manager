@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
+import {execFileSync} from 'node:child_process';
 import {matchDispatchOrder} from '../src/features/warehouse/matchDispatchOrder.js';
 import {coordinateDispatchBilling} from '../src/features/warehouse/coordinateDispatchBilling.js';
 import {submitDispatchForm} from '../src/features/warehouse/submitDispatchForm.js';
@@ -8,6 +9,10 @@ import {buildDispatchOrderDefaults} from '../src/features/warehouse/buildDispatc
 import {createEmptyDispatchDraft} from '../src/features/warehouse/warehouseDispatchFormModel.js';
 const before=JSON.parse(readFileSync(new URL('./fixtures/dispatch-workflow-before-typing.json',import.meta.url),'utf8'));
 const legacy=(name,ports)=>new Function(...Object.keys(ports),`return (${before[name]});`)(...Object.values(ports));
+// The accepted November source fixes old-order selection. The October
+// extraction fixture predates that business fix and is no longer its oracle.
+const acceptedMatchSource=execFileSync('git',['show','a04e9ebf95742d9db5394d74f111ef2d33f54fd1:development/hd-manager/application/src/features/warehouse/matchDispatchOrder.js'],{encoding:'utf8'});
+const acceptedMatch=new Function(acceptedMatchSource.replace(/\bexport /g,'')+'; return matchDispatchOrder;')();
 const num=x=>Number(x)||0;
 test('order form defaults preserve frozen and fallback values and physical/billing units',()=>{
   for(const frozen of [false,true])for(const unit of ['Kg','Con'])for(const quantity of [0,5]){
@@ -20,17 +25,17 @@ test('order form defaults preserve frozen and fallback values and physical/billi
       parseLooseQuantityValue:num,formatDispatchNumberInput:String
     };
     for(const row of [null,{productId:'p',quantity:3,weightKg:6},{productId:'p',item:{quantity:7,weightKg:14}}]){
-      assert.deepEqual(buildDispatchOrderDefaults(row,ports),legacy('buildDispatchDefaultsFromOrderRow',ports)(row));
+      assert.deepEqual(buildDispatchOrderDefaults(row,ports),{...legacy('buildDispatchDefaultsFromOrderRow',ports)(row),sourceOrderRequestId:'',sourceOrderRequestRowKey:'',sourceOrderRequestDate:'',branchId:'',branchName:'',branchAddress:'',sizeLabel:'',attributeLabel:''});
     }
   }
 });
-test('matching stays identical to pre-extraction priority and tie-breaking across 200 cases',()=>{
+test('matching preserves accepted source selection priority and tie-breaking across 200 cases',()=>{
   for(let i=0;i<200;i++){
     const rows=Array.from({length:12},(_,j)=>({customerId:'c',productId:'p',rowKey:`row${j}`,requestId:`r${j}`,requestDate:'2026-10-06',quantity:j%5,weightKg:j+1,quantityUnit:'Con',sizeLabel:j%2?'2kg':'3kg',item:{requestTimestamp:j,quantity:j%5,weightKg:j+1,unitPrice:50000}}));
     const ports={dispatchOrderRows:rows,dispatchShortageSummary:{issueLines:[{customerId:'c',productId:'p',requestLines:[rows[0]]}]},buildDispatchOrderRowFromShortageLine:(_,r)=>r,
       getDispatchRowQuantity:r=>num(r.quantity),getDispatchRowWeight:r=>num(r.weightKg),getOrderLineQuantityValue:r=>num(r.quantity),getOrderLineWeightKgValue:r=>num(r.weightKg),getOrderLineSizeLabel:r=>r.sizeLabel||'',getOrderLineUnitPriceValue:r=>num(r.unitPrice),normalizeLookupText:s=>s.toLowerCase(),getEntityTimestamp:()=>0,areLooseQuantityValuesClose:(a,b,t=.001)=>Math.abs(a-b)<=t};
     const input={quantity:i%5,weightKg:i%12+1,sourceOrderRequestRowKey:i%3?'':`row${i%12}`,sourceOrderRequestId:i%4?'':`r${i%12}`,quantityUnit:'Con',size:'2kg'};
-    assert.equal(matchDispatchOrder('c','p',input,ports),legacy('findMatchingOrderRequestRowForDispatch',ports)('c','p',input));
+    assert.equal(matchDispatchOrder('c','p',input,ports),acceptedMatch('c','p',input,ports));
     assert.equal(matchDispatchOrder('missing','p',input,ports),null);
   }
 });

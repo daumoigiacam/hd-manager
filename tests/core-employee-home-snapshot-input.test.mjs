@@ -5,7 +5,9 @@ import {buildEmployeeHomeScreenDto} from '../src/services/employeeHomeScreenDto.
 import {appFunction} from './helpers/app-source-function.mjs';
 import {parse} from '@babel/parser';
 const source=readFileSync('src/App.jsx','utf8');
-const app=parse(source,{sourceType:'module',plugins:['jsx']}).program.body.find(n=>n.type==='ExportDefaultDeclaration'&&n.declaration?.id?.name==='App').declaration;
+const program=parse(source,{sourceType:'module',plugins:['jsx']}).program.body;
+const app=program.find(n=>n.type==='FunctionDeclaration'&&n.id?.name==='ApplicationView')
+ ||program.find(n=>n.type==='ExportDefaultDeclaration'&&n.declaration?.id?.name==='App').declaration;
 const rootMemo=(name,context)=>{
  const declaration=app.body.body.filter(n=>n.type==='VariableDeclaration').flatMap(n=>n.declarations).find(n=>n.id.name===name);
  const callback=declaration?.init?.arguments?.[0];assert(callback&&['ArrowFunctionExpression','FunctionExpression'].includes(callback.type),'Original App memo required: '+name);
@@ -13,8 +15,8 @@ const rootMemo=(name,context)=>{
 };
 const roots=['withSalesRevenueIndex','calculateMonthRevenue','isCashflowOfficial','resolveAttendanceAnomalyForDate',
  'parseLooseMoneyValue','getAssetDisplayLabel','getAssetStatusLabel','formatShiftRangeLabel','formatAttendanceMomentForWorkDate','getAttendanceCompactSource'];
-const extracted=extractEmployeeHomeScreenModel(source,path.resolve('src'),roots);
-const bundle=await build({stdin:{contents:extracted.code,resolveDir:path.resolve('src')},bundle:true,write:false,platform:'node',format:'esm'});
+const extracted=extractEmployeeHomeScreenModel(source,path.resolve('development/hd-manager/application/src'),roots);
+const bundle=await build({stdin:{contents:extracted.code,resolveDir:path.resolve('development/hd-manager/application/src')},bundle:true,write:false,platform:'node',format:'esm'});
 const domain=await import('data:text/javascript;base64,'+Buffer.from(bundle.outputFiles[0].text).toString('base64'));
 const scope={companyId:'company-a',employeeId:'employee-a',date:'2026-11-02'};
 function fixture(){

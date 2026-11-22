@@ -10,8 +10,9 @@ export async function buildProjectedEmployeeHomeProjector(output){
  const fields=collectEmployeeHomeCandidateFields(await readFile(baseline.modulePath,'utf8')).filter(name=>!/^__.*__$/.test(name)&&!omit.has(name));
  const fieldsByCollection=Object.fromEntries(['customers','orders','payments'].map(name=>[name,fields]));
  const fieldProjection={version:1,schemaId:createHash('sha256').update(JSON.stringify(fieldsByCollection)).digest('hex'),fieldsByCollection};
- const source=await readFile('src/App.jsx','utf8'),extracted=extractEmployeeHomeScreenModel(source,path.resolve('src'),roots);
- const guardFile=path.resolve('src/services/employeeHomeFieldProjection.js'),guardImport=guardFile.replaceAll('\\','/');let instrumentedSpreads=0;
+ const sourceDirectory=path.resolve('development/hd-manager/application/src');
+ const source=await readFile(path.join(sourceDirectory,'App.jsx'),'utf8'),extracted=extractEmployeeHomeScreenModel(source,sourceDirectory,roots);
+ const guardFile=path.join(sourceDirectory,'services/employeeHomeFieldProjection.js'),guardImport=guardFile.replaceAll('\\','/');let instrumentedSpreads=0;
  const instrument=code=>{const result=instrumentEmployeeHomeSpreads(code,{guardImport});instrumentedSpreads+=result.spreads;return result.code};
  const contents=instrument(extracted.code+`
  import {buildEmployeeHomeScreenDto,validateEmployeeHomeScreenDto} from './services/employeeHomeScreenDto.js';
@@ -29,8 +30,8 @@ export async function buildProjectedEmployeeHomeProjector(output){
   }finally{context.close()}
  }
  export {validateEmployeeHomeScreenDto};`);
- const bundled=await build({stdin:{contents,resolveDir:path.resolve('src')},plugins:[{name:'guard-financial-object-spreads',setup(b){
-  b.onLoad({filter:/\.js$/},async args=>{
+ const bundled=await build({stdin:{contents,resolveDir:sourceDirectory},plugins:[{name:'guard-financial-object-spreads',setup(b){
+  b.onLoad({filter:/\.m?js$/},async args=>{
    if(path.resolve(args.path)===guardFile)return null;
    return {contents:instrument(await readFile(args.path,'utf8')),loader:'js',resolveDir:path.dirname(args.path)};
   });

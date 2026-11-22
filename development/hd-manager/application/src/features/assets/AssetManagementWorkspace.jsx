@@ -1,5 +1,6 @@
 import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {createLocalCommitTiming} from '../../services/localCommitTiming.js';
+import {parseAssetNumber} from '../../utils/assetMutationIntegrity.js';
 import { useAppScreenBack } from '../../hooks/useAppScreenBack.js';
 import {
   Bike,
@@ -360,7 +361,7 @@ function OverviewTab({ asset, metrics, assigneeName, canEditAsset, onEditAsset }
   );
 }
 
-function CostsTab({ asset, assetCostLogs, formatCurrency, getCostTypeLabel, canViewAssetCostLogs, canCreateAssetCostLog, onAddCost, onEditCost }) {
+function CostsTab({ asset, assetCostLogs, formatCurrency, getCostTypeLabel, canViewAssetCostLogs, canCreateAssetCostLog, canEditAssetCostLog, onAddCost, onEditCost }) {
   const logs = useMemo(() => assetCostLogs
     .filter(log => `${log.assetId || ''}` === `${asset.id || ''}` && !log.isArchived)
     .sort((left, right) => new Date(right.createdAt || right.date || 0) - new Date(left.createdAt || left.date || 0)), [asset.id, assetCostLogs]);
@@ -385,7 +386,7 @@ function CostsTab({ asset, assetCostLogs, formatCurrency, getCostTypeLabel, canV
       <section className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm">
         <div className="flex items-center justify-between gap-3"><h3 className="text-[17px] font-bold text-slate-900">Lịch sử chi phí</h3>{canCreateAssetCostLog && <button type="button" onClick={onAddCost} className="inline-flex min-h-9 items-center gap-1 rounded-lg border border-blue-200 px-2.5 text-sm font-bold text-blue-700"><Plus size={16} /> Thêm</button>}</div>
         {!canViewAssetCostLogs ? <p className="mt-3 text-sm text-slate-500">Tài khoản chưa có quyền xem chi phí tài sản.</p> : logs.length === 0 ? <p className="mt-3 text-sm text-slate-500">Chưa có nhật ký chi phí.</p> : <div className="mt-3 space-y-2">
-{logs.map(log => <button key={log.id} type="button" disabled={log.financeProjection} title={log.financeProjection ? 'Khoản chi từ Thu chi' : undefined} onClick={() => onEditCost(log)} className="w-full rounded-xl border border-slate-100 p-3 text-left transition hover:border-blue-100"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-bold text-slate-900">{getCostTypeLabel(log.type === 'fuel' ? 'fuel' : log.costType || log.type)}</p><p className="mt-0.5 text-xs text-slate-500">{log.financeProjection ? 'Thu chi • ' : ''}{formatDate(log.date || log.createdAt)}{log.note ? ` • ${log.note}` : ''}</p></div><p className="shrink-0 text-sm font-bold tabular-nums text-slate-900">{formatCurrency(Number(`${log.amount || 0}`.replace(/[^\d.-]/g, '')))} đ</p></div></button>)}
+{logs.map(log => <button key={log.id} type="button" disabled={!canEditAssetCostLog || log.financeProjection || !!log.relatedDeliveryReportId || !!log.sourceDeliveryReportId} title={log.financeProjection ? 'Khoản chi từ Thu chi' : undefined} onClick={() => onEditCost(log)} className="w-full rounded-xl border border-slate-100 p-3 text-left transition hover:border-blue-100"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-bold text-slate-900">{getCostTypeLabel(log.type === 'fuel' ? 'fuel' : log.costType || log.type)}</p><p className="mt-0.5 text-xs text-slate-500">{log.financeProjection ? 'Thu chi • ' : ''}{formatDate(log.date || log.createdAt)}{log.note ? ` • ${log.note}` : ''}</p></div><p className="shrink-0 text-sm font-bold tabular-nums text-slate-900">{formatCurrency(Number(`${log.amount || 0}`.replace(/[^\d.-]/g, '')))} đ</p></div></button>)}
         </div>}
       </section>
     </div>
@@ -394,7 +395,7 @@ function CostsTab({ asset, assetCostLogs, formatCurrency, getCostTypeLabel, canV
 
 function MaintenanceTab({ asset, assetCostLogs, metrics, canEditAsset, canCreateAssetCostLog, onAddCost, onSaveSchedule }) {
   const schedules = getAssetMaintenanceRows(asset);
-  const logs = assetCostLogs.filter(log => `${log.assetId || ''}` === `${asset.id || ''}` && ['maintenance', 'repair', 'oil', 'tire'].includes(log.costType || log.type));
+  const logs = assetCostLogs.filter(log => `${log.assetId || ''}` === `${asset.id || ''}` && log.type !== 'fuel' && ['maintenance', 'repair', 'oil', 'tire'].includes(log.costType || log.type));
   const overdue = schedules.find(row => row.status === 'overdue');
   const inspectionWarning = metrics.inspectionWarning;
   const warning = overdue
@@ -433,24 +434,57 @@ function HistoryTab({ asset, assetCostLogs, getCostTypeLabel }) {
   return <section className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm"><div className="flex items-center gap-2"><History size={19} className="text-blue-600" /><h3 className="text-[17px] font-bold text-slate-900">Lịch sử</h3></div>{rows.length === 0 ? <p className="mt-3 text-sm text-slate-500">Chưa có lịch sử được ghi nhận cho tài sản này.</p> : <ol className="mt-4 space-y-0">{rows.map((row, index) => <li key={row.id} className="grid grid-cols-[20px_minmax(0,1fr)] gap-3"><div className="relative flex justify-center">{index < rows.length - 1 && <span className="absolute top-5 h-[calc(100%+10px)] w-px bg-slate-100" />}<span className={`relative mt-1.5 h-2.5 w-2.5 rounded-full ${statusIconClass[row.tone] || statusIconClass.neutral}`} /></div><div className="pb-4"><p className="text-sm font-bold text-slate-900">{row.title}</p><p className="mt-0.5 text-xs text-slate-500">{row.detail}</p><p className="mt-1 text-[11px] font-medium text-slate-400">{formatDate(row.date)}</p></div></li>)}</ol>}</section>;
 }
 
-function AssetDetailScreen({ asset, metrics, assetCostLogs, canEditAsset, canViewAssetCostLogs, canCreateAssetCostLog, onBack, onEditAsset, onAddCost, onEditCost, onUpdateAsset, getAssigneeName, getCostTypeLabel, formatCurrency }) {
+function AssetDetailScreen({ asset, metrics, assetCostLogs, canEditAsset, canViewAssetCostLogs, canCreateAssetCostLog, canEditAssetCostLog, onBack, onEditAsset, onAddCost, onEditCost, onUpdateAsset, getAssigneeName, getCostTypeLabel, formatCurrency }) {
   const [activeTab, setActiveTab] = useState('overview');
   const [maintenanceDraft, setMaintenanceDraft] = useState(null);
   const [documentDraft, setDocumentDraft] = useState(null);
+  const [isSavingDraft, setIsSavingDraft] = useState(false);
+  const [draftError, setDraftError] = useState('');
+  const savingRef = useRef(false);
+  const mountedRef = useRef(true);
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
+  const openDraft = (kind) => {
+    if (!canEditAsset || savingRef.current) return;
+    const draft = {...(kind === 'maintenance' ? buildMaintenanceDraft() : buildDocumentDraft()),
+      clientCommandId: `cmd_${crypto.randomUUID()}`, clientMutationAt: new Date().toISOString(),
+      expectedAssetUpdatedAt: asset.updatedAt || ''};
+    setDraftError('');
+    if (kind === 'maintenance') setMaintenanceDraft(draft); else setDocumentDraft(draft);
+  };
+  const closeDraft = () => {
+    if (savingRef.current) return;
+    setMaintenanceDraft(null); setDocumentDraft(null); setDraftError('');
+  };
   const typeIcon = getAssetIcon(asset);
   const AssetIcon = typeIcon;
-  const saveMaintenance = () => {
-    if (!maintenanceDraft?.title?.trim()) return;
-    const current = Array.isArray(asset.maintenanceSchedule) ? asset.maintenanceSchedule : [];
-    onUpdateAsset(asset.id, { maintenanceSchedule: [...current, { ...maintenanceDraft, title: maintenanceDraft.title.trim() }] });
-    setMaintenanceDraft(null);
+  const saveDraft = async (kind) => {
+    const draft = kind === 'maintenance' ? maintenanceDraft : documentDraft;
+    const label = kind === 'maintenance' ? 'title' : 'type';
+    if (savingRef.current || !canEditAsset || !draft?.[label]?.trim()) return;
+    const field = kind === 'maintenance' ? 'maintenanceSchedule' : 'assetDocuments';
+    const {clientCommandId, clientMutationAt, expectedAssetUpdatedAt, ...row} = draft;
+    const current = Array.isArray(asset[field]) ? asset[field] : [];
+    savingRef.current = true; setIsSavingDraft(true); setDraftError('');
+    try {
+      if (kind === 'maintenance') row.dueKm = parseAssetNumber(row.dueKm);
+      if (!onUpdateAsset) throw new Error('Chưa thể lưu thông tin tài sản.');
+      const result = await onUpdateAsset(asset.id, {[field]: [...current.filter(item => item.id !== row.id), {...row, [label]: row[label].trim()}],
+        clientCommandId, clientMutationAt, expectedAssetUpdatedAt});
+      if (result === false || result?.success === false || result?.queued) throw new Error('Máy chủ chưa xác nhận. Vui lòng thử lại.');
+      if (!mountedRef.current) return;
+      savingRef.current = false; closeDraft();
+    } catch (error) {
+      if (mountedRef.current) setDraftError(error?.message || 'Không thể lưu. Vui lòng thử lại.');
+    } finally {
+      if (mountedRef.current) { savingRef.current = false; setIsSavingDraft(false); }
+    }
   };
-  const saveDocument = () => {
-    if (!documentDraft?.type?.trim()) return;
-    const current = Array.isArray(asset.assetDocuments) ? asset.assetDocuments : [];
-    onUpdateAsset(asset.id, { assetDocuments: [...current, { ...documentDraft, type: documentDraft.type.trim() }] });
-    setDocumentDraft(null);
-  };
+  const saveMaintenance = () => saveDraft('maintenance');
+  const saveDocument = () => saveDraft('documents');
+  useAppScreenBack(() => {
+    if (!maintenanceDraft && !documentDraft) return false;
+    closeDraft(); return true;
+  });
   return (
     <section className="space-y-4" data-asset-detail-screen="true">
       <header className="flex min-h-11 items-center justify-between gap-3">
@@ -466,13 +500,13 @@ function AssetDetailScreen({ asset, metrics, assetCostLogs, canEditAsset, canVie
 
       <DetailTabs activeTab={activeTab} onChange={setActiveTab} />
       {activeTab === 'overview' && <OverviewTab asset={asset} metrics={metrics} assigneeName={getAssigneeName(asset)} canEditAsset={canEditAsset} onEditAsset={onEditAsset} />}
-      {activeTab === 'costs' && <CostsTab asset={asset} assetCostLogs={assetCostLogs} formatCurrency={formatCurrency} getCostTypeLabel={getCostTypeLabel} canViewAssetCostLogs={canViewAssetCostLogs} canCreateAssetCostLog={canCreateAssetCostLog} onAddCost={onAddCost} onEditCost={onEditCost} />}
-      {activeTab === 'maintenance' && <MaintenanceTab asset={asset} assetCostLogs={assetCostLogs} metrics={metrics} canEditAsset={canEditAsset} canCreateAssetCostLog={canCreateAssetCostLog} onAddCost={onAddCost} onSaveSchedule={() => setMaintenanceDraft(buildMaintenanceDraft())} />}
-      {activeTab === 'documents' && <DocumentsTab asset={asset} canEditAsset={canEditAsset} onSaveDocument={() => setDocumentDraft(buildDocumentDraft())} />}
+      {activeTab === 'costs' && <CostsTab asset={asset} assetCostLogs={assetCostLogs} formatCurrency={formatCurrency} getCostTypeLabel={getCostTypeLabel} canViewAssetCostLogs={canViewAssetCostLogs} canCreateAssetCostLog={canCreateAssetCostLog} canEditAssetCostLog={canEditAssetCostLog} onAddCost={onAddCost} onEditCost={onEditCost} />}
+      {activeTab === 'maintenance' && <MaintenanceTab asset={asset} assetCostLogs={assetCostLogs} metrics={metrics} canEditAsset={canEditAsset} canCreateAssetCostLog={canCreateAssetCostLog} onAddCost={onAddCost} onSaveSchedule={() => openDraft('maintenance')} />}
+      {activeTab === 'documents' && <DocumentsTab asset={asset} canEditAsset={canEditAsset} onSaveDocument={() => openDraft('documents')} />}
       {activeTab === 'history' && <HistoryTab asset={asset} assetCostLogs={assetCostLogs} getCostTypeLabel={getCostTypeLabel} />}
 
-      {maintenanceDraft && <div className="fixed inset-0 z-[100] flex items-end bg-slate-950/35 p-3 sm:items-center sm:justify-center" onClick={() => setMaintenanceDraft(null)}><form onSubmit={event => { event.preventDefault(); saveMaintenance(); }} onClick={event => event.stopPropagation()} className="w-full max-w-md rounded-2xl bg-white p-4 shadow-xl"><div className="flex items-center justify-between gap-3"><h3 className="text-[17px] font-bold text-slate-900">Thêm lịch bảo trì</h3><button type="button" onClick={() => setMaintenanceDraft(null)} className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-slate-600" aria-label="Đóng"><X size={18} /></button></div><div className="mt-4 space-y-3"><input required autoFocus value={maintenanceDraft.title} onChange={event => setMaintenanceDraft(draft => ({ ...draft, title: event.target.value }))} className="h-12 w-full rounded-xl border border-slate-200 px-3 text-sm font-semibold text-slate-900 outline-none focus:border-blue-400" placeholder="Tên công việc bảo trì" /><div className="grid grid-cols-2 gap-2"><input type="date" value={maintenanceDraft.dueDate} onChange={event => setMaintenanceDraft(draft => ({ ...draft, dueDate: event.target.value }))} className="h-12 rounded-xl border border-slate-200 px-3 text-sm text-slate-700 outline-none" /><input value={maintenanceDraft.dueKm} onChange={event => setMaintenanceDraft(draft => ({ ...draft, dueKm: event.target.value }))} className="h-12 rounded-xl border border-slate-200 px-3 text-sm text-slate-700 outline-none" placeholder="Mốc km (nếu có)" /></div><textarea value={maintenanceDraft.note} onChange={event => setMaintenanceDraft(draft => ({ ...draft, note: event.target.value }))} className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm text-slate-700 outline-none" placeholder="Ghi chú" /></div><button type="submit" className="mt-4 min-h-12 w-full rounded-xl bg-blue-600 text-sm font-bold text-white">Lưu lịch bảo trì</button></form></div>}
-      {documentDraft && <div className="fixed inset-0 z-[100] flex items-end bg-slate-950/35 p-3 sm:items-center sm:justify-center" onClick={() => setDocumentDraft(null)}><form onSubmit={event => { event.preventDefault(); saveDocument(); }} onClick={event => event.stopPropagation()} className="w-full max-w-md rounded-2xl bg-white p-4 shadow-xl"><div className="flex items-center justify-between gap-3"><h3 className="text-[17px] font-bold text-slate-900">Thêm giấy tờ</h3><button type="button" onClick={() => setDocumentDraft(null)} className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-slate-600" aria-label="Đóng"><X size={18} /></button></div><div className="mt-4 space-y-3"><input required autoFocus value={documentDraft.type} onChange={event => setDocumentDraft(draft => ({ ...draft, type: event.target.value }))} className="h-12 w-full rounded-xl border border-slate-200 px-3 text-sm font-semibold text-slate-900 outline-none focus:border-blue-400" placeholder="Ví dụ: Bảo hiểm, chứng nhận" /><div className="grid grid-cols-2 gap-2"><input value={documentDraft.reference} onChange={event => setDocumentDraft(draft => ({ ...draft, reference: event.target.value }))} className="h-12 rounded-xl border border-slate-200 px-3 text-sm text-slate-700 outline-none" placeholder="Số giấy tờ" /><input type="date" value={documentDraft.expiryDate} disabled={documentDraft.noExpiry} onChange={event => setDocumentDraft(draft => ({ ...draft, expiryDate: event.target.value }))} className="h-12 rounded-xl border border-slate-200 px-3 text-sm text-slate-700 outline-none disabled:bg-slate-50" /></div><label className="flex min-h-10 items-center gap-2 text-sm font-medium text-slate-600"><input type="checkbox" checked={documentDraft.noExpiry} onChange={event => setDocumentDraft(draft => ({ ...draft, noExpiry: event.target.checked, expiryDate: event.target.checked ? '' : draft.expiryDate }))} className="h-4 w-4 rounded border-slate-300 text-blue-600" /> Không có ngày hết hạn</label><textarea value={documentDraft.note} onChange={event => setDocumentDraft(draft => ({ ...draft, note: event.target.value }))} className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm text-slate-700 outline-none" placeholder="Ghi chú" /></div><button type="submit" className="mt-4 min-h-12 w-full rounded-xl bg-blue-600 text-sm font-bold text-white">Lưu giấy tờ</button></form></div>}
+      {maintenanceDraft && <div className="fixed inset-0 z-[100] flex items-end bg-slate-950/35 p-3 sm:items-center sm:justify-center" onClick={closeDraft}><form onSubmit={event => { event.preventDefault(); saveMaintenance(); }} onClick={event => event.stopPropagation()} className="w-full max-w-md rounded-2xl bg-white p-4 shadow-xl"><div className="flex items-center justify-between gap-3"><h3 className="text-[17px] font-bold text-slate-900">Thêm lịch bảo trì</h3><button type="button" onClick={closeDraft} className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-slate-600" aria-label="Đóng"><X size={18} /></button></div><div className="mt-4 space-y-3"><input required autoFocus value={maintenanceDraft.title} onChange={event => setMaintenanceDraft(draft => ({ ...draft, title: event.target.value }))} className="h-12 w-full rounded-xl border border-slate-200 px-3 text-sm font-semibold text-slate-900 outline-none focus:border-blue-400" placeholder="Tên công việc bảo trì" /><div className="grid grid-cols-2 gap-2"><input type="date" value={maintenanceDraft.dueDate} onChange={event => setMaintenanceDraft(draft => ({ ...draft, dueDate: event.target.value }))} className="h-12 rounded-xl border border-slate-200 px-3 text-sm text-slate-700 outline-none" /><input value={maintenanceDraft.dueKm} onChange={event => setMaintenanceDraft(draft => ({ ...draft, dueKm: event.target.value }))} className="h-12 rounded-xl border border-slate-200 px-3 text-sm text-slate-700 outline-none" placeholder="Mốc km (nếu có)" /></div><textarea value={maintenanceDraft.note} onChange={event => setMaintenanceDraft(draft => ({ ...draft, note: event.target.value }))} className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm text-slate-700 outline-none" placeholder="Ghi chú" /></div>{draftError && <p role="alert" className="mt-3 text-sm text-red-700">{draftError}</p>}<button disabled={isSavingDraft} type="submit" className="mt-4 min-h-12 w-full rounded-xl bg-blue-600 text-sm font-bold text-white">{isSavingDraft ? 'Đang lưu...' : 'Lưu lịch bảo trì'}</button></form></div>}
+      {documentDraft && <div className="fixed inset-0 z-[100] flex items-end bg-slate-950/35 p-3 sm:items-center sm:justify-center" onClick={closeDraft}><form onSubmit={event => { event.preventDefault(); saveDocument(); }} onClick={event => event.stopPropagation()} className="w-full max-w-md rounded-2xl bg-white p-4 shadow-xl"><div className="flex items-center justify-between gap-3"><h3 className="text-[17px] font-bold text-slate-900">Thêm giấy tờ</h3><button type="button" onClick={closeDraft} className="flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-slate-600" aria-label="Đóng"><X size={18} /></button></div><div className="mt-4 space-y-3"><input required autoFocus value={documentDraft.type} onChange={event => setDocumentDraft(draft => ({ ...draft, type: event.target.value }))} className="h-12 w-full rounded-xl border border-slate-200 px-3 text-sm font-semibold text-slate-900 outline-none focus:border-blue-400" placeholder="Ví dụ: Bảo hiểm, chứng nhận" /><div className="grid grid-cols-2 gap-2"><input value={documentDraft.reference} onChange={event => setDocumentDraft(draft => ({ ...draft, reference: event.target.value }))} className="h-12 rounded-xl border border-slate-200 px-3 text-sm text-slate-700 outline-none" placeholder="Số giấy tờ" /><input type="date" value={documentDraft.expiryDate} disabled={documentDraft.noExpiry} onChange={event => setDocumentDraft(draft => ({ ...draft, expiryDate: event.target.value }))} className="h-12 rounded-xl border border-slate-200 px-3 text-sm text-slate-700 outline-none disabled:bg-slate-50" /></div><label className="flex min-h-10 items-center gap-2 text-sm font-medium text-slate-600"><input type="checkbox" checked={documentDraft.noExpiry} onChange={event => setDocumentDraft(draft => ({ ...draft, noExpiry: event.target.checked, expiryDate: event.target.checked ? '' : draft.expiryDate }))} className="h-4 w-4 rounded border-slate-300 text-blue-600" /> Không có ngày hết hạn</label><textarea value={documentDraft.note} onChange={event => setDocumentDraft(draft => ({ ...draft, note: event.target.value }))} className="min-h-20 w-full rounded-xl border border-slate-200 p-3 text-sm text-slate-700 outline-none" placeholder="Ghi chú" /></div>{draftError && <p role="alert" className="mt-3 text-sm text-red-700">{draftError}</p>}<button disabled={isSavingDraft} type="submit" className="mt-4 min-h-12 w-full rounded-xl bg-blue-600 text-sm font-bold text-white">{isSavingDraft ? 'Đang lưu...' : 'Lưu giấy tờ'}</button></form></div>}
     </section>
   );
 }
@@ -487,6 +521,7 @@ export default function AssetManagementWorkspace({
   canEditAsset = false,
   canViewAssetCostLogs = true,
   canCreateAssetCostLog = false,
+  canEditAssetCostLog = false,
   onCreateAsset,
   onEditAsset,
   onAddCost,
@@ -518,7 +553,7 @@ export default function AssetManagementWorkspace({
   });
 
   if (selectedAsset) {
-    return <AssetDetailScreen asset={selectedAsset} metrics={metricsByAsset[selectedAsset.id] || {}} assetCostLogs={assetCostLogs} canEditAsset={canEditAsset} canViewAssetCostLogs={canViewAssetCostLogs} canCreateAssetCostLog={canCreateAssetCostLog} onBack={closeAsset} onEditAsset={() => onEditAsset(selectedAsset)} onAddCost={() => onAddCost(selectedAsset)} onEditCost={onEditCost} onUpdateAsset={onUpdateAsset} getAssigneeName={getAssigneeName} getCostTypeLabel={getCostTypeLabel} formatCurrency={formatCurrency} />;
+    return <AssetDetailScreen asset={selectedAsset} metrics={metricsByAsset[selectedAsset.id] || {}} assetCostLogs={assetCostLogs} canEditAsset={canEditAsset} canViewAssetCostLogs={canViewAssetCostLogs} canCreateAssetCostLog={canCreateAssetCostLog} canEditAssetCostLog={canEditAssetCostLog} onBack={closeAsset} onEditAsset={() => onEditAsset(selectedAsset)} onAddCost={() => onAddCost(selectedAsset)} onEditCost={onEditCost} onUpdateAsset={onUpdateAsset} getAssigneeName={getAssigneeName} getCostTypeLabel={getCostTypeLabel} formatCurrency={formatCurrency} />;
   }
   return <AssetListScreen assets={assets} metricsByAsset={metricsByAsset} getAssigneeName={getAssigneeName} canViewAssets={canViewAssets} canCreateAsset={canCreateAsset} onCreateAsset={onCreateAsset} onOpenAsset={openAsset} />;
 }

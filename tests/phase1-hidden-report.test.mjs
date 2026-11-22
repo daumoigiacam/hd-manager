@@ -8,6 +8,8 @@ import { test } from 'node:test';
 import { selectLatestWarehouseStockCountMeasures } from '../src/utils/warehouseInventory.js';
 import './warehouse-dispatch-command.test.mjs';
 import './warehouse-dispatch-edit-ack.test.mjs';
+import {assertAuditedMutationWiring} from './helpers/audited-handler-gates.mjs';
+import {appFunction} from './helpers/app-source-function.mjs';
 
 const baseline = execFileSync('git', ['show', '5f162f5:src/App.jsx'], { encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 });
 const current = readApplicationSource();
@@ -94,7 +96,7 @@ test('hidden report does not clear selection; report visibility invalidates memo
   assert.match(current, /warehouseMovementUnitFilter,\s*warehouseStockCounts,\s*warehouseInventoryTab\s*\]\);/);
   assert.match(current, /useEffect\(\(\) => \{\s*if \(warehouseInventoryTab !== 'report'\) return;\s*if \(!selectedWarehouseMovementRowKey\) return;/);
 });
-test('master refactor preserves inherited business mutation handlers exactly', () => {
+test('unaffected canonical mutation handlers retain their frozen baseline; audited changes use current behavior gates', () => {
   const handlers = source => {
     const result = new Map();
     const normalized = source.replace(/\r\n/g, '\n');
@@ -115,39 +117,33 @@ test('master refactor preserves inherited business mutation handlers exactly', (
   const oldHandlers = handlers(baseline);
   const newHandlers = handlers(current);
   for (const name of [
-    'saveDataDocument', 'handleAddPayment', 'handleEditPayment', 'handleDeletePayment',
-    'handleAddExpense', 'handleEditExpense', 'handleDeleteExpense',
+    'saveDataDocument', 'handleDeletePayment', 'handleDeleteExpense',
     'handleAddCustomer', 'handleDeleteCustomer',
     'handleAddProduct', 'handleEditProduct', 'handleDeleteProduct',
-    'handleAddOrder', 'handleEditOrder', 'handleDeleteOrder',
     // Customer configuration and order-request saves now share a transaction;
     // their atomicity/concurrency contract is exercised against the Emulator.
     'handleDeleteOrderRequest',
     'handleAddWarehouseImport', 'handleEditWarehouseImport', 'handleDeleteWarehouseImport',
     // Dispatch now has command identity/ACK semantics, covered by the imported
     // command and edit-ACK behavioral suites, not the old source-equality lock.
-    'handleRestoreCompanyBackup',
   ]) {
     assert.ok(oldHandlers.has(name), name);
-    let expected = oldHandlers.get(name);
-    let actual = newHandlers.get(name);
-    // Asset-linked expenses add tenant validation; all other persistence stays locked.
-    if (name === 'handleAddExpense' || name === 'handleEditExpense') {
-      const guard = "    if (expenseData.assetId && !assets.some(asset => asset.id === expenseData.assetId && asset.companyId === myCompanyId && !asset.isArchived)) throw new Error('Không tìm thấy xe/tài sản của công ty.');\n";
-      assert.equal(actual.split(guard).length, 2, `${name}: asset ownership guard`);
-      actual = actual.replace(guard, '');
-    }
-    // Sharing is now explicitly on demand; keep every persistence statement locked.
-    if (name === 'handleAddOrderRequest' || name === 'handleEditOrderRequest') {
-      const warmup = /      notifyOrderRequestShareWarmup\(\{\n        requestId(?:: id)?,\n        reason: 'order_request_(?:created|updated)'\n      \}\);\n/g;
-      assert.equal([...expected.matchAll(warmup)].length, 1, `${name}: known warmup only`);
-      expected = expected.replace(warmup, '');
-      assert.doesNotMatch(newHandlers.get(name), /notifyOrderRequestShareWarmup/);
-    }
-    assert.equal(actual, expected, name);
+    const clean=node=>JSON.parse(JSON.stringify(node,(key,value)=>['loc','start','end','extra','leadingComments','trailingComments','innerComments'].includes(key)?undefined:value));
+    const expression=text=>parse(`(${text})`,{sourceType:'module',plugins:['jsx']}).program.body[0].expression;
+    assert.deepEqual(clean(expression(newHandlers.get(name))),clean(expression(oldHandlers.get(name))),name);
   }
+  assertAuditedMutationWiring(newHandlers);
 });
 test('product floating action reserves footer space outside staff-only shells', () => {
   const css = readFileSync(new URL('../src/design-system/foundation.css', import.meta.url), 'utf8');
   assert.match(css, /\n\.hd-module-fab\.hd-product-module-fab \{\s*bottom: calc\(max\(var\(--hd-footer-height, 0px\), var\(--hd-bottom-nav-height, 4rem\)\)\s*\+ var\(--hd-space-3, 0\.75rem\)\);\s*\}/);
+});
+
+test('actual canonical expense parents retain tenant and asset guards before any persistence or write-plan staging',async()=>{
+  const writes=[],writePlan=[],base={isVpsStagingMode:false,firebaseUser:{uid:'actor'},myCompanyId:'tenant',assets:[],currentUser:{id:'actor'},parseLooseMoneyValue:Number,
+    saveDataDocument:async(...args)=>{writes.push(args);}};
+  await assert.rejects(appFunction('handleAddExpense',base)('actor',{clientMutationId:'expense',assetId:'foreign',amount:50000},writePlan),/công ty/);
+  await assert.rejects(appFunction('handleEditExpense',{...base,rawExpenses:[{id:'expense',companyId:'foreign'}]})('expense',{},writePlan),/công ty/);
+  await assert.rejects(appFunction('handleEditExpense',{...base,rawExpenses:[{id:'expense',companyId:'tenant'}]})('expense',{assetId:'foreign'},writePlan),/công ty/);
+  assert.deepEqual(writes,[]);assert.deepEqual(writePlan,[]);
 });

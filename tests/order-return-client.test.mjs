@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readFileSync } from 'node:fs';
 import { commitOrderReturnTransaction } from '../src/services/orderReturns.js';
+import {readApplicationSource} from '../scripts/helpers/application-source.cjs';
 
 const options = { projectId: 'demo-test', firebaseUser: { getIdToken: async () => 'token' }, appId: 'test',
   request: { orderId: 'order-test', clientMutationId: 'return-same-key' } };
@@ -27,11 +27,12 @@ test('return requires a matching server receipt', async () => {
 });
 
 test('return UI retains the pending mutation until server success', () => {
-  const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
+  const source = readApplicationSource();
   const start = source.indexOf('const saveOrderReturnEditor = async');
   const editor = source.slice(start, source.indexOf('const openOrderItemEditor', start));
   assert.match(editor, /returnPendingCommandRef\.current\?\.key !== requestKey/);
-  assert.match(editor, /clientMutationId: returnPendingCommandRef\.current\.clientMutationId/);
-  assert.ok(editor.indexOf('returnPendingCommandRef.current = null') > editor.indexOf('await onReturnOrder'));
+  assert.match(editor, /id: returnPendingCommandRef\.current\.id/);
+  assert.match(editor, /filter\(record => record.id !== nextRecord.id\)/);
+  assert.ok(editor.indexOf('returnPendingCommandRef.current = null') > editor.indexOf('await commitOrderEdit'));
   assert.doesNotMatch(editor.slice(editor.indexOf('catch (error)')), /returnPendingCommandRef\.current = null/);
 });

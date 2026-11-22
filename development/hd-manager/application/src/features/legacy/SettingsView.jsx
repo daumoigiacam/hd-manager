@@ -7,6 +7,10 @@ import { isVpsMode } from "@hd/hd-connect-runtime";
 import CompanyBankAccounts from "../settings/CompanyBankAccounts.jsx";
 import EmployeeReviewSettings from "../settings/EmployeeReviewSettings.jsx";
 import {isEmployeeReviewEnabled} from "../../utils/companyEmployeeReviews.js";
+import {useSettingsSave} from "../../hooks/useSettingsSave.js";
+import {settingsInteger, settingsMoney, settingsPercent} from "../../utils/settingsFormValidation.js";
+import {createSettingsSaveController} from "../../services/settingsSaveController.js";
+import {getCompanyBankAccounts} from "../settings/companyBankAccounts.js";
 // Transitional bundle boundary. Only stable local module bindings are injected;
 // all actor/company/business data continues to arrive through current props.
 // Generated binding contract is checked against the real source AST.
@@ -14,6 +18,7 @@ export function createSettingsView(runtime) {
   const {BANK_ID_OPTIONS,DEFAULT_CUSTOMER_CARE_SETTINGS,DEFAULT_CUSTOMER_LOYALTY_SETTINGS,DEFAULT_INVOICE_TRANSFER_PROFILE,LazyIdentitySecurityCenter,RESET_DATA_SCOPE_OPTIONS,SALARY_ADVANCE_DEPARTMENT_OPTIONS,ZaloCampaignPanel,ZaloDispatcherPanel,ZaloInboxPanel,ZaloOrderRequestPanel,buildBackupFilename,buildSalaryAdvanceSettingsForm,countBackupRecords,describeSalaryAdvanceLimitInput,formatCurrency,formatInputCurrency,getAutoBackupStateForCompany,getCustomerCareSettings,getCustomerLoyaltySettings,getFriendlyFirebaseErrorMessage,getInvoiceTransferProfile,getTodayString,getWarehouseOrderAutoCancelDays,identitySecurityApi,isOrderCodeAutoMatchEnabled,normalizeResetDateKey,parseInputCurrency,parseSalaryAdvancePercentSettingInput,readFileAsText,shareContentFile} = runtime;
   function SettingsView({
   currentUser,
+  readIdentity = '',
   onGetIdentityToken,
   onLogout,
   isAccounting,
@@ -55,6 +60,7 @@ export function createSettingsView(runtime) {
   canManageLoyaltySettings = false,
   canManageCustomerCareSettings = false,
   canManageWarehouseSettings = false,
+  canManageQuickActionDefaults = false,
   canConfigureSalaryAdvanceLimit = false,
   canBackupData = false,
   canRestoreData = false,
@@ -69,7 +75,15 @@ export function createSettingsView(runtime) {
   const [activeSettingsPanel, setActiveSettingsPanel] = useState('');
   const [bankAccountDraft, setBankAccountDraft] = useState(null);
   const [careRuleId, setCareRuleId] = useState('');
+  const saveScope = JSON.stringify([readIdentity, currentCompany?.id, employee?.id, canManageBankAccounts, canManagePaymentQr, canManageLoyaltySettings, canManageCustomerCareSettings, canManageWarehouseSettings, canManageQuickActionDefaults, canConfigureSalaryAdvanceLimit, canBackupData, canRestoreData, canResetCompanyData, canManageEmployeeReviewSettings]);
+  const settingsSave = useSettingsSave(saveScope, onUpdateCompanySettings);
+  const dataSaveRef = useRef(null);
+  if (!dataSaveRef.current) dataSaveRef.current = createSettingsSaveController({isCurrent: value => settingsSave.isCurrent(value)});
+  const settingsBaseRef = useRef(currentCompany);
+  const operationLock = useRef(false);
+  const [isSavingPanel, setIsSavingPanel] = useState(false);
   useAppScreenBack(() => {
+    if (settingsSave.isBusy() || operationLock.current) return true;
     if (activeSettingsPanel === 'care' && careRuleId) {
       setCareRuleId('');
       return true;
@@ -136,8 +150,12 @@ export function createSettingsView(runtime) {
   const [bubbleForm, setBubbleForm] = useState(() => ({
     floatingQuickActionEnabled: currentCompany?.floatingQuickActionEnabled !== false
   }));
+  useEffect(() => { setLoyaltySaveStatus(''); }, [loyaltyForm]);
+  useEffect(() => { setWarehouseSaveStatus(''); }, [warehouseForm]);
+  useEffect(() => { setAdvanceSaveStatus(''); }, [advanceForm]);
+  useEffect(() => { setBubbleSaveStatus(''); }, [bubbleForm]);
 
-  useEffect(() => {
+  const refreshSettingsForms = () => {
     const profile = getInvoiceTransferProfile(currentCompany);
     const loyaltySettings = getCustomerLoyaltySettings(currentCompany);
     const customerCareSettings = getCustomerCareSettings(currentCompany);
@@ -179,7 +197,44 @@ export function createSettingsView(runtime) {
     setBubbleSaveStatus('');
     setBackupStatus('');
     setResetStatus('');
-  }, [currentCompany]);
+  };
+  useEffect(() => {
+    // Realtime updates refresh the menu, but must not replace an open draft.
+    if (!activeSettingsPanel) refreshSettingsForms();
+  }, [currentCompany, activeSettingsPanel]);
+  useEffect(() => {
+    setActiveSettingsPanel(''); setBankAccountDraft(null); setCareRuleId('');
+    settingsBaseRef.current = currentCompany;
+    setIsSavingPanel(false);
+  }, [saveScope]);
+
+  const saveScopedSettings = async (patch, options = {}) => {
+    const scope = settingsSave.scope;
+    if (settingsSave.isBusy()) throw Object.assign(new Error('Đang chờ xác nhận lần lưu trước.'), {code: 'settings/save-busy'});
+    setIsSavingPanel(true);
+    try {
+      const base = options.baseCompany || settingsBaseRef.current;
+      const result = await settingsSave.save(patch, base);
+      if (settingsSave.isCurrent(scope)) settingsBaseRef.current = {...base, ...patch};
+      return result;
+    }
+    finally { if (settingsSave.isCurrent(scope)) setIsSavingPanel(false); }
+  };
+  const submitSettingsPatch = async (patch, setStatus, successMessage) => {
+    if (settingsSave.isBusy()) return;
+    const scope = settingsSave.scope;
+    setStatus('');
+    try {
+      await saveScopedSettings(patch);
+      if (settingsSave.isCurrent(scope)) setStatus(successMessage);
+    } catch (error) {
+      if (settingsSave.isCurrent(scope)) setStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể lưu cài đặt. Vui lòng thử lại.'));
+    }
+  };
+  const saveSettingsData = (kind, payload, save) => dataSaveRef.current.save({
+    scope: saveScope, patch: {[kind]: payload}, baseCompany: {},
+    save: (command, options) => save(command[kind], {clientCommandId: options.clientCommandId, clientMutationAt: options.clientMutationAt})
+  });
 
   const hasBankConfig = Boolean(
     bankForm.bankId?.trim() &&
@@ -190,9 +245,11 @@ export function createSettingsView(runtime) {
   const sepayEffectiveAccountNumber = bankForm.sepayUseVirtualAccount && bankForm.sepayVirtualAccountNumber?.trim()
     ? bankForm.sepayVirtualAccountNumber.trim().replace(/\s+/g, '').toUpperCase()
     : bankForm.bankAccountNumber?.trim().replace(/\s+/g, '');
-  const bankAccountDescription = hasBankConfig
-    ? `${bankForm.bankName || 'Ngân hàng'} • ${sepayEffectiveAccountNumber || bankForm.bankAccountNumber}${sepayEffectiveAccountNumber && sepayEffectiveAccountNumber !== bankForm.bankAccountNumber ? ' (VA)' : ''}`
-    : 'QR và tài khoản nhận tiền';
+  const savedBankAccounts = getCompanyBankAccounts(currentCompany);
+  const savedPrimaryBank = savedBankAccounts.find(account => account.id === currentCompany?.primaryCompanyBankAccountId) || savedBankAccounts[0];
+  const bankAccountDescription = savedPrimaryBank?.bankAccountNumber
+    ? `${savedPrimaryBank.bankName || 'Ngân hàng'} • ${savedPrimaryBank.sepayUseVirtualAccount && savedPrimaryBank.sepayVirtualAccountNumber || savedPrimaryBank.bankAccountNumber}`
+    : 'Chưa cài tài khoản nhận tiền';
   const bankStatusClasses = hasBankConfig
     ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
     : 'bg-gray-100 text-gray-500 border-gray-200';
@@ -218,8 +275,8 @@ export function createSettingsView(runtime) {
     ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
     : 'bg-gray-100 text-gray-500 border-gray-200';
   const canManageBankTransferSettings = Boolean(canManageBankAccounts || canManagePaymentQr);
-  const canOpenBankPaymentCenter = Boolean(canViewBankPayments || canManageBankTransferSettings || isAccounting);
-  const canManageSalaryAdvanceSettings = Boolean(canConfigureSalaryAdvanceLimit || isAccounting);
+  const canOpenBankPaymentCenter = Boolean(canViewBankPayments);
+  const canManageSalaryAdvanceSettings = Boolean(canConfigureSalaryAdvanceLimit);
   const canAccessSettings = Boolean(
     currentUser ||
     isAccounting ||
@@ -238,15 +295,15 @@ export function createSettingsView(runtime) {
   const settingsPanels = [
     { id: 'security', label: 'Bảo mật tài khoản', description: 'Mật khẩu, PIN và thiết bị tin cậy', icon: Lock, enabled: Boolean(currentUser) },
     { id: 'employee_reviews', label: 'Đánh giá nhân sự', description: isEmployeeReviewEnabled(currentCompany) ? 'Đang bật' : 'Đang tắt', icon: Star, enabled: canManageEmployeeReviewSettings },
-    { id: 'account', label: 'Tài khoản', description: bankAccountDescription, icon: CreditCard, enabled: canManageBankTransferSettings || isAccounting },
+    { id: 'account', label: 'Tài khoản', description: bankAccountDescription, icon: CreditCard, enabled: canManageBankTransferSettings },
     { id: 'bank_payments', label: 'Ngân hàng', description: 'SePay, giao dịch, đối soát', icon: Wallet, enabled: canOpenBankPaymentCenter },
-    { id: 'loyalty', label: 'Tích điểm', description: loyaltyForm.customerLoyaltyEnabled ? 'Đang bật' : 'Đang tắt', icon: Gift, enabled: canManageLoyaltySettings || isAccounting },
-    { id: 'care', label: 'Nhắc khách hàng', description: 'Tin nhắn tự động', icon: Bell, enabled: canManageCustomerCareSettings || isAccounting },
-    { id: 'warehouse', label: 'Xu\u1ea5t kho', description: warehouseAutoCancelDaysPreview > 0 ? `T\u1ef1 \u1ea9n sau ${warehouseAutoCancelDaysPreview} ng\u00e0y` : 'Kh\u00f4ng t\u1ef1 \u1ea9n \u0111\u01a1n \u0111\u1eb7t', icon: Archive, enabled: canManageWarehouseSettings || isAccounting },
+    { id: 'loyalty', label: 'Tích điểm', description: loyaltyForm.customerLoyaltyEnabled ? 'Đang bật' : 'Đang tắt', icon: Gift, enabled: canManageLoyaltySettings },
+    { id: 'care', label: 'Nhắc khách hàng', description: 'Tin nhắn tự động', icon: Bell, enabled: canManageCustomerCareSettings },
+    { id: 'warehouse', label: 'Xu\u1ea5t kho', description: warehouseAutoCancelDaysPreview > 0 ? `T\u1ef1 \u1ea9n sau ${warehouseAutoCancelDaysPreview} ng\u00e0y` : 'Kh\u00f4ng t\u1ef1 \u1ea9n \u0111\u01a1n \u0111\u1eb7t', icon: Archive, enabled: canManageWarehouseSettings },
     { id: 'salary_advance', label: 'Ứng lương', description: advanceLimitPreview, icon: Banknote, enabled: canManageSalaryAdvanceSettings },
-    { id: 'bubble', label: 'Bong bóng +', description: bubbleForm.floatingQuickActionEnabled ? 'Đang bật' : 'Đang tắt', icon: PlusCircle, enabled: isAccounting },
-    { id: 'backup', label: 'Sao lưu/khôi phục', description: 'Xuất file hoặc nhập lại dữ liệu', icon: ArchiveRestore, enabled: canBackupData || canRestoreData || isAccounting },
-    { id: 'reset', label: 'Reset dữ liệu', description: 'Xóa riêng từng phạm vi', icon: Database, enabled: canResetCompanyData || isAccounting }
+    { id: 'bubble', label: 'Bong bóng +', description: bubbleForm.floatingQuickActionEnabled ? 'Đang bật' : 'Đang tắt', icon: PlusCircle, enabled: canManageQuickActionDefaults },
+    { id: 'backup', label: 'Sao lưu/khôi phục', description: 'Xuất file hoặc nhập lại dữ liệu', icon: ArchiveRestore, enabled: canBackupData || canRestoreData },
+    { id: 'reset', label: 'Reset dữ liệu', description: 'Xóa riêng từng phạm vi', icon: Database, enabled: canResetCompanyData }
   ].filter(panel => panel.enabled);
   const safeActiveSettingsPanel = settingsPanels.some(panel => panel.id === activeSettingsPanel)
     ? activeSettingsPanel
@@ -305,26 +362,26 @@ export function createSettingsView(runtime) {
       setLoyaltySaveStatus('Bạn chưa được cấp quyền chỉnh sửa tích điểm khách hàng.');
       return;
     }
+    try {
+    const mode = loyaltyForm.loyaltyEarnMode === 'revenue_percent' ? 'revenue_percent' : 'fixed';
+    const patch = {
+      customerLoyaltyEnabled: Boolean(loyaltyForm.customerLoyaltyEnabled),
+      loyaltyEarnMode: mode,
+      ...(mode === 'revenue_percent'
+        ? {loyaltyRevenuePercent: settingsPercent(loyaltyForm.loyaltyRevenuePercent)}
+        : {loyaltyEarnAmountPerPoint: settingsMoney(loyaltyForm.loyaltyEarnAmountPerPoint, 'Tiền để được 1 điểm')}),
+      loyaltyRedeemValuePerPoint: settingsMoney(loyaltyForm.loyaltyRedeemValuePerPoint, 'Giá trị quy đổi 1 điểm'),
+      loyaltyEligibilityConditions: normalizeLoyaltyEligibilityConditions(loyaltyForm.loyaltyEligibilityConditions)
+    };
+    if (settingsSave.isBusy()) return;
     loyaltySaveInFlight.current = true;
     setIsSavingLoyalty(true);
-    setLoyaltySaveStatus('Đang chờ máy chủ xác nhận...');
-    try {
-    const result = await onUpdateCompanySettings?.({
-      customerLoyaltyEnabled: Boolean(loyaltyForm.customerLoyaltyEnabled),
-      loyaltyEarnMode: loyaltyForm.loyaltyEarnMode === 'revenue_percent' ? 'revenue_percent' : 'fixed',
-      loyaltyRevenuePercent: Math.min(100, Math.max(0, Number(loyaltyForm.loyaltyRevenuePercent) || 0)),
-      loyaltyEarnAmountPerPoint: parseInputCurrency(loyaltyForm.loyaltyEarnAmountPerPoint) || DEFAULT_CUSTOMER_LOYALTY_SETTINGS.earnAmountPerPoint,
-      loyaltyRedeemValuePerPoint: parseInputCurrency(loyaltyForm.loyaltyRedeemValuePerPoint) || DEFAULT_CUSTOMER_LOYALTY_SETTINGS.redeemValuePerPoint,
-      loyaltyEligibilityConditions: normalizeLoyaltyEligibilityConditions(loyaltyForm.loyaltyEligibilityConditions)
-    });
-    setLoyaltySaveStatus(result?.success ? 'Đã lưu cài đặt tích điểm khách hàng.' : (result?.message || 'Không thể lưu cài đặt tích điểm.'));
+    await submitSettingsPatch(patch, setLoyaltySaveStatus, 'Đã lưu cài đặt tích điểm khách hàng.');
     } catch (error) {
-      setLoyaltySaveStatus(error?.code === 'firestore/sync-pending'
-        ? 'Máy chủ chưa xác nhận. Cài đặt đang chờ đồng bộ; vui lòng kiểm tra kết nối mạng.'
-        : getFriendlyFirebaseErrorMessage(error, 'Không thể lưu cài đặt tích điểm. Vui lòng thử lại.'));
+      setLoyaltySaveStatus(error.message);
     } finally {
       loyaltySaveInFlight.current = false;
-      setIsSavingLoyalty(false);
+      if (settingsSave.isCurrent(saveScope)) setIsSavingLoyalty(false);
     }
   };
 
@@ -348,11 +405,12 @@ export function createSettingsView(runtime) {
       setWarehouseSaveStatus('B\u1ea1n ch\u01b0a \u0111\u01b0\u1ee3c c\u1ea5p quy\u1ec1n c\u00e0i \u0111\u1eb7t xu\u1ea5t kho.');
       return;
     }
-    const autoCancelDays = Math.max(0, parseInt(warehouseForm.warehouseOrderAutoCancelDays, 10) || 0);
-    const result = await onUpdateCompanySettings?.({
+    try {
+    const autoCancelDays = settingsInteger(warehouseForm.warehouseOrderAutoCancelDays, {min: 0, blank: 0, label: 'Số ngày tự ẩn đơn đặt'});
+    await submitSettingsPatch({
       warehouseOrderAutoCancelDays: autoCancelDays
-    });
-    setWarehouseSaveStatus(result?.success ? '\u0110\u00e3 l\u01b0u c\u00e0i \u0111\u1eb7t t\u1ef1 \u1ea9n \u0111\u01a1n \u0111\u1eb7t.' : (result?.message || 'Kh\u00f4ng th\u1ec3 l\u01b0u c\u00e0i \u0111\u1eb7t xu\u1ea5t kho.'));
+    }, setWarehouseSaveStatus, 'Đã lưu cài đặt tự ẩn đơn đặt.');
+    } catch (error) { setWarehouseSaveStatus(error.message); }
   };
 
   const handleAdvanceSettingSubmit = async (event) => {
@@ -375,36 +433,36 @@ export function createSettingsView(runtime) {
       }
       nextPercentByDepartment[department.key] = parsed.percent;
     }
-    const result = await onUpdateCompanySettings?.({
+    await submitSettingsPatch({
       salaryAdvancePercent: companyLimit.percent,
       salaryAdvancePercentByDepartment: nextPercentByDepartment
-    });
-    setAdvanceSaveStatus(result?.success
-      ? 'Đã lưu cấu hình ứng lương. Bỏ trống nghĩa là nhân viên được nhập số tiền muốn ứng và chờ duyệt.'
-      : (result?.message || 'Không thể lưu cấu hình ứng lương.'));
+    }, setAdvanceSaveStatus, 'Đã lưu cấu hình ứng lương. Bỏ trống nghĩa là nhân viên được nhập số tiền muốn ứng và chờ duyệt.');
   };
 
   const handleBubbleSettingSubmit = async (event) => {
     event.preventDefault();
-    if (!isAccounting) {
+    if (!canManageQuickActionDefaults) {
       setBubbleSaveStatus('Bạn chưa được cấp quyền cài đặt bong bóng +.');
       return;
     }
-    const result = await onUpdateCompanySettings?.({
+    await submitSettingsPatch({
       floatingQuickActionEnabled: Boolean(bubbleForm.floatingQuickActionEnabled)
-    });
-    setBubbleSaveStatus(result?.success ? 'Đã lưu cài đặt bong bóng +.' : (result?.message || 'Không thể lưu cài đặt bong bóng +.'));
+    }, setBubbleSaveStatus, 'Đã lưu cài đặt bong bóng +.');
   };
 
   const handleCreateBackupFile = async () => {
+    if (operationLock.current || settingsSave.isBusy()) return;
     if (!canBackupData) {
       setBackupStatus('Bạn chưa được cấp quyền sao lưu dữ liệu.');
       return;
     }
+    const scope = saveScope;
+    operationLock.current = true;
     try {
       setIsBackingUp(true);
       setBackupStatus('');
       const result = await onCreateCompanyBackup?.();
+      if (!settingsSave.isCurrent(scope)) return;
       if (!result?.success || !result.backup) {
         setBackupStatus(result?.message || 'Không thể tạo file sao lưu.');
         return;
@@ -417,6 +475,7 @@ export function createSettingsView(runtime) {
         text: 'File sao lưu dữ liệu HD Manager',
         dialogTitle: 'Lưu hoặc chia sẻ file sao lưu'
       });
+      if (!settingsSave.isCurrent(scope)) return;
       if (shareResult.status === 'shared') {
         setBackupStatus(`Đã tạo file sao lưu ${result.count || 0} bản ghi và mở bảng chia sẻ.`);
       } else if (shareResult.status === 'saved') {
@@ -429,9 +488,10 @@ export function createSettingsView(runtime) {
         setBackupStatus('Không thể xuất file sao lưu trên thiết bị này.');
       }
     } catch (error) {
-      setBackupStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể tạo file sao lưu.'));
+      if (settingsSave.isCurrent(scope)) setBackupStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể tạo file sao lưu.'));
     } finally {
-      setIsBackingUp(false);
+      operationLock.current = false;
+      if (settingsSave.isCurrent(scope)) setIsBackingUp(false);
     }
   };
 
@@ -439,15 +499,19 @@ export function createSettingsView(runtime) {
     const file = event.target.files?.[0];
     if (event.target) event.target.value = '';
     if (!file) return;
+    if (operationLock.current || settingsSave.isBusy()) return;
     if (!canRestoreData) {
       setBackupStatus('Bạn chưa được cấp quyền khôi phục dữ liệu.');
       return;
     }
 
+    const scope = saveScope;
+    operationLock.current = true;
     try {
       setIsRestoringBackup(true);
       setBackupStatus('');
       const rawText = await readFileAsText(file);
+      if (!settingsSave.isCurrent(scope)) return;
       const parsedBackup = JSON.parse(rawText);
       const recordCount = countBackupRecords(parsedBackup);
       if (recordCount <= 0) {
@@ -459,16 +523,22 @@ export function createSettingsView(runtime) {
         setBackupStatus('Đã hủy khôi phục dữ liệu.');
         return;
       }
-      const result = await onRestoreCompanyBackup?.(parsedBackup);
+      if (!settingsSave.isCurrent(scope)) return;
+      const result = await saveSettingsData('restore', parsedBackup, (payload, metadata) => onRestoreCompanyBackup?.(payload, metadata));
+      if (!settingsSave.isCurrent(scope)) return;
       setBackupStatus(result?.message || (result?.success ? 'Đã khôi phục dữ liệu.' : 'Không thể khôi phục dữ liệu.'));
     } catch (error) {
-      setBackupStatus(getFriendlyFirebaseErrorMessage(error, 'File sao lưu không hợp lệ hoặc không thể khôi phục.'));
+      if (settingsSave.isCurrent(scope)) setBackupStatus(error?.name === 'SyntaxError'
+        ? 'File sao lưu không phải JSON hợp lệ. Vui lòng chọn lại file.'
+        : getFriendlyFirebaseErrorMessage(error, 'File sao lưu không hợp lệ hoặc không thể khôi phục.'));
     } finally {
-      setIsRestoringBackup(false);
+      operationLock.current = false;
+      if (settingsSave.isCurrent(scope)) setIsRestoringBackup(false);
     }
   };
 
   const handleResetDemoData = async () => {
+    if (operationLock.current || settingsSave.isBusy()) return;
     if (!canResetCompanyData) {
       setResetStatus('Bạn chưa được cấp quyền reset dữ liệu.');
       return;
@@ -494,19 +564,22 @@ export function createSettingsView(runtime) {
     if (!firstConfirm) return;
     const secondConfirm = window.confirm(`Xác nhận lần cuối: ${selectedLabels}${resetDateText} sẽ bị xóa và không thể hoàn tác. Bạn vẫn muốn reset chứ?`);
     if (!secondConfirm) return;
+    if (!settingsSave.isCurrent(saveScope)) return;
 
+    const scope = saveScope;
+    operationLock.current = true;
     try {
       setIsResetting(true);
       setResetStatus('');
-      const result = await onResetCompanyDemoData?.(selectedResetScopes, {
-        dateFrom: normalizedResetDateFrom,
-        dateTo: normalizedResetDateTo
-      });
+      const result = await saveSettingsData('reset', {scopes: selectedResetScopes, dateFrom: normalizedResetDateFrom, dateTo: normalizedResetDateTo},
+        (payload, metadata) => onResetCompanyDemoData?.(payload.scopes, {dateFrom: payload.dateFrom, dateTo: payload.dateTo, ...metadata}));
+      if (!settingsSave.isCurrent(scope)) return;
       setResetStatus(result?.message || (result?.success ? 'Đã reset dữ liệu.' : 'Không thể reset dữ liệu.'));
     } catch (error) {
-      setResetStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể reset dữ liệu.'));
+      if (settingsSave.isCurrent(scope)) setResetStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể reset dữ liệu.'));
     } finally {
-      setIsResetting(false);
+      operationLock.current = false;
+      if (settingsSave.isCurrent(scope)) setIsResetting(false);
     }
   };
 
@@ -533,6 +606,8 @@ export function createSettingsView(runtime) {
                   setShowWarehouseSettings(true);
                   setShowAdvanceSettings(true);
                   setShowBubbleSettings(true);
+                  settingsBaseRef.current = currentCompany;
+                  refreshSettingsForms();
                   setActiveSettingsPanel(panel.id);
                 }}
                 className="flex w-full items-center gap-3 px-3 py-4 text-left text-gray-800 hover:bg-gray-50"
@@ -553,16 +628,17 @@ export function createSettingsView(runtime) {
 
   return (
     <div data-settings-page={safeActiveSettingsPanel} className="space-y-4 pb-20 [&>section]:rounded-none [&>section]:border-0 [&>section]:shadow-none">
-      {safeActiveSettingsPanel === 'employee_reviews' && <EmployeeReviewSettings key={currentCompany?.id || currentCompany?.companyId || ''} company={currentCompany} canManage={canManageEmployeeReviewSettings} onSave={onUpdateCompanySettings} />}
+      <fieldset disabled={isSavingPanel} className="contents">
+      {safeActiveSettingsPanel === 'employee_reviews' && <EmployeeReviewSettings key={saveScope} company={currentCompany} canManage={canManageEmployeeReviewSettings} onSave={saveScopedSettings} />}
 
       {safeActiveSettingsPanel === 'security' && <React.Suspense fallback={<div aria-busy="true">Đang tải...</div>}><LazyIdentitySecurityCenter standalone identityApi={identitySecurityApi} identityUser={currentUser} vpsMode={isVpsMode} onGetIdentityToken={onGetIdentityToken} onLogout={onLogout} /></React.Suspense>}
-      {safeActiveSettingsPanel === 'account' && <CompanyBankAccounts company={currentCompany} banks={BANK_ID_OPTIONS} canEdit={canManageBankTransferSettings} onSave={onUpdateCompanySettings} draft={bankAccountDraft} setDraft={setBankAccountDraft} />}
+      {safeActiveSettingsPanel === 'account' && <CompanyBankAccounts key={saveScope} scope={saveScope} company={currentCompany} banks={BANK_ID_OPTIONS} canEdit={canManageBankTransferSettings} canManageAccounts={canManageBankAccounts} canManageQr={canManagePaymentQr} onSave={saveScopedSettings} draft={bankAccountDraft} setDraft={setBankAccountDraft} />}
 
 
       {safeActiveSettingsPanel === 'loyalty' && <section className="rounded-3xl border border-gray-100 bg-white p-4 shadow-sm hd-soft-red-outline">
         <div className="flex min-h-16 items-center justify-between gap-4 border-b border-gray-200 pb-3">
           <span id="loyalty-status-label" className="text-sm font-bold text-gray-800">Trạng thái</span>
-          <button type="button" role="switch" aria-labelledby="loyalty-status-label" aria-checked={loyaltyForm.customerLoyaltyEnabled} disabled={!canManageLoyaltySettings && !isAccounting} onClick={() => setLoyaltyForm(prev => ({ ...prev, customerLoyaltyEnabled: !prev.customerLoyaltyEnabled }))} className="loyalty-power-switch" data-on={loyaltyForm.customerLoyaltyEnabled}>
+          <button type="button" role="switch" aria-labelledby="loyalty-status-label" aria-checked={loyaltyForm.customerLoyaltyEnabled} disabled={!canManageLoyaltySettings} onClick={() => setLoyaltyForm(prev => ({ ...prev, customerLoyaltyEnabled: !prev.customerLoyaltyEnabled }))} className="loyalty-power-switch" data-on={loyaltyForm.customerLoyaltyEnabled}>
             <span className="loyalty-power-switch__label" aria-hidden="true">{loyaltyForm.customerLoyaltyEnabled ? 'Bật' : 'Tắt'}</span>
             <span className="loyalty-power-switch__thumb" aria-hidden="true" />
           </button>
@@ -583,8 +659,9 @@ export function createSettingsView(runtime) {
                 <span className="mb-1 block text-xs font-bold text-gray-500">Tiền để được 1 điểm</span>
                 <input
                   type="tel"
+                  disabled={loyaltyForm.loyaltyEarnMode === 'revenue_percent'}
                   value={loyaltyForm.loyaltyEarnAmountPerPoint}
-                  onChange={(event) => setLoyaltyForm(prev => ({ ...prev, loyaltyEarnAmountPerPoint: formatInputCurrency(event.target.value) }))}
+                  onChange={(event) => setLoyaltyForm(prev => ({ ...prev, loyaltyEarnAmountPerPoint: event.target.value }))}
                   className="w-full rounded-xl border border-gray-300 p-3 text-sm font-bold text-amber-700 outline-none focus:ring-2 focus:ring-amber-500"
                   placeholder="100.000"
                 />
@@ -595,7 +672,7 @@ export function createSettingsView(runtime) {
                 <input
                   type="tel"
                   value={loyaltyForm.loyaltyRedeemValuePerPoint}
-                  onChange={(event) => setLoyaltyForm(prev => ({ ...prev, loyaltyRedeemValuePerPoint: formatInputCurrency(event.target.value) }))}
+                  onChange={(event) => setLoyaltyForm(prev => ({ ...prev, loyaltyRedeemValuePerPoint: event.target.value }))}
                   className="w-full rounded-xl border border-gray-300 p-3 text-sm font-bold text-amber-700 outline-none focus:ring-2 focus:ring-amber-500"
                   placeholder="1.000"
                 />
@@ -664,7 +741,7 @@ export function createSettingsView(runtime) {
         )}
       </section>}
 
-{safeActiveSettingsPanel === 'care' && <CustomerCareSettings company={currentCompany} selected={careRuleId} onSelect={setCareRuleId} onSave={onUpdateCompanySettings} canEdit={canManageCustomerCareSettings} />}
+{safeActiveSettingsPanel === 'care' && <CustomerCareSettings key={saveScope} scope={saveScope} company={currentCompany} selected={careRuleId} onSelect={setCareRuleId} onSave={saveScopedSettings} canEdit={canManageCustomerCareSettings} />}
 
       {safeActiveSettingsPanel === 'warehouse' && <section className="rounded-3xl border border-amber-100 bg-white p-4 shadow-sm hd-soft-red-outline">
         <div className="flex items-start justify-between gap-3">
@@ -713,7 +790,7 @@ export function createSettingsView(runtime) {
                   value={warehouseForm.warehouseOrderAutoCancelDays}
                   onChange={(event) => setWarehouseForm(prev => ({
                     ...prev,
-                    warehouseOrderAutoCancelDays: event.target.value.replace(/[^\d]/g, '')
+                    warehouseOrderAutoCancelDays: event.target.value
                   }))}
                   className="min-w-0 flex-1 bg-transparent p-3 text-center text-sm font-black text-amber-800 outline-none disabled:bg-gray-100"
                   placeholder="0"
@@ -769,7 +846,7 @@ export function createSettingsView(runtime) {
                 value={advanceForm.salaryAdvancePercent}
                 onChange={(event) => setAdvanceForm(prev => ({
                   ...prev,
-                  salaryAdvancePercent: event.target.value.replace(/[^\d,.]/g, '')
+                  salaryAdvancePercent: event.target.value
                 }))}
                 className="w-full rounded-xl border border-orange-200 bg-white p-3 text-center text-sm font-black text-orange-800 outline-none focus:ring-2 focus:ring-orange-400 disabled:bg-gray-100"
                 placeholder="Bỏ trống = không giới hạn"
@@ -792,7 +869,7 @@ export function createSettingsView(runtime) {
                         disabled={!canManageSalaryAdvanceSettings}
                         value={advanceForm.salaryAdvancePercentByDepartment?.[department.key] ?? ''}
                         onChange={(event) => {
-                          const nextValue = event.target.value.replace(/[^\d,.]/g, '');
+                          const nextValue = event.target.value;
                           setAdvanceForm(prev => ({
                             ...prev,
                             salaryAdvancePercentByDepartment: {
@@ -1143,6 +1220,7 @@ export function createSettingsView(runtime) {
           </div>
         </div>
       </section>}
+      </fieldset>
     </div>
   );
 }

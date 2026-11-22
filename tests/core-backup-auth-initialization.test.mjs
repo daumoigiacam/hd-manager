@@ -4,8 +4,9 @@ import { readFileSync } from 'node:fs';
 import { parse } from '@babel/parser';
 
 const source = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
-const app = parse(source, { sourceType: 'module', plugins: ['jsx'] }).program.body
-  .find(node => node.type === 'ExportDefaultDeclaration' && node.declaration.id?.name === 'App').declaration;
+const declarations = parse(source, { sourceType: 'module', plugins: ['jsx'] }).program.body;
+const app = declarations.find(node => node.type === 'FunctionDeclaration' && node.id?.name === 'ApplicationView')
+  || declarations.find(node => node.type === 'ExportDefaultDeclaration' && node.declaration.id?.name === 'App').declaration;
 const names = new Set(['isCustomerSession', 'employeeInfo', 'backupRoleActions',
   'canAutomaticallyBackUpCompany', 'automaticBackupAccessRef']);
 // Preserve authored execution order. Injecting isCustomerSession as a fixture

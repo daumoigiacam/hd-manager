@@ -13,7 +13,7 @@ function fixture(){
     orders:[{id:'opening',date:'2026-10-01',isOpeningDebt:true,outstandingAmount:1},{id:'older',date:'2026-10-02',outstandingAmount:.3},{id:'recent',date:'2026-10-20',outstandingAmount:0}],
     payments:[{id:'pay-old',date:'2026-10-02'},{id:'pay-new',date:'2026-10-21'}],purchaseImports:[],hasPurchaseReconciliation:index%3===0,creditBalance:.4,purchaseDebt:.6}]));
   const employees=[{id:'employee-0',name:'Synthetic manager 0'},{id:'employee-1',name:'Synthetic manager 1'},{id:'driver-a',name:'Synthetic driver',delivery:true}];
-  const bindings={customerLedgerIndex:freeze(ledgers),orders:[],payments:[],safeCustomerWarehouseImports:[],expenses:[],
+  const bindings={financialDataReady:true,customerLedgerIndex:freeze(ledgers),orders:[],payments:[],safeCustomerWarehouseImports:[],expenses:[],
     currentCompany:{id:'tenant-a'},customerPointLookup:new Map(),employees,
     buildCustomerReconciledLedger:()=>{throw Error('Must use the complete shared ledger')},
     calculateCustomerLoyaltySummary:({ledger})=>({currentPoints:Math.floor(ledger.totalPaid),eligibleAmount:ledger.totalPaid,redeemValue:3}),
@@ -51,19 +51,19 @@ test('complete summary cache reuses only exact source identities and verified ac
 
 test('retained readonly directory drops deleted/out-of-scope rows immediately and selected detail rebuilds from current allowed data',()=>{
   const old=[{id:'a',value:'old'},{id:'removed',value:'old'}],EMPTY_CUSTOMER_SUMMARIES=Object.freeze([]);
-  const values={customerSummaryReady:false,customerSummaryProjection:{pending:true,error:null},completedCustomerSummaries:{current:{scope:'actor-a',value:old}},
+  const values={localCustomerSource:null,customerSummaryReady:false,customerSummaryProjection:{pending:true,error:null},completedCustomerSummaries:{current:{scope:'actor-a',value:old}},
     customerSummaryScope:'actor-a',activeCustomerIdSet:new Set(['a']),EMPTY_CUSTOMER_SUMMARIES};
   const summaries=options=>appFunction('customerSummaries',{...values,...options},memo)();
   assert.deepEqual(summaries(),[old[0]]);
   assert.equal(summaries({customerSummaryScope:'actor-b'}),EMPTY_CUSTOMER_SUMMARIES);
   assert.equal(summaries({customerSummaryProjection:{error:Error('failed')}}),EMPTY_CUSTOMER_SUMMARIES);
-  const activeCustomers=[{id:'a',value:'new'}],details={selectedCustomerId:'a',activeCustomers,customerSummaryReady:false,customerSummaries:old,
+  const activeCustomers=[{id:'a',value:'new'}],details={localCustomerSource:null,selectedCustomerId:'a',activeCustomers,customerSummaryReady:false,customerSummaries:old,
     buildCustomerSummary:customer=>({...customer,builtFromCurrent:true})};
   const selected=options=>appFunction('selectedCustomerLive',{...details,...options},memo)();
   assert.deepEqual(selected(),{id:'a',value:'new',builtFromCurrent:true});
   assert.equal(selected({selectedCustomerId:'removed'}),null);
   const source=readApplicationSource();
-  assert(source.includes('<CustomerCRMView key={dashboardPrivacyScope} privacyScope={dashboardPrivacyScope}'));
+  assert(/<CustomerCRMView[^\n]*key=\{dashboardPrivacyScope\}[^\n]*privacyScope=\{dashboardPrivacyScope\}/.test(source),'The customer workspace is keyed and scoped to its verified tenant/actor access.');
   assert(source.includes('aria-busy={customerSummaryProjection.pending}'));
   assert(source.includes('if (!customerDirectoryAvailable) return'));
 });

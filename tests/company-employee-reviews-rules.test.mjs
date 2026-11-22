@@ -4,7 +4,7 @@ import{doc,setDoc,updateDoc,getDoc,getDocFromServer,deleteDoc,serverTimestamp,ru
 const projectId='demo-hdmanager-review-toggle-'+process.pid,appId='review-feature-local-test';
 const endpoint=new URL('http://'+(process.env.FIRESTORE_EMULATOR_HOST||'127.0.0.1:8285'));
 if(!['127.0.0.1','localhost','[::1]'].includes(endpoint.hostname))throw Error('Review feature tests require a loopback Firestore Emulator');
-const env=await initializeTestEnvironment({projectId,firestore:{host:endpoint.hostname,port:Number(endpoint.port),rules:fs.readFileSync('firestore.rules','utf8')}});
+const env=await initializeTestEnvironment({projectId,firestore:{host:endpoint.hostname,port:Number(endpoint.port),rules:fs.readFileSync(new URL('../firestore.rules',import.meta.url),'utf8')}});
 const path=(collection,id)=>`artifacts/${appId}/public/data/${collection}/${id}`;
 const db=(id,company,role='employee')=>env.authenticatedContext(id,{identityId:'identity-'+id,companyId:company,accountType:'employee',appUserId:id,role}).firestore();
 const a=db('owner-a','a','owner'),b=db('owner-b','b','owner'),staff=db('staff-a','a');let passed=0;

@@ -85,10 +85,18 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Run canonical broad-audit regressions
+        run: npm run test:canonical-broad-audit
+
+      - name: Lint canonical broad-audit scope
+        run: npm run lint:canonical-broad-audit
+
       - name: Install Chromium for functional browser checks
         run: npx playwright-core install --with-deps chromium
 
       - name: Run functional test suite
+        env:
+          NODE_OPTIONS: --import=${{ github.workspace }}/scripts/register-canonical-source.mjs
         run: npm run test:all
 
       - name: Verify Firestore payroll rules
@@ -104,7 +112,7 @@ jobs:
         run: npm run test:firestore-sales-commission-tiers
 
       - name: Verify customer product atomic sync and permissions
-        run: npx firebase-tools emulators:exec --only firestore --project demo-customer-product-sync "node tests/customer-product-auto-sync.emulator.mjs"
+        run: npx firebase-tools emulators:exec --config firebase.rules-tests.json --only firestore --project demo-customer-product-sync "node tests/customer-product-auto-sync.emulator.mjs"
 
       - name: Verify password recovery transaction
         run: npm run test:identity:firestore
@@ -115,9 +123,13 @@ jobs:
         run: node --test tests/master-rest-emulator.test.mjs
 
       - name: Performance architecture audit
+        env:
+          NODE_OPTIONS: --import=${{ github.workspace }}/scripts/register-canonical-source.mjs
         run: npm run test:performance
 
       - name: Stress test
+        env:
+          NODE_OPTIONS: --import=${{ github.workspace }}/scripts/register-canonical-source.mjs
         run: npm run test:stress:big
 
       - name: KPI gate

@@ -30,6 +30,7 @@ test('actual source demand is owner-bound, released by the committed view, and d
  assert.match(app,/activeTab==='orders'\?getOrderWorkspaceReadCollections\(orderBackgroundRequested\)/);
  assert.match(orders,/if\(orderViewsReady\)onPrimaryReady\?\.\(\)/);
  assert.match(app,/orderMutationsReady=mainLedgerReady&&orderLedgerSourcesReady/);
- for(const name of ['onAddOrder','onEditOrder','onAddPayment','onDeleteOrder'])assert(app.includes(name+'={(...args)=>runOrderMutation('+name+',args)}'));
+ assert(app.includes('onAddOrder={(...args)=>runOrderCreation(args,orderReadIdentity)}'));
+ for(const name of ['onEditOrder','onAddPayment','onDeleteOrder'])assert(app.includes(name+'={(...args)=>runOrderMutation('+name+',args)}'));
  assert.match(orders,/source === 'warehouse' && \(!canUseWarehouseOrderSource\|\|!warehouseSourcesReady\)/);assert.match(orders,/disabled=\{!warehouseSourcesReady\}/);
 });
