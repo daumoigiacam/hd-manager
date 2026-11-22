@@ -335,7 +335,7 @@ const downloadContentFile = (filename, content, mimeType = 'text/plain;charset=u
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
-  window.URL.revokeObjectURL(objectUrl);
+  window.setTimeout(() => window.URL.revokeObjectURL(objectUrl), 60000);
   return true;
 };
 
