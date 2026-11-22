@@ -94,6 +94,11 @@ jobs:
       - name: Install Chromium for functional browser checks
         run: npx playwright-core install --with-deps chromium
 
+      - name: Verify repeated Web sharing and complete image recovery
+        env:
+          NODE_OPTIONS: --import=${{ github.workspace }}/scripts/register-canonical-source.mjs
+        run: node --test --test-concurrency=1 --test-timeout=90000 tests/share-delivery.browser.mjs
+
       - name: Run functional test suite
         env:
           NODE_OPTIONS: --import=${{ github.workspace }}/scripts/register-canonical-source.mjs
