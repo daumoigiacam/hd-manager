@@ -1,5 +1,13 @@
 export default [
   {
+    files: ['development/hd-manager/application/src/utils/shareDelivery.js',
+      'development/hd-manager/application/src/features/sharing/shareFilesDialog.js',
+      'development/hd-manager/application/src/features/warehouse/shareDispatchSheet.js',
+      'tests/core-share-delivery*.mjs','tests/core-share-entrypoints.test.mjs','tests/fixtures/share-delivery.browser.js'],
+    languageOptions: {ecmaVersion:'latest',sourceType:'module'},
+    rules: {'no-unused-vars':['error',{caughtErrorsIgnorePattern:'^_'}],'no-unreachable':'error','no-dupe-keys':'error'}
+  },
+  {
     files: ['scripts/canonical-source-loader.mjs','scripts/register-canonical-source.mjs','scripts/canonical-source-reads.mjs','scripts/canonical-broad-audit.mjs',
       'scripts/build-payroll-original-domain.mjs','scripts/build-offline-original-domain.mjs','scripts/helpers/employee-home-domain-extraction.mjs',
       'development/hd-manager/application/scripts/helpers/employee-home-domain-extraction.mjs',

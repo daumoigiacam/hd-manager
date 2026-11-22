@@ -1,3 +1,4 @@
+import {deliverShareFiles} from './utils/shareDelivery.js';
 import {buildCommissionCalculation,assertCommissionCalculationReady} from './utils/commissionRevenue.js';
 import {orderCreationIntent,assertOrderCreationReplay} from './utils/orderCreationCommand.js';
 import {restoreHomeSessionReport,saveHomeSessionReport} from './services/homeSessionReport.js';
@@ -4493,91 +4494,19 @@ const saveBlobFile = async (filename, blob) => {
   document.body.removeChild(link);
   // Keep the object URL alive long enough for browsers to finish a download,
   // especially when several share images fall back to downloads together.
-  window.setTimeout(() => window.URL.revokeObjectURL(objectUrl), 2000);
+  window.setTimeout(() => window.URL.revokeObjectURL(objectUrl), 60000);
   return { status: 'downloaded', path: filename };
 };
 
-const shareBlobFile = async ({
-  filename,
-  blob,
-  title = '',
-  text = '',
-  dialogTitle = '',
-  fallbackToDownload = true,
-  preparedNativeFile = null
-}) => {
-  if (!blob) return { status: 'unsupported', path: filename };
-
-  if (Capacitor.getPlatform() !== 'web') {
-    try {
-      let nativeFile = preparedNativeFile?.uri ? preparedNativeFile : null;
-
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        try {
-          if (!nativeFile || attempt > 0) {
-            nativeFile = await writeBlobToShareCache(filename, blob);
-          }
-          const { path, uri } = nativeFile || {};
-          const capability = await CapacitorShare.canShare().catch(() => ({ value: false }));
-          if (capability?.value && uri) {
-            await CapacitorShare.share({
-              title,
-              text,
-              dialogTitle: dialogTitle || title,
-              files: [uri]
-            });
-            return { status: 'shared', path, uri };
-          }
-          if (!fallbackToDownload) return { status: 'unsupported', path, uri };
-          return saveBlobFile(filename, blob);
-        } catch (error) {
-          if (isShareCancelled(error)) {
-            return { status: 'cancelled' };
-          }
-          if (nativeFile === preparedNativeFile && attempt === 0) {
-            recordPerformanceEvent('share_invoice.native_file_rebuilt', { filename }, 'warn');
-            nativeFile = null;
-            continue;
-          }
-          throw error;
-        }
-      }
-    } catch (error) {
-      if (isShareCancelled(error)) {
-        return { status: 'cancelled' };
-      }
-      if (!fallbackToDownload) return { status: 'unsupported', path: filename, error };
-      const saved = await saveBlobFile(filename, blob);
-      return { ...saved, shareError: error };
-    }
-  }
-
-  try {
-    if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
-      const file = new File([blob], filename, { type: blob.type || 'application/octet-stream' });
-      if (!navigator.canShare || navigator.canShare({ files: [file] })) {
-        try {
-          await navigator.share({ title, text, files: [file] });
-        } catch (error) {
-          if (isShareCancelled(error)) {
-            return { status: 'cancelled' };
-          }
-          await navigator.share({ title, files: [file] });
-        }
-        return { status: 'shared', path: filename };
-      }
-    }
-  } catch (error) {
-    if (isShareCancelled(error)) {
-      return { status: 'cancelled' };
-    }
-  }
-
-  if (!fallbackToDownload) return { status: 'unsupported', path: filename };
-  return saveBlobFile(filename, blob);
+const shareBlobFile = async ({ filename, blob, entries, title = '', text = '', dialogTitle = '' }) => {
+  return deliverShareFiles({entries: entries || [{name: filename, blob}], title, text, dialogTitle}, {
+    platform: Capacitor.getPlatform(),
+    canShare: () => CapacitorShare.canShare(),
+    share: options => CapacitorShare.share(options),
+    writeFile: writeBlobToShareCache,
+    saveFile: saveBlobFile
+  });
 };
-
-
 
 const requestGeminiGenerateContent = async (request) => {
   if (!GEMINI_PROXY_ENABLED) {
