@@ -1,4 +1,4 @@
-name: HD Manager full audit release read-only capacity
+name: Owner approved unused Docker build cache cleanup
 on:
   push:
     branches:
@@ -12,9 +12,9 @@ concurrency:
 jobs:
   readonly:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
-      - name: Read current static release metadata and capacity only
+      - name: Recheck idle build cache, prune only old cache and verify protected inventories
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -33,13 +33,52 @@ jobs:
             wOCqgEh4n/8tZa/8zW9kAYQul9xVxWQaSsuZwxE8ioe9AgMBAAE=
             -----END PUBLIC KEY-----
           REMOTE_PROBE: |
-            import subprocess,json,datetime,os
-            commands=[['docker','builder','prune','--help'],['docker','builder','prune','--help','--keep-storage','2GB']]
-            results=[]
-            for command in commands:
-                p=subprocess.run(command,capture_output=True,text=True,timeout=20)
-                results.append({'command':command,'exit':p.returncode,'stdout':p.stdout[:18000],'stderr':p.stderr[:2000]})
-            print(json.dumps({'at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'status':'READ_ONLY_DOCKER_CLI_HELP_COMPLETE','commands':results,'productionChanged':False}))
+            import subprocess,json,os,datetime,hashlib
+            COMMAND=['docker','builder','prune','--all','--force','--filter','until=168h','--keep-storage','2GB']
+            MINIMUM_AFTER_CLEANUP=5*1024**3+117322828
+            result={'at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'scope':'Only unused Docker build cache older than 168 hours; keep 2GB cache','command':COMMAND,'cleanupPerformed':False,'businessDocumentReads':0,'businessDataChanged':False,'imagesDeleted':False,'containersDeleted':False,'volumesDeleted':False,'servicesRestarted':False}
+            def run(args,timeout=20):
+                p=subprocess.run(args,capture_output=True,text=True,timeout=timeout)
+                if p.returncode!=0:raise RuntimeError('DOCKER_COMMAND_FAILED:'+args[1]+':'+str(p.returncode))
+                return p.stdout.strip()
+            def inventory():
+                containers=run(['docker','ps','-a','--no-trunc','--format','{{.ID}}\t{{.Image}}\t{{.Names}}\t{{.State}}']).splitlines()
+                images=sorted(set(run(['docker','image','ls','--all','--no-trunc','--format','{{.ID}}\t{{.Repository}}:{{.Tag}}']).splitlines()))
+                volumes=sorted(run(['docker','volume','ls','--format','{{.Name}}']).splitlines())
+                rows=[line.split('\t') for line in containers]
+                return {'containerIdentities':sorted([row[:3] for row in rows]),'running':sorted([row[0] for row in rows if row[3]=='running']),'images':images,'volumes':volumes}
+            def digest(value):return hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest()
+            def free():
+                s=os.statvfs('/var/www/hd-manager')
+                return s.f_bfree*s.f_frsize
+            try:
+                before=inventory();result['physicalFreeBytesBefore']=free()
+                result['before']={'containers':len(before['containerIdentities']),'runningContainers':len(before['running']),'images':len(before['images']),'volumes':len(before['volumes']),'inventorySha256':digest(before)}
+                if result['physicalFreeBytesBefore']<MINIMUM_AFTER_CLEANUP:
+                    help_text=run(COMMAND+['--help'])
+                    assert all(flag in help_text for flag in ['--all','--force','--filter','--keep-storage']), 'REQUIRED_CACHE_ONLY_FLAGS_UNAVAILABLE'
+                    usage=[json.loads(line) for line in run(['docker','system','df','--format','{{json .}}']).splitlines()]
+                    build=next(row for row in usage if row['Type']=='Build Cache')
+                    assert str(build.get('Active'))=='0', 'ACTIVE_BUILD_BLOCKS_CLEANUP'
+                    result['cleanupAttempted']=True
+                    output=run(COMMAND,timeout=240)
+                    result['cleanupPerformed']=True
+                    result['pruneResultTail']=output[-1800:]
+                after=inventory();result['physicalFreeBytesAfter']=free()
+                assert before['containerIdentities']==after['containerIdentities'], 'CONTAINER_INVENTORY_CHANGED'
+                assert before['images']==after['images'], 'IMAGE_INVENTORY_CHANGED'
+                assert before['volumes']==after['volumes'], 'VOLUME_INVENTORY_CHANGED'
+                assert set(before['running']).issubset(set(after['running'])), 'PREVIOUS_RUNNING_CONTAINER_NOT_RUNNING'
+                result['preservation']={'containerIdentities':True,'images':True,'volumes':True,'previouslyRunningContainers':True}
+                result['physicalReclaimedBytes']=result['physicalFreeBytesAfter']-result['physicalFreeBytesBefore']
+                result['remainingAfterDeploymentBudgetGiB']=(result['physicalFreeBytesAfter']-117322828)/1024**3
+                assert result['physicalFreeBytesAfter']>=MINIMUM_AFTER_CLEANUP, 'CAPACITY_STILL_BELOW_RELEASE_RESERVE'
+                result['status']='CACHE_ONLY_CLEANUP_VERIFIED'
+            except Exception as error:
+                result['status']='CACHE_CLEANUP_STOPPED'
+                result['error']=str(error)[:300]
+                result['cleanupOutcomeUnknown']=result.get('cleanupAttempted',False) and not result['cleanupPerformed']
+            print(json.dumps(result))
         shell: bash
         run: |-
           node --input-type=module <<'HD_READ_ONLY_RELEASE_METADATA'
@@ -71,7 +110,7 @@ jobs:
            const pinned=process.env.VPS_KNOWN_HOSTS;
            if(pinned)fs.writeFileSync(known,pinned,{mode:0o600});
            const args=['-i',keyFile,'-o','IdentitiesOnly=yes','-o','BatchMode=yes','-o','ConnectTimeout=10','-o','ConnectionAttempts=1','-o','LogLevel=ERROR','-o','RequestTTY=no','-o','StrictHostKeyChecking='+(pinned?'yes':'accept-new'),'-o','UserKnownHostsFile='+known,user+'@'+host,'python3 -'];
-           const stdout=execFileSync('ssh',args,{input:process.env.REMOTE_PROBE,encoding:'utf8',timeout:150000,maxBuffer:2*1024*1024,stdio:['pipe','pipe','pipe']});
+           const stdout=execFileSync('ssh',args,{input:process.env.REMOTE_PROBE,encoding:'utf8',timeout:420000,maxBuffer:2*1024*1024,stdio:['pipe','pipe','pipe']});
            result={status:'SSH_READ_COMPLETED',keyFormat,hostTrust:pinned?'EXISTING_KNOWN_HOSTS':'EXISTING_CI_HOST_MATCHED_PRODUCTION_DNS_FIRST_USE_HOSTKEY',payload:JSON.parse(stdout)};
           } catch(error) {
            result={status:'READ_DIAGNOSTIC_FAILED',keyFormat,code:/^[A-Z_]+$/.test(error.message)?error.message:'SSH_OR_PROBE_FAILURE',exitStatus:error.status,stdout:String(error.stdout||'').slice(-20000),stderr:String(error.stderr||'').slice(-12000)};
@@ -86,6 +125,6 @@ jobs:
           const encoded=ciphertext.toString('base64'),parts=Math.ceil(encoded.length/6000);
           for(let i=0;i<parts;i++)console.log('HD502_PART '+i+' '+parts+' '+encoded.slice(i*6000,(i+1)*6000));
           console.log('HD502_STATUS '+result.status);
-          if(result.status!=='SSH_READ_COMPLETED')process.exitCode=1;
+          if(result.status!=='SSH_READ_COMPLETED'||result.payload?.status!=='CACHE_ONLY_CLEANUP_VERIFIED')process.exitCode=1;
 
           HD_READ_ONLY_RELEASE_METADATA
