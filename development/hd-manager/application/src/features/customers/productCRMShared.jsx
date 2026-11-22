@@ -1,3 +1,4 @@
+import {isShareDismissed,deliverShareText} from '../../utils/shareDelivery.js';
 // Shared original App CRM bindings. Declaration order and singleton identities are preserved.
 // Factory/controller imports run only through the existing intent preloader.
 import PreloadedWorkspace from "../../layout/PreloadedWorkspace.jsx";
@@ -363,37 +364,12 @@ const saveContentFile = async (filename, content, mimeType = 'text/plain;charset
   return { status: downloaded ? 'downloaded' : 'unsupported', path: filename };
 };
 
-const isShareCancelled = (error) => error?.name === 'AbortError'
-  || /cancel|abort|đã hủy/i.test(`${error?.message || ''}`);
+const isShareCancelled = isShareDismissed;
 
-const shareTextContent = async ({ title = '', text = '', dialogTitle = '' }) => {
-  try {
-    const capability = await CapacitorShare.canShare().catch(() => ({ value: false }));
-    if (capability?.value) {
-      await CapacitorShare.share({ title, text, dialogTitle: dialogTitle || title });
-      return { status: 'shared' };
-    }
-  } catch (error) {
-    if (isShareCancelled(error)) {
-      return { status: 'cancelled' };
-    }
-  }
-
-  try {
-    if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
-      await navigator.share({ title, text });
-      return { status: 'shared' };
-    }
-  } catch (error) {
-    if (isShareCancelled(error)) {
-      return { status: 'cancelled' };
-    }
-  }
-
-  const copied = await copyTextToClipboard(text);
-  return { status: copied ? 'copied' : 'unsupported' };
-};
-
+const shareTextContent = async ({ title = '', text = '', dialogTitle = '' }) => deliverShareText({title, text, dialogTitle: dialogTitle || title}, {
+  platform: Capacitor.getPlatform(), navigator: typeof navigator === 'undefined' ? null : navigator,
+  canShare: () => CapacitorShare.canShare(), share: options => CapacitorShare.share(options), copy: copyTextToClipboard
+});
 const getErrorText = (error) => `${error?.code || ''} ${error?.message || error || ''}`;
 
 const isFirestoreInternalAssertionError = (error) => {

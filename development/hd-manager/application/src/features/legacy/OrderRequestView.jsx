@@ -25,10 +25,9 @@ import { ORDER_REQUEST_SELECTION_LOCK_MS, releaseOrderRequestSelectionLock, tryA
 import { useCurrentCallback } from "../../hooks/useCurrentCallback.js";
 import { createRecordedShareCanvas } from "../../utils/shareCanvas.js";
 import {renderSharePagesSequentially} from '../../utils/sharePagePipeline.js';
-import { buildOrderRequestShareFiles, prepareOrderRequestNativeFiles, hasCompleteOrderRequestShareBlobSet } from "../../utils/orderRequestShare.js";
+import { hasCompleteOrderRequestShareBlobSet } from "../../utils/orderRequestShare.js";
 import { createPerformanceSpan, recordPerformanceEvent } from "../../services/performanceMonitor.js";
-import { Capacitor } from "@capacitor/core";
-import { Share as CapacitorShare } from "@capacitor/share";
+import {createShareArchive} from "../../utils/shareDelivery.js";
 import { Plus, Check, X, ChevronDown, ChevronUp, Edit3, Search, Send, Loader2 } from "lucide-react";
 import OrderRequestTableRows from "../orders/OrderRequestTableRows.jsx";
 import CoreRowPager from "../orders/CoreRowPager.jsx";
@@ -3025,65 +3024,12 @@ export function createOrderRequestView(runtime) {
   };
 
   const shareOrderRequestSheetBlobs = async (blobs = []) => {
-    if (blobs.length === 1) {
-      return shareBlobFile({
-        filename: `${buildOrderRequestSheetFilename()}.png`,
-        blob: blobs[0],
-        title: 'Bảng đơn đặt hàng',
-        text: 'Danh sách đơn đặt hàng đã được gộp theo khách. Bạn có thể chia sẻ lên Zalo hoặc gửi ngay.',
-        dialogTitle: 'Chia sẻ bảng đơn đặt hàng'
-      });
-    }
-
+    if (!hasCompleteOrderRequestShareBlobSet(blobs, blobs.length)) throw new Error('Bộ ảnh chưa đầy đủ. Hãy tạo lại ảnh.');
     const baseFilename = buildOrderRequestSheetFilename();
-    if (Capacitor.getPlatform() !== 'web') {
-      try {
-        const uris = await prepareOrderRequestNativeFiles(blobs, baseFilename, writeBlobToShareCache);
-        const capability = await CapacitorShare.canShare().catch(() => ({ value: false }));
-        if (capability?.value && uris.length) {
-          await CapacitorShare.share({
-            title: 'Bảng đơn đặt hàng',
-            dialogTitle: 'Chia sẻ bảng đơn đặt hàng',
-            files: uris
-          });
-          return { status: 'shared', count: uris.length };
-        }
-        // Cache URIs are temporary; only a completed share or a Documents
-        // write below may be reported as success.
-      } catch (error) {
-        if (isShareCancelled(error)) {
-          return { status: 'cancelled' };
-        }
-        throw error;
-      }
-    }
-
-    if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
-      try {
-        const files = buildOrderRequestShareFiles(blobs, baseFilename);
-        if (files.length === blobs.length && (!navigator.canShare || navigator.canShare({ files }))) {
-          await navigator.share({ title: 'Bảng đơn đặt hàng', files });
-          return { status: 'shared', count: files.length };
-        }
-      } catch (error) {
-        if (isShareCancelled(error)) {
-          return { status: 'cancelled' };
-        }
-        // A recipient may already have accepted some pages. Never resend the batch automatically.
-        throw error;
-      }
-    }
-
-    const downloadResults = [];
-    for (let index = 0; index < blobs.length; index += 1) {
-      downloadResults.push(await saveBlobFile(`${baseFilename}-trang-${index + 1}.png`, blobs[index]));
-      // Let the browser register one download before starting the next one.
-      if (index < blobs.length - 1) {
-        await new Promise(resolve => window.setTimeout(resolve, 180));
-      }
-    }
-    const completed = downloadResults.filter(result => result.status === 'downloaded' || result.status === 'saved');
-    return { status: completed.length === blobs.length ? completed[0]?.status : 'unsupported', count: completed.length };
+    return shareBlobFile({
+      entries: blobs.map((blob, index) => ({name: blobs.length === 1 ? baseFilename + '.png' : baseFilename + '-trang-' + (index + 1) + '.png', blob})),
+      title: 'Bảng đơn đặt hàng', dialogTitle: 'Chia sẻ bảng đơn đặt hàng'
+    });
   };
 
   const orderRequestShareBusyRef = useRef(false);
@@ -3114,8 +3060,8 @@ export function createOrderRequestView(runtime) {
       });
       const result = await shareOrderRequestSheetBlobs(blobs);
 
-      setSheetStatus(['shared', 'saved', 'downloaded', 'cancelled'].includes(result.status)
-        ? '' : 'Thiết bị này chưa hỗ trợ chia sẻ trực tiếp.');
+      setSheetStatus(result.status === 'partial' ? `Mới xử lý ${result.count}/${result.expectedCount} ảnh. Bấm Chia sẻ để mở lại bộ ảnh còn nguyên.`
+        : ['shared', 'saved', 'downloaded', 'cancelled'].includes(result.status) ? '' : 'Thiết bị này chưa hỗ trợ chia sẻ trực tiếp.');
     } catch (error) {
       setSheetStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể chia sẻ bảng đơn đặt hàng.'));
     } finally {
@@ -3136,12 +3082,10 @@ export function createOrderRequestView(runtime) {
     try {
       const blobs = await prepareOrderRequestSheetBlobs({ reason: 'download_click' });
       const baseFilename = buildOrderRequestSheetFilename();
-      const results = await Promise.all(blobs.map((blob, index) => saveBlobFile(
-        blobs.length > 1 ? `${baseFilename}-trang-${index + 1}.png` : `${baseFilename}.png`,
-        blob
-      )));
-      setSheetStatus(results.some(result => ['saved', 'downloaded'].includes(result.status))
-        ? '' : 'Không thể tải bảng đơn đặt hàng trên thiết bị này.');
+      const entries = blobs.map((blob, index) => ({name: baseFilename + '-trang-' + (index + 1) + '.png', blob}));
+      const result = await saveBlobFile(blobs.length > 1 ? baseFilename + '.zip' : baseFilename + '.png',
+        blobs.length > 1 ? await createShareArchive(entries) : blobs[0]);
+      setSheetStatus(['saved', 'downloaded'].includes(result.status) ? '' : 'Không thể tải đủ bộ ảnh trên thiết bị này.');
     } catch (error) {
       setSheetStatus(getFriendlyFirebaseErrorMessage(error, 'Không thể tải bảng đơn đặt hàng.'));
     } finally {

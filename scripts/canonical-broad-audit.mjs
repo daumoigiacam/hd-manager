@@ -49,7 +49,7 @@ const tests = [
   'order-creation-command.test.mjs',
   'order-archive-ui.test.mjs',
 ].map(name => `tests/${name}`);
-const rootTests = ['tests/bank-transaction-view.test.mjs','tests/canonical-source-routing.test.mjs'];
+const rootTests = ['tests/bank-transaction-view.test.mjs','tests/canonical-source-routing.test.mjs','tests/core-share-delivery.test.mjs','tests/core-share-entrypoints.test.mjs'];
 const emulatorTests = [
   'tests/order-creation-command.emulator.mjs',
   'tests/delivery-cashflow.emulator.mjs',
@@ -68,6 +68,9 @@ const rootEmulatorTests = ['tests/firestore-customer-messaging-rules.test.mjs','
   'tests/firestore-cursor-pagination.test.mjs','tests/firestore-save-acceptance.test.mjs',
   'tests/company-wifi-rules.test.mjs','tests/company-employee-reviews-rules.test.mjs','tests/firestore-payroll-rules.test.mjs'];
 const sources = [
+  'src/utils/shareDelivery.js',
+  'src/features/sharing/shareFilesDialog.js',
+  'src/features/warehouse/shareDispatchSheet.js',
   'src/App.jsx',
   'src/features/legacy/OrderManagementView.jsx',
   'src/features/legacy/OrderRequestView.jsx',

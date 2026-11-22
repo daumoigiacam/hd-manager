@@ -35,9 +35,9 @@ assert.deepEqual(
 
 const appSource = readApplicationSource();
 assert.match(appSource, /hasCompleteOrderRequestShareBlobSet\(persistedBlobs, expectedBlobCount\)/);
-assert.match(appSource, /buildOrderRequestShareFiles\(blobs, baseFilename\)/);
+assert.match(appSource, /entries: blobs\.map\(/);
 assert.doesNotMatch(appSource, /Retry the same complete file set without optional text/);
-assert.match(appSource, /for \(let index = 0; index < blobs\.length; index \+= 1\)/);
+assert.match(appSource, /await createShareArchive\(entries\)/);
 
 console.log('Order request multi-image share tests: PASS (4/4 files preserved).');
 
