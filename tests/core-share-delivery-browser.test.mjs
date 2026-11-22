@@ -31,6 +31,16 @@ test('share dialog preserves four images through target failure, explicit retry 
   await page.selectOption('#mode','cancel');await page.getByRole('button',{name:'Hóa đơn / QR / giao hàng (1 ảnh)',exact:true}).click();await dialog.waitFor();
   await dialog.getByRole('button',{name:'Chia sẻ toàn bộ (1 tệp)',exact:true}).click();await page.getByText(/Đã đóng hộp chia sẻ/).waitFor();await dialog.getByRole('button',{name:'Xong / Đóng'}).click();await page.getByText('Kết quả: cancelled',{exact:true}).waitFor();
   await page.getByRole('button',{name:'Công nợ / báo giá / báo cáo (chữ)',exact:true}).click();await dialog.waitFor();await dialog.getByRole('button',{name:'Sao chép nội dung',exact:true}).click();await page.getByText(/Đã sao chép nội dung/).waitFor();await dialog.getByRole('button',{name:'Xong / Đóng'}).click();await page.getByText('Kết quả: copied',{exact:true}).waitFor();
+  await page.selectOption('#mode','success');
+  for(let cycle=0;cycle<12;cycle++){
+   await page.getByRole('button',{name:'Chuẩn bị 4 ảnh đơn đặt',exact:true}).click();await dialog.waitFor();
+   assert.equal(await dialog.locator('img').count(),4);
+   await dialog.getByRole('button',{name:'Chia sẻ toàn bộ (4 tệp)',exact:true}).click();await page.getByText(/Đã chuyển 4 tệp/).waitFor();
+   await dialog.getByRole('button',{name:'Xong / Đóng'}).click();await page.getByText('Kết quả: shared',{exact:true}).waitFor();
+   assert.equal(await page.getByRole('dialog').count(),0);
+  }
+  const successfulCycles=(await page.locator('#events').innerText()).trim().split('\n').map(JSON.parse).filter(row=>row.count===4);
+  assert.equal(successfulCycles.length,13);assert(successfulCycles.every(row=>row.active&&row.names.length===4));
   assert.deepEqual(errors,[]);
  }finally{await browser.close();await new Promise(r=>server.close(r));}
 });

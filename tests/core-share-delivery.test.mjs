@@ -72,3 +72,17 @@ test('expired activation or ambiguous text failure requires explicit fresh gestu
   assert.equal(result.status,'cancelled');assert.equal(sends,active?1:0);assert.equal(presents,1);
  }
 });
+test('100 consecutive four-page Web preparations recover after alternating cancellation and receiver failure',async()=>{
+ let sends=0;
+ for(let cycle=0;cycle<100;cycle++){
+  const result=await deliverShareFiles({entries},{platform:'web',navigator:{canShare:()=>true,share:async({files})=>{
+   sends++;assert.equal(files.length,4);assert.deepEqual(files.map(f=>f.name),entries.map(e=>e.name));
+   if(cycle%3===0)throw Object.assign(Error('cancelled'),{name:'AbortError'});
+   if(cycle%3===1)throw Object.assign(Error('receiver failed after some pages'),{name:'DataError'});
+  }},present:async({send})=>{
+   try{return await send(entries);}catch(error){return{status:isShareDismissed(error)?'cancelled':'failed'};}
+  }});
+  assert.equal(result.status,['cancelled','failed','shared'][cycle%3]);
+ }
+ assert.equal(sends,100,'exactly one user-intended handoff per cycle; no retries or partial arrays');
+});
