@@ -439,7 +439,9 @@ const requestIdentityApi = async (path, payload = {}, { idToken = '' } = {}) => 
   try {
     body = await response.json();
   } catch {
-    body = { success: false, message: 'Máy chủ xác thực trả về dữ liệu không hợp lệ.' };
+    body = { success: false, message: path === '/api/identity/delete-account'
+      ? 'Dịch vụ xóa tài khoản chưa sẵn sàng. Vui lòng thử lại sau hoặc liên hệ quản trị.'
+      : 'Máy chủ xác thực trả về dữ liệu không hợp lệ.' };
   }
   if (!response.ok || body.success === false) {
     const error = new Error(body.message || 'Không thể hoàn tất yêu cầu xác thực.');
@@ -721,16 +723,25 @@ export const identityDeleteAccount = async ({ idToken, currentPassword, confirma
     currentPassword,
     confirmation,
   }, { idToken });
+  if (result?.success !== true) throw new Error('Máy chủ chưa xác nhận xóa tài khoản. Vui lòng thử lại.');
   const device = getIdentityDevice();
   const accountScope = getIdentityAccountScope(identity);
-  await removeTrustedDeviceSecret(device.deviceId, accountScope);
-  rememberBiometricLoginProfile({ enabled: false });
-  if (typeof window !== 'undefined') {
-    const index = readJson(DEVICE_ACCOUNT_INDEX_KEY) || {};
-    getIdentityAliases(identity).forEach(alias => delete index[alias]);
-    writeJson(DEVICE_ACCOUNT_INDEX_KEY, index);
+  let localCleanupPending = false;
+  for (const cleanup of [
+    () => removeTrustedDeviceSecret(device.deviceId, accountScope),
+    () => rememberBiometricLoginProfile({ enabled: false }),
+    () => {
+      if (typeof window === 'undefined') return;
+      const index = readJson(DEVICE_ACCOUNT_INDEX_KEY) || {};
+      getIdentityAliases(identity).forEach(alias => delete index[alias]);
+      writeJson(DEVICE_ACCOUNT_INDEX_KEY, index);
+    },
+  ]) {
+    try { await cleanup(); } catch { localCleanupPending = true; }
   }
-  return result;
+  // The server has already deleted and revoked this identity. Storage failures
+  // must not report a failed deletion or prevent the caller from signing out.
+  return { ...result, localCleanupPending };
 };
 
 export const customerPortalBootstrap = ({ idToken, appId }) => requestIdentityApi('/api/customer/bootstrap', {

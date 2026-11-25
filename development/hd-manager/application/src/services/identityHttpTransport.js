@@ -2,7 +2,8 @@
 // endpoint. Browser fetch would then receive index.html from the asset server.
 // Use native HTTP only for that exact origin/path; all other fetches are intact.
 export const resolveIdentityApiBaseForPath = (path, identityBase, firebaseBase) => (
-  identityBase === 'https://app.hdconnect.net' && !path.startsWith('/api/identity/')
+  identityBase === 'https://app.hdconnect.net'
+    && (!path.startsWith('/api/identity/') || path === '/api/identity/delete-account')
     ? firebaseBase : identityBase
 );
 

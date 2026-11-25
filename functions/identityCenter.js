@@ -363,17 +363,30 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     return { id: snapshot.docs[0].id, ...snapshot.docs[0].data() };
   };
 
+  const assertCurrentIdentity = (snapshot, expected) => {
+    if (!snapshot.exists) throw Object.assign(new Error('Không tìm thấy tài khoản xác thực.'), { statusCode: 401 });
+    const current = snapshot.data();
+    if (current.status !== 'active' || current.lockedAt) {
+      throw Object.assign(new Error('Tài khoản không còn hoạt động.'), { statusCode: 403 });
+    }
+    if (current.passwordHash !== expected.passwordHash
+      || Number(current.credentialVersion || 0) !== Number(expected.credentialVersion || 0)) {
+      throw Object.assign(new Error('Thông tin bảo mật đã thay đổi. Vui lòng đăng nhập lại.'), { statusCode: 401 });
+    }
+    return current;
+  };
+
   const issueSession = async ({ identityId, identity, device, loginRateRef = null, observeTiming }) => {
     const timed=typeof observeTiming==='function'?observeTiming:(_name,operation)=>operation();
     const now = new Date();
     const cleanDevice = sanitizeDevice(device);
-    const deviceRef = getIdentityRef(identityId).collection('devices').doc(cleanDevice.deviceId);
-    // Observe every parallel failure immediately. A failing IAM/token or
-    // device read must never become an unhandled rejection while claims wait.
+    const identityRef = getIdentityRef(identityId);
+    const deviceRef = identityRef.collection('devices').doc(cleanDevice.deviceId);
+    // Observe every Auth/IAM failure immediately, including while another RPC
+    // or the Firestore transaction is still pending.
     const outcome = promise => Promise.resolve(promise).then(
       value => ({ ok: true, value }), error => ({ ok: false, error })
     );
-    const deviceSnapshotPromise = outcome(timed('device',()=>deviceRef.get()));
     const claims = {
       identityId,
       companyId: identity.companyId || '',
@@ -390,72 +403,95 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     // Persist the same tenant claims used by the custom token. This keeps
     // refreshed Firebase ID tokens company-scoped instead of reverting to a
     // claim-less session after the original custom token expires.
-    const claimsReady = timed('claims',async () => { try {
+    const claimsReady = outcome(Promise.resolve().then(() => timed('claims',async () => { try {
       await admin.auth().setCustomUserClaims(firebaseUid, claims);
     } catch (error) {
       if (error?.code !== 'auth/user-not-found') throw error;
+      assertCurrentIdentity(await identityRef.get(), identity);
       try {
         await admin.auth().createUser({ uid: firebaseUid });
       } catch (createError) {
         if (createError?.code !== 'auth/uid-already-exists') throw createError;
       }
       await admin.auth().setCustomUserClaims(firebaseUid, claims);
-    } });
+    } })));
     // Signing does not depend on the persisted Auth-user claims. Run its IAM
     // round trip concurrently, but release NOTHING until claims and audit /
     // device / rate-limit commit have all succeeded below.
     const customTokenPromise = outcome(Promise.resolve().then(() => timed('sign',()=>admin.auth().createCustomToken(firebaseUid, claims))));
-    await claimsReady;
-    const deviceResult = await deviceSnapshotPromise;
-    if (!deviceResult.ok) throw deviceResult.error;
-    const deviceSnap = deviceResult.value;
-    const currentDevice = deviceSnap.exists ? deviceSnap.data() : {};
-    const batch = db.batch();
-    batch.set(deviceRef, {
-      ...cleanDevice,
-      trusted: Boolean(currentDevice.trusted),
-      revokedAt: null,
-      lastLoginAt: now,
-      lastLoginAtIso: now.toISOString(),
-      createdAt: currentDevice.createdAt || now,
-      createdAtIso: currentDevice.createdAtIso || now.toISOString(),
-      updatedAt: now,
-      updatedAtIso: now.toISOString()
-    }, { merge: true });
-    batch.set(getIdentityRef(identityId), {
-      updatedAt: now,
-      updatedAtIso: now.toISOString(),
-      lastLoginAt: now,
-      lastLoginAtIso: now.toISOString()
-    }, { merge: true });
-    batch.set(db.collection(IDENTITY_AUDIT_COLLECTION).doc(), {
-      accountId: identityId,
-      action: 'login',
-      metadata: { deviceId: cleanDevice.deviceId, platform: cleanDevice.platform },
-      createdAt: now,
-      createdAtIso: now.toISOString(),
-      immutable: true
-    });
-    if (loginRateRef) {
-      batch.set(loginRateRef, {
-        attempts: 0,
-        blockedUntil: null,
-        updatedAt: now
-      }, { merge: true });
+    try {
+      const claimsResult = await claimsReady;
+      if (!claimsResult.ok) throw claimsResult.error;
+      const [customToken, currentDevice] = await Promise.all([
+        customTokenPromise,
+        timed('commit',()=>db.runTransaction(async transaction => {
+          const [identitySnap, deviceSnap] = await Promise.all([
+            transaction.get(identityRef),
+            timed('device',()=>transaction.get(deviceRef))
+          ]);
+          assertCurrentIdentity(identitySnap, identity);
+          const currentDevice = deviceSnap.exists ? deviceSnap.data() : {};
+          transaction.set(deviceRef, {
+            ...cleanDevice,
+            trusted: Boolean(currentDevice.trusted),
+            revokedAt: null,
+            lastLoginAt: now,
+            lastLoginAtIso: now.toISOString(),
+            createdAt: currentDevice.createdAt || now,
+            createdAtIso: currentDevice.createdAtIso || now.toISOString(),
+            updatedAt: now,
+            updatedAtIso: now.toISOString()
+          }, { merge: true });
+          transaction.update(identityRef, {
+            updatedAt: now,
+            updatedAtIso: now.toISOString(),
+            lastLoginAt: now,
+            lastLoginAtIso: now.toISOString()
+          });
+          transaction.set(db.collection(IDENTITY_AUDIT_COLLECTION).doc(), {
+            accountId: identityId,
+            action: 'login',
+            metadata: { deviceId: cleanDevice.deviceId, platform: cleanDevice.platform },
+            createdAt: now,
+            createdAtIso: now.toISOString(),
+            immutable: true
+          });
+          if (loginRateRef) {
+            transaction.set(loginRateRef, {
+              attempts: 0,
+              blockedUntil: null,
+              updatedAt: now
+            }, { merge: true });
+          }
+          return currentDevice;
+        }))
+      ]);
+      if (!customToken.ok) throw customToken.error;
+      // Signing can finish after the durable commit and even after deletion.
+      // Keep this fresh check as the last await before releasing the token.
+      assertCurrentIdentity(await identityRef.get(), identity);
+      return {
+        customToken: customToken.value,
+        identityKey: identityId,
+        identity: { ...buildPublicIdentity(identity), identityKey: identityId },
+        device: { ...cleanDevice, trusted: Boolean(currentDevice.trusted) },
+        requiresSetup: requiresIdentitySetup(identity),
+        setup: { ...(identity.setup || {}), biometricEnabled: Boolean(currentDevice.biometricEnabled && !currentDevice.revokedAt) }
+      };
+    } catch (error) {
+      // An in-flight createUser must settle before cleanup, otherwise it can
+      // recreate the Auth user *after* this request has already failed.
+      await Promise.all([claimsReady, customTokenPromise]);
+      const latest = await identityRef.get();
+      if (latest.exists && ['deleting', 'deleted'].includes(latest.data().status)) {
+        try {
+          await admin.auth().deleteUser(firebaseUid);
+        } catch (cleanupError) {
+          if (cleanupError?.code !== 'auth/user-not-found') throw cleanupError;
+        }
+      }
+      throw error;
     }
-    const [customToken] = await Promise.all([
-      customTokenPromise,
-      timed('commit',()=>batch.commit())
-    ]);
-    if (!customToken.ok) throw customToken.error;
-    return {
-      customToken: customToken.value,
-      identityKey: identityId,
-      identity: { ...buildPublicIdentity(identity), identityKey: identityId },
-      device: { ...cleanDevice, trusted: Boolean(currentDevice.trusted) },
-      requiresSetup: requiresIdentitySetup(identity),
-      setup: { ...(identity.setup || {}), biometricEnabled: Boolean(currentDevice.biometricEnabled && !currentDevice.revokedAt) }
-    };
   };
 
   const registerCompany = async ({ companyName, phone, password, device, appId, companySettings = {} }) => {
@@ -630,7 +666,15 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
   const getDeletionIdentity = async (authorization = '') => {
     const token = `${authorization || ''}`.replace(/^Bearer\s+/i, '').trim();
     if (!token) throw Object.assign(new Error('Phiên đăng nhập không hợp lệ.'), { statusCode: 401 });
-    const decoded = await admin.auth().verifyIdToken(token, false);
+    const verifyToken = async checkRevoked => {
+      try {
+        return await admin.auth().verifyIdToken(token, checkRevoked);
+      } catch (error) {
+        if (`${error?.code || ''}`.startsWith('auth/')) error.statusCode = 401;
+        throw error;
+      }
+    };
+    const decoded = await verifyToken(false);
     const identityId = `${decoded.identityId || ''}`;
     if (!identityId) throw Object.assign(new Error('Phiên đăng nhập không thuộc Identity Center.'), { statusCode: 401 });
     const identitySnap = await getIdentityRef(identityId).get();
@@ -640,6 +684,9 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     if (!['active', 'deleting'].includes(`${identity.status || ''}`) || identity.lockedAt) {
       throw Object.assign(new Error('Tài khoản không thể xóa ở trạng thái hiện tại.'), { statusCode: 403 });
     }
+    // Only a deletion already in progress may resume with a revoked token.
+    // Active accounts must still pass the normal revocation check.
+    if (identity.status === 'active') await verifyToken(true);
     return { identityId, identity, decoded, alreadyDeleted: false };
   };
 
@@ -694,13 +741,13 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
       await recordLoginAttempt(rate.ref, false);
       return generic;
     }
+    await logAudit(identity.id, 'biometric_login', { deviceId: cleanDevice.deviceId, platform: cleanDevice.platform });
     const session = await issueSession({
       identityId: identity.id,
       identity,
       device: cleanDevice,
       loginRateRef: rate.ref
     });
-    await logAudit(identity.id, 'biometric_login', { deviceId: cleanDevice.deviceId, platform: cleanDevice.platform });
     return { success: true, ...session };
   };
 
@@ -708,17 +755,11 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     if (password && biometricEnabled) throw Object.assign(new Error('Hoàn tất đổi mật khẩu trước khi bật sinh trắc học.'), { statusCode: 400 });
     const { identityId, identity } = await getVerifiedIdentity(authorization);
     const cleanDevice = sanitizeDevice(device);
+    const identityRef = getIdentityRef(identityId);
+    const deviceRef = identityRef.collection('devices').doc(cleanDevice.deviceId);
+    const deviceUpdates = {};
     const updates = { updatedAt: new Date(), updatedAtIso: new Date().toISOString() };
     const nextSetup = { ...(identity.setup || {}) };
-    if (biometricEnabled === true) {
-      const enrolled = await getIdentityRef(identityId).collection('devices').doc(cleanDevice.deviceId).get();
-      const saved = enrolled.data() || {};
-      if (trustDevice || !saved.trusted || saved.revokedAt || !enrollmentSecret
-        || Number(saved.credentialVersion || 0) !== Number(identity.credentialVersion || 0)
-        || !timingSafeTextEqual(saved.deviceSecretHash, hashOpaqueSecret(enrollmentSecret))) {
-        throw Object.assign(new Error('Thiết bị chưa có credential bảo mật hợp lệ.'), { statusCode: 403 });
-      }
-    }
     if (password !== undefined && `${password}`.length) {
       const error = validatePassword(password);
       if (error) throw Object.assign(new Error(error), { statusCode: 400 });
@@ -750,8 +791,7 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     let deviceSecret = '';
     if (trustDevice) {
       deviceSecret = makeOpaqueSecret();
-      const deviceRef = getIdentityRef(identityId).collection('devices').doc(cleanDevice.deviceId);
-      await deviceRef.set({
+      Object.assign(deviceUpdates, {
         ...cleanDevice,
         trusted: true,
         ...(typeof biometricEnabled === 'boolean' ? { biometricEnabled: Boolean(biometricEnabled) } : {}),
@@ -763,20 +803,36 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
         revokedAt: null,
         updatedAt: new Date(),
         updatedAtIso: new Date().toISOString()
-      }, { merge: true });
+      });
       nextSetup.trustedDevice = true;
     }
     if (typeof biometricEnabled === 'boolean') {
       nextSetup.biometricEnabled = biometricEnabled;
-      await getIdentityRef(identityId).collection('devices').doc(cleanDevice.deviceId).set({
+      Object.assign(deviceUpdates, {
         biometricEnabled: Boolean(biometricEnabled),
         ...(biometricEnabled === false && !trustDevice ? { deviceSecretHash: '', trusted: false } : {}),
         updatedAt: new Date(),
         updatedAtIso: new Date().toISOString()
-      }, { merge: true });
+      });
     }
     updates.setup = nextSetup;
-    await getIdentityRef(identityId).set(updates, { merge: true });
+    // Hashing and enrollment preparation may outlive a concurrent deletion or
+    // password reset. Persist neither the device nor identity from that stale
+    // authorization; Firestore retries this gate if deletion races the commit.
+    await db.runTransaction(async transaction => {
+      assertCurrentIdentity(await transaction.get(identityRef), identity);
+      if (biometricEnabled === true) {
+        const enrolled = await transaction.get(deviceRef);
+        const saved = enrolled.data() || {};
+        if (trustDevice || !saved.trusted || saved.revokedAt || !enrollmentSecret
+          || Number(saved.credentialVersion || 0) !== Number(identity.credentialVersion || 0)
+          || !timingSafeTextEqual(saved.deviceSecretHash, hashOpaqueSecret(enrollmentSecret))) {
+          throw Object.assign(new Error('Thiết bị chưa có credential bảo mật hợp lệ.'), { statusCode: 403 });
+        }
+      }
+      if (Object.keys(deviceUpdates).length) transaction.set(deviceRef, deviceUpdates, { merge: true });
+      transaction.update(identityRef, updates);
+    });
     if (updates.passwordHash) await admin.auth().revokeRefreshTokens(`identity_${safeIdPart(identityId)}`);
     const auditActions = [];
     if (password !== undefined && `${password}`.length) auditActions.push('password_changed');
@@ -1381,6 +1437,9 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
       if (!['active', 'deleting'].includes(`${current.status || ''}`)) {
         throw Object.assign(new Error('Tài khoản không thể xóa ở trạng thái hiện tại.'), { statusCode: 403 });
       }
+      if (current.lockedAt || current.passwordHash !== identity.passwordHash) {
+        throw Object.assign(new Error('Thông tin bảo mật đã thay đổi. Vui lòng đăng nhập lại trước khi xóa tài khoản.'), { statusCode: 401 });
+      }
       transaction.set(identityRef, {
         status: 'deleting',
         deletionRequestedAt: current.deletionRequestedAt || startedAt,
@@ -1483,9 +1542,17 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
     return { success: true, deleted: true };
   };
 
-  return {
-    registerCompany,
-    passkey: createPasskeyService({ db, getVerifiedIdentity, verifyPassword, issueSession, logAudit,
+  const passkey = async request => {
+    // The passkey service awaits its own audit after issuing a session. Keep
+    // the expected credential local to this request and recheck after that
+    // last await, so deletion/reset during the audit cannot release a token.
+    let sessionIdentity;
+    const service = createPasskeyService({ db, getVerifiedIdentity, verifyPassword, logAudit,
+      issueSession: async input => {
+        const session = await issueSession(input);
+        sessionIdentity = input;
+        return session;
+      },
       validateAccount: async (transaction, identity) => {
         const paths = [publicPath(getAppId(), identity.publicCollection, identity.publicId)];
         if (identity.companyId) paths.push(publicPath(getAppId(), 'companies', identity.companyId));
@@ -1497,7 +1564,17 @@ const createIdentityCenter = ({ db, admin, getAppId }) => {
           }
         }
       },
-    }),
+    });
+    const result = await service(request);
+    if (sessionIdentity) {
+      assertCurrentIdentity(await getIdentityRef(sessionIdentity.identityId).get(), sessionIdentity.identity);
+    }
+    return result;
+  };
+
+  return {
+    registerCompany,
+    passkey,
     login,
     // Read-only original context exposure; no enrollment or alternate verifier.
     resolveAttendanceContext: async ({ authorization, device, deviceSecret, method }) => {
