@@ -712,16 +712,23 @@ export const identityDeleteAccount = async ({ idToken, currentPassword, confirma
     currentPassword,
     confirmation,
   }, { idToken });
+  if (result?.success !== true) throw new Error('Máy chủ chưa xác nhận xóa tài khoản. Vui lòng thử lại.');
   const device = getIdentityDevice();
   const accountScope = getIdentityAccountScope(identity);
-  await removeTrustedDeviceSecret(device.deviceId, accountScope);
-  rememberBiometricLoginProfile({ enabled: false });
-  if (typeof window !== 'undefined') {
-    const index = readJson(DEVICE_ACCOUNT_INDEX_KEY) || {};
-    getIdentityAliases(identity).forEach(alias => delete index[alias]);
-    writeJson(DEVICE_ACCOUNT_INDEX_KEY, index);
+  let localCleanupPending = false;
+  for (const cleanup of [
+    () => removeTrustedDeviceSecret(device.deviceId, accountScope),
+    () => rememberBiometricLoginProfile({ enabled: false }),
+    () => {
+      if (typeof window === 'undefined') return;
+      const index = readJson(DEVICE_ACCOUNT_INDEX_KEY) || {};
+      getIdentityAliases(identity).forEach(alias => delete index[alias]);
+      writeJson(DEVICE_ACCOUNT_INDEX_KEY, index);
+    },
+  ]) {
+    try { await cleanup(); } catch { localCleanupPending = true; }
   }
-  return result;
+  return { ...result, localCleanupPending };
 };
 
 export const customerPortalBootstrap = ({ idToken, appId }) => requestIdentityApi('/api/customer/bootstrap', {

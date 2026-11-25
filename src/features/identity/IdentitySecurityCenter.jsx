@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, Lock } from 'lucide-react';
 import PasskeySettings from './PasskeySettings.jsx';
 import SecurityDialog from './SecurityDialog.jsx';
+import { normalizeAccountDeletionConfirmation, validateAccountDeletion } from './accountDeletion.js';
 import { getBiometricAutoLoginProfile, getIdentityAccountScope } from '../../services/identityCenter.js';
 
 export default function IdentitySecurityCenter({
@@ -44,6 +45,8 @@ export default function IdentitySecurityCenter({
   const [newPinConfirm, setNewPinConfirm] = useState('');
   const [deletionPassword, setDeletionPassword] = useState('');
   const [deletionConfirmation, setDeletionConfirmation] = useState('');
+  const [isDeleting, setIsDeleting] = useState(false);
+  const deletionInFlight = useRef(false);
   const [biometricEnabled, setBiometricEnabled] = useState(false);
   const [quickLogin, setQuickLogin] = useState({ available: false, native: false });
   useEffect(() => {
@@ -207,26 +210,26 @@ export default function IdentitySecurityCenter({
 
   const handleDeleteAccount = async (event) => {
     event.preventDefault();
-    if (!identityReady || !window.confirm('Xóa phiên đăng nhập và dữ liệu xác thực của tài khoản này? Dữ liệu đơn hàng, công nợ và hồ sơ nghiệp vụ sẽ được giữ lại theo chính sách lưu trữ.')) return;
-    if (!deletionPassword) {
-      setSecurityStatus('Nhập mật khẩu hiện tại để xác nhận xóa tài khoản.');
+    if (!identityReady || vpsMode || isLoading || deletionInFlight.current) return;
+    const validation = validateAccountDeletion({ password: deletionPassword, confirmation: deletionConfirmation });
+    if (validation) {
+      setSecurityStatus(validation);
       return;
     }
-    if (deletionConfirmation.trim() !== 'XOA TAI KHOAN') {
-      setSecurityStatus('Nhập đúng cụm từ XOA TAI KHOAN để xác nhận.');
-      return;
-    }
+    deletionInFlight.current = true;
+    setIsDeleting(true);
     setIsLoading(true);
     setSecurityStatus('');
     try {
       const idToken = await onGetIdentityToken?.();
       if (!idToken) throw new Error('Phiên đăng nhập bảo mật đã hết hạn.');
-      await identityDeleteAccount({
+      const result = await identityDeleteAccount({
         idToken,
         currentPassword: deletionPassword,
-        confirmation: deletionConfirmation.trim(),
+        confirmation: normalizeAccountDeletionConfirmation(deletionConfirmation),
         identity: identityUser,
       });
+      if (result?.success !== true) throw new Error('Máy chủ chưa xác nhận xóa tài khoản. Vui lòng thử lại.');
       setSecurityStatus('Tài khoản đã được xóa.');
       setDeletionPassword('');
       setDeletionConfirmation('');
@@ -234,6 +237,8 @@ export default function IdentitySecurityCenter({
     } catch (error) {
       setSecurityStatus(error?.message || 'Không thể xóa tài khoản.');
     } finally {
+      deletionInFlight.current = false;
+      setIsDeleting(false);
       setIsLoading(false);
     }
   };
@@ -363,7 +368,7 @@ export default function IdentitySecurityCenter({
                 {!vpsMode && !devices.some(item => item.deviceId === device.deviceId && item.trusted && !item.revokedAt) && <button type="button" disabled={isLoading} onClick={registerCurrentDevice} className="px-3 py-3 text-left text-sm font-semibold">Đăng ký thiết bị tin cậy</button>}
                 {!quickLogin.available && <p className="px-3 py-2 text-xs text-gray-500">Thiết bị hoặc trình duyệt chưa hỗ trợ xác thực sinh trắc học.</p>}
                 <button type="button" onClick={() => setActiveEditor(activeEditor === 'devices' ? '' : 'devices')} className="px-3 py-3 text-left text-sm font-semibold">Thiết bị tin cậy</button>
-                <button type="button" disabled={vpsMode || isLoading} onClick={() => setActiveEditor(activeEditor === 'delete' ? '' : 'delete')} className="px-3 py-3 text-left text-sm font-semibold text-red-600 disabled:opacity-50">Xóa tài khoản</button>
+                <button type="button" disabled={vpsMode || isLoading || isDeleting} onClick={() => { setSecurityStatus(''); setDeletionPassword(''); setDeletionConfirmation(''); setActiveEditor('delete'); }} className="px-3 py-3 text-left text-sm font-semibold text-red-600 disabled:opacity-50">Xóa tài khoản</button>
               </div>
               {activeEditor === 'biometric' && !vpsMode && !quickLogin.native && quickLogin.available && <SecurityDialog title="Đăng nhập bằng Passkey" onClose={() => setActiveEditor('')}><PasskeySettings identityApi={identityApi} onGetIdentityToken={onGetIdentityToken} /></SecurityDialog>}
               {(activeEditor === 'password' || activeEditor === 'pin') && (
@@ -437,18 +442,19 @@ export default function IdentitySecurityCenter({
                 )) : <p className="text-xs text-slate-500">Chưa có nhật ký bảo mật.</p>}
               </div>
               </>}
-              {activeEditor === 'delete' && !vpsMode && <section className="space-y-3 rounded-xl border border-red-200 bg-red-50 p-3">
+              {activeEditor === 'delete' && !vpsMode && <SecurityDialog title="Xóa tài khoản" busy={isDeleting} onClose={() => { setActiveEditor(''); setDeletionPassword(''); setDeletionConfirmation(''); setSecurityStatus(''); }}><section className="space-y-3 rounded-xl border border-red-200 bg-red-50 p-3">
                 <div>
-                  <h4 className="text-sm font-bold text-red-800">Xóa tài khoản</h4>
+                  <h4 className="text-sm font-bold text-red-800">Xác nhận xóa tài khoản đang đăng nhập</h4>
                   <p className="mt-1 text-xs leading-5 text-red-700">Thao tác này xóa phiên đăng nhập, mật khẩu, PIN và dữ liệu xác thực. Đơn hàng, công nợ, bảng lương và hồ sơ nghiệp vụ được giữ lại theo chính sách lưu trữ.</p>
                 </div>
                 <form onSubmit={handleDeleteAccount} className="space-y-2">
-                  <input type="password" value={deletionPassword} onChange={event => setDeletionPassword(event.target.value)} className="w-full rounded-lg border border-red-200 bg-white px-3 py-2 text-sm outline-none focus:border-red-500" placeholder="Mật khẩu hiện tại" autoComplete="current-password" />
-                  <input type="text" value={deletionConfirmation} onChange={event => setDeletionConfirmation(event.target.value)} className="w-full rounded-lg border border-red-200 bg-white px-3 py-2 text-sm uppercase outline-none focus:border-red-500" placeholder="Nhập XOA TAI KHOAN để xác nhận" autoComplete="off" />
-                  <button type="submit" disabled={isLoading} className="w-full rounded-lg bg-red-600 px-3 py-2.5 text-sm font-bold text-white disabled:opacity-50">{isLoading ? 'Đang xử lý...' : 'Xóa tài khoản'}</button>
+                  <input aria-label="Mật khẩu hiện tại" disabled={isDeleting} type="password" value={deletionPassword} onChange={event => setDeletionPassword(event.target.value)} className="w-full rounded-lg border border-red-200 bg-white px-3 py-2 text-sm outline-none focus:border-red-500" placeholder="Mật khẩu hiện tại" autoComplete="current-password" />
+                  <input aria-label="Cụm từ xác nhận xóa tài khoản" disabled={isDeleting} type="text" value={deletionConfirmation} onChange={event => setDeletionConfirmation(event.target.value)} className="w-full rounded-lg border border-red-200 bg-white px-3 py-2 text-sm outline-none focus:border-red-500" placeholder="Nhập XOA TAI KHOAN để xác nhận" autoComplete="off" autoCapitalize="characters" spellCheck={false} />
+                  {securityStatus && <p role="alert" className="text-sm text-red-700">{securityStatus}</p>}
+                  <button type="submit" disabled={isDeleting} className="w-full rounded-lg bg-red-600 px-3 py-2.5 text-sm font-bold text-white disabled:opacity-50">{isDeleting ? 'Đang xóa tài khoản...' : 'Xóa vĩnh viễn tài khoản'}</button>
                 </form>
                 <a className="block text-xs font-semibold text-red-700 underline" href="https://hdconnect.net/xoa-tai-khoan.html" target="_blank" rel="noreferrer">Xem chính sách xóa dữ liệu</a>
-              </section>}
+              </section></SecurityDialog>}
             </>
           )}
           {securityStatus && <p className="rounded-xl bg-slate-50 px-3 py-2.5 text-xs font-medium text-slate-700" role="status">{securityStatus}</p>}

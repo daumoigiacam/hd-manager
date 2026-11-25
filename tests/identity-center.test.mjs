@@ -259,7 +259,21 @@ assert.match(identitySessionSource, /runFirebaseAuthMutation\(\(\) => signInWith
 assert.match(identitySessionSource, /auth\.identity_login\.custom_token_completed/);
 assert.match(identitySessionSource, /auth\.identity_login\.shell_released/);
 assert.match(identityFunctionSource, /setCustomUserClaims\(firebaseUid, claims\)/);
-assert.match(identityFunctionSource, /const \[customToken\] = await Promise\.all\([\s\S]*?batch\.commit\(\)/);
+const sessionFunctionSource = identityFunctionSource.slice(
+  identityFunctionSource.indexOf('const issueSession = async'),
+  identityFunctionSource.indexOf('const registerCompany = async'),
+);
+assert.match(sessionFunctionSource, /const claimsReady = outcome\(/);
+assert.match(sessionFunctionSource, /const customTokenPromise = outcome\(/);
+assert.ok(sessionFunctionSource.indexOf('const customTokenPromise') < sessionFunctionSource.indexOf('await claimsReady'),
+  'IAM signing must overlap the persistent claims RPC');
+assert.match(sessionFunctionSource, /const \[customToken, currentDevice\] = await Promise\.all\([\s\S]*?customTokenPromise,[\s\S]*?db\.runTransaction\(async transaction/);
+assert.match(sessionFunctionSource, /transaction\.get\(identityRef\)[\s\S]*?assertCurrentIdentity\(identitySnap, identity\);[\s\S]*?transaction\.set\(deviceRef/);
+assert.match(sessionFunctionSource, /transaction\.set\(db\.collection\(IDENTITY_AUDIT_COLLECTION\)\.doc\(\)/);
+assert.match(sessionFunctionSource, /transaction\.set\(loginRateRef/);
+assert.match(sessionFunctionSource, /if \(!customToken\.ok\) throw customToken\.error;[\s\S]*?assertCurrentIdentity\(await identityRef\.get\(\), identity\);[\s\S]*?return \{\s*customToken: customToken\.value/);
+assert.match(sessionFunctionSource, /await Promise\.all\(\[claimsReady, customTokenPromise\]\)/,
+  'A failed gate must observe pending Auth/IAM RPCs before finishing cleanup');
 assert.match(identityFunctionSource, /loginRateRef: rate\.ref/);
 const biometricLoginStart = identityFunctionSource.indexOf('const biometricLogin = async');
 const biometricLoginEnd = identityFunctionSource.indexOf('const completeSetup = async', biometricLoginStart);
