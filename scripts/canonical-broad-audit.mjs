@@ -29,6 +29,8 @@ const tests = [
   'pricing-loss-validation.test.mjs',
   'pricing-calculation-known-values.test.mjs',
   'payroll-view-integrity.test.mjs',
+  'payroll-close-completion.test.mjs',
+  'payroll-customer-debt.test.mjs',
   'employee-review-integrity.test.mjs',
   'asset-mutation-integrity.test.mjs',
   'message-mutation-integrity.test.mjs',
@@ -63,12 +65,14 @@ const emulatorTests = [
   'tests/settings-data.emulator.mjs',
   'tests/company-settings-write-rules.emulator.mjs',
 ];
-const rootEmulatorTests = ['tests/firestore-customer-messaging-rules.test.mjs','tests/firestore-employee-customer-messaging-rules.test.mjs',
+const rootEmulatorTests = ['tests/payroll-close-acceptance.emulator.mjs','tests/firestore-customer-messaging-rules.test.mjs','tests/firestore-employee-customer-messaging-rules.test.mjs',
   'tests/sales-commission-tiers-rules.test.mjs','tests/firestore-inventory-rules.test.mjs','tests/financial-evidence-rules.emulator.mjs',
   'tests/firestore-cursor-pagination.test.mjs','tests/firestore-save-acceptance.test.mjs',
   'tests/company-wifi-rules.test.mjs','tests/company-employee-reviews-rules.test.mjs','tests/firestore-payroll-rules.test.mjs'];
 const sources = [
   'src/utils/shareDelivery.js',
+  'src/utils/payrollPolicyCompletion.js', 'src/utils/payrollCloseTransaction.js', 'src/utils/payrollCustomerDebt.js',
+  'src/features/payroll/PayrollCloseDialog.jsx', 'src/features/payroll/PayrollPolicyCompletion.jsx',
   'src/features/sharing/shareFilesDialog.js',
   'src/features/warehouse/shareDispatchSheet.js',
   'src/App.jsx',

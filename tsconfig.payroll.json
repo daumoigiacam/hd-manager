@@ -15,10 +15,13 @@
     "types": ["node"]
   },
   "include": [
-    "src/utils/payrollAdjustment.js",
-    "src/utils/payrollDebtCarryover.js",
-    "src/utils/payrollPeriodLock.js",
-    "src/utils/payrollPolicyHistory.js",
-    "src/utils/payrollSnapshotIntegrity.js"
+    "development/hd-manager/application/src/utils/payrollAdjustment.js",
+    "development/hd-manager/application/src/utils/payrollDebtCarryover.js",
+    "development/hd-manager/application/src/utils/payrollPeriodLock.js",
+    "development/hd-manager/application/src/utils/payrollPolicyHistory.js",
+    "development/hd-manager/application/src/utils/payrollSnapshotIntegrity.js",
+    "development/hd-manager/application/src/utils/payrollPolicyCompletion.js",
+    "development/hd-manager/application/src/utils/payrollCloseTransaction.js",
+    "development/hd-manager/application/src/utils/payrollCustomerDebt.js"
   ]
 }

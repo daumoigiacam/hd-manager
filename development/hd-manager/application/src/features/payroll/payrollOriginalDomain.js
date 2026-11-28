@@ -19,6 +19,10 @@ import {applyPayrollOpeningDebtToSalaryDetails} from "../../utils/payrollDebtCar
 
 import {applyEvaluationBonusToSalaryDetails} from "../../utils/payrollEvaluationBonus.js";
 
+import {applyPayrollCustomerDebtReconciliation} from "../../utils/payrollCustomerDebt.js";
+
+import {payrollCustomerDebtBasis} from "../../utils/payrollCustomerDebt.js";
+
 import {normalizeEmployeePosition} from "./payrollOriginalShared.js";
 
 import {getTodayString} from "./payrollOriginalShared.js";
@@ -1979,7 +1983,7 @@ const buildPayrollViewProjectionSteps = function* ({
   isPayrollLocked, currentMonth, employeeReviews, orders, deliveryReports,
   complaintsLoaded, customerComplaints, payrollCompanyId, attendance, attendanceLoaded,
   currentCompany, employees, visibleSalaryEmployees, payrollDebtCarryovers,
-  payrollPolicyEmployees, financials, performance, customers, payments, holidays
+  payrollPolicyEmployees, financials, performance, customers, payments, holidays, payrollPeriods = []
 }) {
   if (isPayrollLocked) return EMPTY_PAYROLL_VIEW;
   // Prepare the complete month off the render stack, with the legacy predicates.
@@ -2035,16 +2039,23 @@ const buildPayrollViewProjectionSteps = function* ({
   }
   const salesIds=new Set((payrollPolicyEmployees || []).filter(isEmployeeSalesPosition).map(emp=>emp.id));
   const customerDebtByRecord=new Map();
+  const customerDebtSourcesByEmployee=new Map();
   for (const customer of customers || []) {
-    if (salesIds.has(customer.empId)) customerDebtByRecord.set(customer,getCustomerDebt(customer,orders,payments));
+    if (salesIds.has(customer.empId)) {
+      const balance=getCustomerDebt(customer,orders,payments);
+      customerDebtByRecord.set(customer,balance);
+      if (!customerDebtSourcesByEmployee.has(customer.empId)) customerDebtSourcesByEmployee.set(customer.empId,[]);
+      customerDebtSourcesByEmployee.get(customer.empId).push({customerId:customer.id || '',customerName:customer.name || '',balance});
+    }
     // Yield between customer ledgers; do not round/clamp individual balances.
     yield;
   }
   const detailsByEmployee=new Map();
   for (const emp of payrollPolicyEmployees || []) {
     const base=buildSalaryDetails(emp.id,payrollPolicyEmployees,attendance,financials,performance,customers,orders,payments,holidays,currentMonth,{customerDebtByRecord});
+    if (base) base.customerDebtSources=customerDebtSourcesByEmployee.get(emp.id) || [];
     detailsByEmployee.set(emp.id,applyPayrollOpeningDebtToSalaryDetails(
-      applyEvaluationBonusToSalaryDetails(base,evaluations.get(emp.id)),openingDebt.get(emp.id) || 0
+      applyEvaluationBonusToSalaryDetails(applyPayrollCustomerDebtReconciliation(base,payrollCustomerDebtBasis(payrollPeriods,payrollCompanyId,currentMonth,emp.id)),evaluations.get(emp.id)),openingDebt.get(emp.id) || 0
     ));
     yield;
   }

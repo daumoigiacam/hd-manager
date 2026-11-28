@@ -95,6 +95,7 @@ const normalizeVersionNumber = (value) => {
   return match ? Math.max(1, Number(match[1]) || 1) : 1;
 };
 
+/** @returns {Record<string, any>} */
 export const captureEmployeePayrollPolicy = (employee = {}) => (
   PAYROLL_POLICY_FIELDS.reduce((policy, fieldName) => {
     if (employee?.[fieldName] !== undefined) policy[fieldName] = cloneValue(employee[fieldName]);
@@ -121,12 +122,13 @@ const normalizePolicyRecord = (policy = {}, index = 0) => {
     createdAt: `${policy?.createdAt || ''}`,
     createdByEmployeeId: `${policy?.createdByEmployeeId || ''}`,
     createdByName: `${policy?.createdByName || ''}`,
+    ...(policy?.review ? { review: cloneValue(policy.review) } : {}),
     supersededAt: `${policy?.supersededAt || ''}`
   };
 };
 
 export const getStoredEmployeePayrollPolicyHistory = (employee = {}) => {
-  const storedPolicies = Array.isArray(employee?.payrollPolicies)
+  const storedPolicies = Array.isArray(employee?.payrollPolicies) && employee.payrollPolicies.length
     ? employee.payrollPolicies
     : Array.isArray(employee?.salaryPolicyHistory)
       ? employee.salaryPolicyHistory
@@ -223,7 +225,8 @@ export const buildEmployeePayrollPolicyUpdate = ({
 } = {}) => {
   const existingEmployee = employee || {};
   const history = employee ? getStoredEmployeePayrollPolicyHistory(existingEmployee) : [];
-  const changed = !employee || hasEmployeePayrollPolicyChanged(existingEmployee, nextEmployee);
+  // An explicit save must also version a legacy profile with no stored policy.
+  const changed = !employee || history.length === 0 || hasEmployeePayrollPolicyChanged(existingEmployee, nextEmployee);
   if (!changed) {
     return {
       payrollPolicies: history,

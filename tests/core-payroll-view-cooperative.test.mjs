@@ -46,7 +46,16 @@ test('payroll month projection preserves frozen salaries, debt balances, evaluat
   for(const complaintsLoaded of [true,false])for(const currentMonth of ['2026-10','2026-09']){
     const source={...input(),complaintsLoaded,currentMonth},before=structuredClone(source);let yields=0;
     const actual=await runCooperativeProjection(()=>prepare(source),{maxOperations:1,yieldTask:async()=>{yields++;}});
-    assert.deepEqual(actual,baseline(source));assert.ok(yields>10);assert.deepEqual(source,before);
+    // With no preceding locked period, financial results still match the
+    // immutable baseline; only the new reconciliation evidence is additional.
+    const withoutEvidence=value=>{
+      if(value instanceof Map)return new Map([...value].map(([key,item])=>[key,withoutEvidence(item)]));
+      if(Array.isArray(value))return value.map(withoutEvidence);
+      if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).filter(([key])=>!key.startsWith('customerDebt')&&key!=='previousCustomerDebtBalance').map(([key,item])=>[key,withoutEvidence(item)]));
+      return value;
+    };
+    assert.deepEqual(withoutEvidence(actual),baseline(source));assert.ok(yields>10);assert.deepEqual(source,before);
+    assert.equal(actual.rows[0].details.customerDebtBalance,60);
     assert.equal(actual.rows[0].details.badDebt,60,'negative customer credits are summed before employee clamp; duplicate IDs stay distinct');
   }
 });

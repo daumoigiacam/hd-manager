@@ -6,6 +6,7 @@ import {normalizeCommissionPolicy,commissionPolicyFromDraft,commissionPolicyToDr
 import {reconcileCommissionRevenue,buildCommissionCalculation} from '../src/utils/commissionRevenue.js';
 import {buildEmployeePayrollPolicyUpdate,applyEmployeePayrollPolicyForMonth} from '../src/utils/payrollPolicyHistory.js';
 import {createPayrollEmployeeSnapshot,getPayrollLockBlockers} from '../src/utils/payrollPeriodLock.js';
+import {inspectPayrollSnapshot} from '../src/utils/payrollSnapshotIntegrity.js';
 import {buildPayrollViewProjectionSteps} from '../src/features/payroll/payrollOriginalDomain.js';
 
 const sample=()=>({...commissionPolicyFromDraft(hdSampleCommissionPolicy('2026-11-01')),status:'active'});
@@ -58,7 +59,8 @@ test('unconfirmed return financials and conflicting source versions block payrol
   const salaryDetails={commissionCalculation:result,netSalary:0,grossSalary:0,endingDebt:0};
   const employeeWithHistory={...employee,...buildEmployeePayrollPolicyUpdate({employee:null,nextEmployee:{...employee,commissionPolicy:sample()},effectiveFrom:'2026-11-01'})};
   const snapshot=createPayrollEmployeeSnapshot({companyId:'tenant-a',monthKey:'2026-11',employee:employeeWithHistory,salaryDetails,lockedAt:'2026-11-30T17:00:00Z',lockedByEmployeeId:'owner-test'});
-  assert(getPayrollLockBlockers([snapshot]).some(reason=>reason.includes('commission.reconciliation_required')));
+  assert(inspectPayrollSnapshot(snapshot).invalidFields.includes('commission.reconciliation_required'));
+  assert(getPayrollLockBlockers([snapshot]).some(reason=>reason.includes('Doanh thu tính hoa hồng chưa đối soát xong')));
  }
 });
 test('actual collected revenue reuses official payment allocations and never counts overpayment or the same receipt twice',()=>{
