@@ -1062,11 +1062,12 @@ var normalizePolicyRecord = (policy = {}, index = 0) => {
     createdAt: `${policy?.createdAt || ""}`,
     createdByEmployeeId: `${policy?.createdByEmployeeId || ""}`,
     createdByName: `${policy?.createdByName || ""}`,
+    ...policy?.review ? { review: cloneValue(policy.review) } : {},
     supersededAt: `${policy?.supersededAt || ""}`
   };
 };
 var getStoredEmployeePayrollPolicyHistory = (employee = {}) => {
-  const storedPolicies = Array.isArray(employee?.payrollPolicies) ? employee.payrollPolicies : Array.isArray(employee?.salaryPolicyHistory) ? employee.salaryPolicyHistory : [];
+  const storedPolicies = Array.isArray(employee?.payrollPolicies) && employee.payrollPolicies.length ? employee.payrollPolicies : Array.isArray(employee?.salaryPolicyHistory) ? employee.salaryPolicyHistory : [];
   return storedPolicies.filter((policy) => policy && typeof policy === "object").map(normalizePolicyRecord).sort((left, right) => left.effectiveFrom.localeCompare(right.effectiveFrom) || left.versionNumber - right.versionNumber);
 };
 var getEmployeePayrollPolicyHistory = (employee = {}) => {
