@@ -3530,7 +3530,7 @@ export function createCustomerPortalView(runtime) {
   const renderHome=()=> <InstantHome ready={Boolean(customerProfile?.id&&currentCompany?.id)} scope={JSON.stringify([currentCompany?.id,currentUser?.id,customerProfile?.id])}
     identity={{companyName:getCompanyDisplayName(currentCompany),logo:getCompanyLogoUrl(currentCompany),name:getCustomerPlainName(customerProfile)||customerProfile.name,avatar:customerProfile.avatarUrl}}
     modules={navItems.filter(item=>!['home','more'].includes(item.id)).map(item=>({id:item.id,label:item.label}))}
-    onNavigate={setActiveTab} onProfile={()=>setActiveTab('more')} onNotifications={()=>setActiveTab('messages')} offline={!navigator.onLine}/>;
+    onNavigate={setActiveTab} onProfile={()=>setActiveTab('overview')} onNotifications={()=>setActiveTab('messages')} offline={!navigator.onLine}/>;
   const renderContent = () => {
     if(!financialReady&&['orders','debt','payments','points'].includes(activeTab))return <div role="status" aria-busy="true" data-hd-customer-financial-status="loading" className="rounded-2xl border border-slate-100 bg-white p-4 text-sm text-slate-500">Đang đối chiếu đơn hàng, công nợ và thanh toán…</div>;
     if (activeTab === 'order') return renderOrder();
@@ -3615,7 +3615,7 @@ export function createCustomerPortalView(runtime) {
           </div>}
         </AppSectionErrorBoundary>
       </main>
-      <div className="customer-portal-nav fixed left-1/2 z-30 -translate-x-1/2 bg-white"><InstantHomeNavigation active={activeTab==='more'?'profile':activeTab} onNavigate={setActiveTab} onModules={()=>setActiveTab('more')} onProfile={()=>setActiveTab('more')} onQuickCreate={onAddOrderRequest?()=>setActiveTab('order'):undefined}/></div>
+      <div className="customer-portal-nav fixed left-1/2 z-30 -translate-x-1/2 bg-white"><InstantHomeNavigation active={activeTab==='more'?'modules':activeTab} onNavigate={setActiveTab} onModules={()=>setActiveTab('more')} onQuickCreate={onAddOrderRequest?()=>setActiveTab('order'):undefined}/></div>
     </AppShell>
   );
 }

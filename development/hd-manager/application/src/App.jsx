@@ -21862,7 +21862,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
     // Requesting the catalog does not grant access. The presentation guard
     // separately waits for the real Firebase user, tenant and biometric state.
     setFullWorkspaceNotice('Đang xác minh phiên để mở đầy đủ chức năng. Các dữ liệu đã lưu vẫn sử dụng được.');
-    const target=tab==='home'?'home':'more';setFullWorkspaceIntent({tab:target,principalId:owner.scope.principalId,tenantId:owner.scope.tenantId});setLocalWorkspaceMode(false);setActiveTab(target);
+    const target=['home','settings'].includes(tab)?tab:'more';setFullWorkspaceIntent({tab:target,principalId:owner.scope.principalId,tenantId:owner.scope.tenantId});setLocalWorkspaceMode(false);setActiveTab(target);
   };
   const resumeFullWorkspace=fullWorkspaceAuthorized&&retainedFullScope.current===fullWorkspaceOwnerScope
     ?()=>{setLocalWorkspaceMode(false);setFullWorkspaceNotice('');}:undefined;
@@ -25211,7 +25211,7 @@ case 'asset_management': return <AssetManagementView readIdentity={currentReadOw
       )}
 
       <HDNavigation className="hd-app-navigation absolute bottom-0 left-0 right-0 bg-white border-t border-gray-100 z-40 pb-safe shadow-[0_-4px_10px_rgba(0,0,0,0.03)]">
-        <InstantHomeNavigation className="mobile-footer-nav" active={activeTab==='more'?'modules':activeTab==='executive_dashboard'?'reports':activeTab} onNavigate={setActiveTab} onModules={()=>setActiveTab('more')} onProfile={()=>setActiveTab('profile')} onReport={tabPermissions.executive_dashboard?()=>{onHomeReportRequested?.();setActiveTab('executive_dashboard');}:undefined} quickActions={showFloatingQuickActionButton?quickActionItems:mobileContextualQuickActionItems} onQuickAction={handleQuickActionSelect}/>
+        <InstantHomeNavigation className="mobile-footer-nav" active={activeTab==='more'?'modules':activeTab==='executive_dashboard'?'reports':activeTab} onNavigate={setActiveTab} onModules={()=>setActiveTab('more')} onSettings={tabPermissions.settings?()=>setActiveTab('settings'):undefined} onReport={tabPermissions.executive_dashboard?()=>{onHomeReportRequested?.();setActiveTab('executive_dashboard');}:undefined} quickActions={showFloatingQuickActionButton?quickActionItems:mobileContextualQuickActionItems} onQuickAction={handleQuickActionSelect}/>
         <DesktopSidebarGroups
           footerUsageKey={footerUsageKey} activeTab={activeTab} setActiveTab={setActiveTab}
           isAccounting={isAccounting} isDriver={isDriver} isOwnerAccount={isOwnerAccount}
