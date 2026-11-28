@@ -3452,7 +3452,6 @@ export function createCustomerPortalView(runtime) {
             <h3 className="font-extrabold">Hồ sơ cá nhân</h3>
             {isCustomerProfileEditorOpen ? <ChevronUp size={18} className="shrink-0 text-emerald-600" /> : <ChevronDown size={18} className="shrink-0 text-emerald-600" />}
           </button>
-          <button onClick={onLogout} className="shrink-0 text-xs font-bold text-red-500">Đăng xuất</button>
         </div>
         {isCustomerProfileEditorOpen && profileDraft && (
           <div className="mt-3 space-y-3">
@@ -3529,7 +3528,7 @@ export function createCustomerPortalView(runtime) {
 
   const renderHome=()=> <InstantHome ready={Boolean(customerProfile?.id&&currentCompany?.id)} scope={JSON.stringify([currentCompany?.id,currentUser?.id,customerProfile?.id])}
     identity={{companyName:getCompanyDisplayName(currentCompany),logo:getCompanyLogoUrl(currentCompany),name:getCustomerPlainName(customerProfile)||customerProfile.name,avatar:customerProfile.avatarUrl}}
-    modules={navItems.filter(item=>!['home','more'].includes(item.id)).map(item=>({id:item.id,label:item.label}))}
+    modules={navItems.filter(item=>item.id!=='home').map(item=>({id:item.id,label:item.label}))}
     onNavigate={setActiveTab} onProfile={()=>setActiveTab('overview')} onNotifications={()=>setActiveTab('messages')} offline={!navigator.onLine}/>;
   const renderContent = () => {
     if(!financialReady&&['orders','debt','payments','points'].includes(activeTab))return <div role="status" aria-busy="true" data-hd-customer-financial-status="loading" className="rounded-2xl border border-slate-100 bg-white p-4 text-sm text-slate-500">Đang đối chiếu đơn hàng, công nợ và thanh toán…</div>;
@@ -3541,6 +3540,7 @@ export function createCustomerPortalView(runtime) {
     if (activeTab === 'bank') return renderBank();
     if (activeTab === 'points') return renderPoints();
     if (activeTab === 'more') return <>{renderMore()}<button type="button" onClick={()=>setActiveTab('overview')}>Thông tin tài khoản</button></>;
+    if (activeTab === 'settings') return <section className="divide-y divide-gray-200 bg-white"><h2 className="p-4 text-xl font-extrabold">Cài đặt</h2><button type="button" onClick={()=>setActiveTab('more')} className="block w-full p-4 text-left font-bold">Hồ sơ cá nhân</button><button type="button" onClick={onLogout} className="block w-full p-4 text-left font-bold text-red-600">Đăng xuất</button></section>;
     if (activeTab === 'overview') return renderCustomerOverview();
     return renderHome();
   };
@@ -3615,7 +3615,7 @@ export function createCustomerPortalView(runtime) {
           </div>}
         </AppSectionErrorBoundary>
       </main>
-      <div className="customer-portal-nav fixed left-1/2 z-30 -translate-x-1/2 bg-white"><InstantHomeNavigation active={activeTab==='more'?'modules':activeTab} onNavigate={setActiveTab} onModules={()=>setActiveTab('more')} onQuickCreate={onAddOrderRequest?()=>setActiveTab('order'):undefined}/></div>
+      <div className="customer-portal-nav fixed left-1/2 z-30 -translate-x-1/2 bg-white"><InstantHomeNavigation active={activeTab} onNavigate={setActiveTab} onSettings={()=>setActiveTab('settings')} onQuickCreate={onAddOrderRequest?()=>setActiveTab('order'):undefined}/></div>
     </AppShell>
   );
 }

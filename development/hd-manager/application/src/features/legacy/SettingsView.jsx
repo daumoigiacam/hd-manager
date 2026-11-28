@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useAppScreenBack } from "../../hooks/useAppScreenBack.js";
 import { LOYALTY_ELIGIBILITY_CONDITION_DEFINITIONS, normalizeLoyaltyEligibilityConditions } from "../../utils/customerLoyaltyEligibility.js";
-import { Check, ChevronRight, ChevronDown, ChevronUp, Lock, CreditCard, Wallet, Banknote, Archive, ArchiveRestore, Database, Bell, PlusCircle, Download, Gift, Star } from "lucide-react";
+import { Check, ChevronRight, ChevronDown, ChevronUp, Lock, CreditCard, Wallet, Banknote, Archive, ArchiveRestore, Database, Bell, PlusCircle, Download, Gift, Star, LogOut } from "lucide-react";
 import CustomerCareSettings, { CARE_RULES } from "../settings/CustomerCareSettings.jsx";
 import { isVpsMode } from "@hd/hd-connect-runtime";
 import CompanyBankAccounts from "../settings/CompanyBankAccounts.jsx";
@@ -623,6 +623,10 @@ export function createSettingsView(runtime) {
               </button>
             );
           })}
+          {onLogout && <button type="button" onClick={() => onLogout()} className="flex w-full items-center gap-3 px-3 py-4 text-left font-bold text-red-600 hover:bg-red-50">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center"><LogOut size={18} /></span>
+            <span className="flex-1 text-sm">Đăng xuất</span>
+          </button>}
     </div>
   );
 

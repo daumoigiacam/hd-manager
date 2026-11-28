@@ -51,6 +51,7 @@ function fixture(overrides = {}) {
   const View = compile('../src/features/legacy/SettingsView.jsx', 'SettingsView', env,
     'handleLoyaltySettingSubmit,handleWarehouseSettingSubmit,handleBubbleSettingSubmit,handleCreateBackupFile,handleRestoreBackupFile,handleResetDemoData,setLoyaltyForm,setWarehouseForm,setBubbleForm,loyaltyForm,warehouseForm,bankSaveStatus,loyaltySaveStatus,warehouseSaveStatus,backupStatus,isBackingUp,isSavingPanel');
   f.props = {readIdentity: 'actor-a', currentUser: {id: 'owner'}, employee: {id: 'owner'}, currentCompany: {id: 'qa', warehouseOrderAutoCancelDays: 0},
+    onLogout: () => {f.logouts = (f.logouts || 0) + 1;},
     isAccounting: true, canManageLoyaltySettings: true, canManageWarehouseSettings: true, canManageQuickActionDefaults: true,
     canBackupData: true, canRestoreData: true, canResetCompanyData: true,
     onUpdateCompanySettings: async (patch, options) => {f.calls.push(structuredClone({patch, options})); return {success: true, confirmed: true};}};
@@ -88,7 +89,9 @@ test('actual settings rejects invalid money/day values without writing or silent
 test('legacy view-settings flag cannot grant configuration, payroll limit, bank, backup or reset panels', () => {
   const f = fixture(); for (const key of Object.keys(f.props).filter(key => key.startsWith('can'))) f.props[key] = false;
   f.render(); const labels = nodes(f.tree, n => n.type === 'button').map(text);
-  assert.deepEqual(labels, ['Bảo mật tài khoảnMật khẩu, PIN và thiết bị tin cậy']);
+  assert.deepEqual(labels, ['Bảo mật tài khoảnMật khẩu, PIN và thiết bị tin cậy', 'Đăng xuất']);
+  nodes(f.tree, n => n.type === 'button').at(-1).props.onClick();
+  assert.equal(f.logouts, 1);
 });
 test('late settings acknowledgement after account/permission change cannot restore its old panel or status', async () => {
   const f = fixture(); let finish;
