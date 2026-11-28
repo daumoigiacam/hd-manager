@@ -10,7 +10,7 @@ const nativeModule=createPreloadableModule(()=>import('./OfflineNativeHome.jsx')
 
 // Same product report view/calculator as Online; data comes from the account's
 // encrypted repository. Never convert missing history or missing grants to zero.
-export default function OfflineHome({runtime,verifiedLaunch,onNavigate,initialResult=null}) {
+export default function OfflineHome({runtime,verifiedLaunch,onNavigate,onOpenOrder,initialResult=null}) {
   const [result,setResult]=useState(initialResult),[loaded,setLoaded]=useState(Boolean(initialResult)),[error,setError]=useState('');
   const initialConsumed=useRef(false);
   const [,setSyncStatus]=useState(null);
@@ -38,6 +38,6 @@ export default function OfflineHome({runtime,verifiedLaunch,onNavigate,initialRe
   return <section data-home-local-generation={result.generation}>
     <p role="status">{(runtime?.home?.status()||{state:'OPENING_DATABASE'}).state==='SYNCING'?'Đang nhận thay đổi mới · Báo cáo đã lưu vẫn sử dụng được':(runtime?.home?.status()||{state:'OPENING_DATABASE'}).state==='SYNC_FAILED'?'Chưa đồng bộ được thay đổi mới · Đang dùng bản đã lưu':'Báo cáo đã lưu trên thiết bị'}</p>
     <p role="status">{!runtime&&'Bộ lưu trữ đang mở · Bản cache mã hóa đã xác minh quyền. '}Ngày dữ liệu {result.dayKey} · Lưu lúc {new Date(result.capturedAt).toLocaleString('vi-VN')} · {(runtime?.home?.status()||{state:'OPENING_DATABASE'}).state==='SYNCED'?'Đã đối chiếu phiên bản nguồn server.':'Bản đã lưu chưa được đối chiếu thay đổi mới.'} Chưa gồm giao dịch đang chờ xác nhận.</p>
-    <PreloadedWorkspace module={reportModule} viewProps={{result,runtime,verifiedLaunch,onNavigate}} label="báo cáo đã lưu"/>
+    <PreloadedWorkspace module={reportModule} viewProps={{result,runtime,verifiedLaunch,onNavigate,onOpenOrder}} label="báo cáo đã lưu"/>
   </section>;
 }

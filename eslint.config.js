@@ -1,5 +1,19 @@
 export default [
   {
+    files: ['development/hd-manager/application/src/features/business-report/RevenueDetail.jsx',
+      'development/hd-manager/application/src/features/business-report/BusinessReportWorkspace.jsx',
+      'development/hd-manager/application/src/features/customers/OfflineHome.jsx',
+      'development/hd-manager/application/src/features/customers/OfflineHomeReport.jsx',
+      'development/hd-manager/application/src/features/orders/SQLiteProductOrders.jsx'],
+    languageOptions: {ecmaVersion:'latest',sourceType:'module',parserOptions:{ecmaFeatures:{jsx:true}}},
+    rules: {'no-unreachable':'error','no-dupe-keys':'error'}
+  },
+  {
+    files: ['tests/core-revenue-order-navigation.test.mjs'],
+    languageOptions: {ecmaVersion:'latest',sourceType:'module'},
+    rules: {'no-unused-vars':'error','no-unreachable':'error','no-dupe-keys':'error'}
+  },
+  {
     files: ['development/hd-manager/application/src/utils/shareDelivery.js',
       'development/hd-manager/application/src/features/sharing/shareFilesDialog.js',
       'development/hd-manager/application/src/features/warehouse/shareDispatchSheet.js',

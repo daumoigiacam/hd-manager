@@ -30,6 +30,7 @@ export function createOrderManagementView(runtime) {
   const [orderCreationSource, setOrderCreationSource] = useState('');
   const [showQuickAddCus, setShowQuickAddCus] = useState(false);
   const [selectedOrderId, setSelectedOrderId] = useState(null);
+  const [orderOpenError, setOrderOpenError] = useState('');
   const [orderSaving, setOrderSaving] = useState(false);
   const orderEditInFlightRef = useRef(null);
   const [isSharingOrder, setIsSharingOrder] = useState(false);
@@ -2482,8 +2483,14 @@ export function createOrderManagementView(runtime) {
 
   useEffect(() => {
     if (quickActionIntent?.type !== 'open_order_detail' || !quickActionIntent?.orderId) return;
+    if (quickActionIntent.companyId && quickActionIntent.companyId !== (currentCompany?.id || employee?.companyId || '')) {
+      onQuickActionHandled?.();
+      return;
+    }
+    if (!orderViewsReady) return;
     const orderId = `${quickActionIntent.orderId}`.trim();
     const orderExists = Boolean(getLiveOrderViewModel(orderId) || activeOrders.some(order => order.id === orderId));
+    setOrderOpenError(orderExists ? '' : 'Không tìm thấy hóa đơn trong dữ liệu được phép xem. Vui lòng tải lại dữ liệu và thử lại.');
     if (orderExists) openOrderDetail(orderId);
     onQuickActionHandled?.();
   }, [
@@ -2491,12 +2498,17 @@ export function createOrderManagementView(runtime) {
     quickActionIntent?.requestedAt,
     quickActionIntent?.type,
     quickActionIntent?.orderId,
+    quickActionIntent?.companyId,
+    currentCompany?.id,
+    employee?.companyId,
+    orderViewsReady,
     activeOrders,
     getLiveOrderViewModel
   ]);
 
   return (
     <div className="premium-data-module premium-orders-module space-y-4 pb-16" data-hd-essential-data-ready={orderViewsReady&&!preparedOrderSearch.pending?'true':undefined} aria-busy={!orderViewsReady || preparedOrderSearch.pending}>
+      {orderOpenError && <p role="alert" className="p-3 text-sm text-red-700">{orderOpenError}</p>}
       {showFilterPanel && (
         <div className="premium-data-toolbar bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
           <div className="space-y-3">

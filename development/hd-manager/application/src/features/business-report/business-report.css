@@ -186,6 +186,11 @@
 .business-report-revenue-orders li { padding-block: var(--hd-space-3, 12px); border-bottom: 1px solid var(--hd-color-border); overflow-wrap: anywhere; }
 .business-report-revenue-orders li > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--hd-space-2, 8px); }
 .business-report-revenue-orders p { margin-block: var(--hd-space-1, 4px); }
+.business-report-order-link { display: block; width: 100%; min-height: 48px; padding: 8px 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.business-report-order-link:focus-visible { outline: 2px solid var(--hd-color-primary, #3659e3); outline-offset: 4px; border-radius: 4px; }
+.business-report-order-summary, .business-report-order-context { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
+.business-report-order-summary > span { min-width: 0; overflow-wrap: anywhere; }
+.business-report-order-summary > strong { flex-shrink: 0; white-space: nowrap; }
 .business-report-detail-pager { display: flex; align-items: center; justify-content: center; gap: var(--hd-space-3, 12px); padding-block: var(--hd-space-3, 12px); }
 .business-report-detail-pager button { display: grid; place-items: center; width: 40px; height: 40px; border: 1px solid var(--hd-color-border); border-radius: var(--hd-radius-sm, 4px); background: var(--hd-color-surface); }
 .business-report-detail-pager button:disabled { opacity: 0.4; }
