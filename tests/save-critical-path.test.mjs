@@ -171,6 +171,7 @@ test('payroll double tap starts only one server lock and clears busy after rejec
   const guard = { current: false };
   const bindings = {
     canLockSelectedPayrollPeriod: true, isLockingPayroll: false, payrollLockInFlightRef: guard,
+    payrollLockBlockers: [],
     buildPayrollLockPayload: () => ({ period: {}, snapshots: [{}] }),
     setIsLockingPayroll() {}, setPayrollLockStatus() {},
     onLockPayrollPeriod: () => { calls += 1; return new Promise(done => { resolve = done; }); },
@@ -182,6 +183,9 @@ test('payroll double tap starts only one server lock and clears busy after rejec
   resolve({ success: false, message: 'Denied' });
   await first;
   assert.equal(guard.current, false);
+  bindings.payrollLockBlockers.push('Còn chính sách cần rà soát');
+  await lock();
+  assert.equal(calls, 1, 'a newly blocked preflight cannot submit another server close');
 });
 
 test('order edit respects its confirmation boundary and prepares share only after confirmation', async () => {
