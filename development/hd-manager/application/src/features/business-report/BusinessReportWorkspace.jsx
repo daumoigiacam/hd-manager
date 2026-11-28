@@ -202,6 +202,7 @@ export default function BusinessReportWorkspace({ snapshot, dateSource=null,prod
   const [showAllInsights, setShowAllInsights] = useState(false);
   const [selectedExpense, setSelectedExpense] = useState(null);
   const [revenueSelection, setRevenueSelection] = useState(null);
+  const [revenueView, setRevenueView] = useState('period');
   const freshnessLabel=useMemo(()=>{
     if(dateSource?.freshnessLabel)return dateSource.freshnessLabel;
     const stamp=new Date(snapshot?.generatedAt||'');
@@ -233,7 +234,7 @@ export default function BusinessReportWorkspace({ snapshot, dateSource=null,prod
   const navigate = (next) => {if(next==='home')onCloseDetails();else {workingHomeProps?.onRequestReport?.();if(primaryOnly)onRequestDetails();}setRoute(next); setShowAllInsights(false); };
   const openReportSection = (section) => { setReportTab(section); navigate('report'); };
   const selectProduct = (row) => { setSelectedProduct(row);setDetailLimit(50);onRequestProductDetail(row); navigate('product'); };
-  const selectRevenue = (kind, row) => { setRevenueSelection({ kind, id: row.id, name: row.name }); navigate(kind); };
+  const selectRevenue = (kind, row) => { setRevenueView('period'); setRevenueSelection({ kind, id: row.id, name: row.name }); navigate(kind); };
   const goBack = () => navigate(route === 'product' ? 'products' : 'home');
   useAppScreenBack(()=>{if(selectedExpense){setSelectedExpense(null);return true;}if(route!=='home'){goBack();return true;}return false;});
   const debtNavigate = () => setActiveTab?.('debt');
@@ -260,7 +261,7 @@ export default function BusinessReportWorkspace({ snapshot, dateSource=null,prod
     <ReportHeader route={route} accountName={accountName || companyName || employee?.name} companyName={companyName} companyLogoUrl={companyLogoUrl} notificationUnreadCount={notificationUnreadCount} onBack={goBack} onNotifications={() => setActiveTab?.('messages')} onProfile={() => setActiveTab?.('profile')} />
     {workingHomeProps&&<WorkingHome {...workingHomeProps}/>}
     <div className="business-report-content">
-      <ReportDateFilter finance={finance} report={report} period={period} setPeriod={setPeriod} customRange={customRange} setCustomRange={setCustomRange} />
+      {!(route === 'employee' && revenueView === 'annual') && <ReportDateFilter finance={finance} report={report} period={period} setPeriod={setPeriod} customRange={customRange} setCustomRange={setCustomRange} />}
       <div className="business-report-freshness" role="status" aria-live="polite" title={`${sourcePending?(workingHomeProps&&!workingHomeProps.reportRequested?'Dữ liệu đã lưu, chưa xác minh mới nhất. ':'Đang đối chiếu; đang giữ kết quả trước. '):''}${freshnessLabel}`}>
         {sourcePending?(workingHomeProps&&!workingHomeProps.reportRequested?'Dữ liệu đã lưu, chưa xác minh mới nhất · ':'Đang đối chiếu · '):''}{freshnessLabel}
       </div>
@@ -277,7 +278,7 @@ export default function BusinessReportWorkspace({ snapshot, dateSource=null,prod
         </>}
       </>}
       {primaryOnly&&route!=='home'&&<Section title="Phân tích chi tiết" className="business-report-panel"><p role={detailsError?'alert':'status'} aria-busy={detailsPending}>{detailsError||'Đang lấy dữ liệu chi tiết theo yêu cầu…'}</p>{detailsError&&<button type="button" onClick={onRequestDetails}>Thử lại</button>}</Section>}
-      {(route === 'employee' || route === 'customer') && revenueSelection && <RevenueDetail key={`${route}-${revenueSelection.id}-${report.startDate}-${report.endDate}`} business={business} selection={revenueSelection} report={report} onOpenOrder={onOpenOrder} />}
+      {(route === 'employee' || route === 'customer') && revenueSelection && <RevenueDetail key={`${route}-${report.startDate}-${report.endDate}`} business={business} selection={revenueSelection} report={report} onOpenOrder={onOpenOrder} view={revenueView} onViewChange={setRevenueView} onEmployeeChange={setRevenueSelection} asOfDate={finance.todayKey || report.endDate} />}
       {route === 'report' && !primaryOnly && <>
         <div className="business-report-view-tabs" role="tablist" aria-label="Loại báo cáo">{[['revenue', 'Doanh thu'], ['costs', 'Chi phí'], ['profit', 'Lợi nhuận'], ['debt', 'Công nợ']].map(([id, label]) => <button key={id} type="button" role="tab" data-active={reportTab === id} aria-selected={reportTab === id} onClick={() => setReportTab(id)}>{label}</button>)}</div>
         {reportTab === 'revenue' && <><div className="business-report-mini-grid"><div><span>Doanh thu {report.label.toLowerCase()}</span><strong>{formatVnd(report.revenue)}</strong></div><div><span>So với kỳ trước</span><strong>{getChangePercent(report.revenue, report.previous?.revenue) === null ? 'Chưa đủ dữ liệu' : formatPercent(getChangePercent(report.revenue, report.previous?.revenue))}</strong></div></div><RevenueProfitChart report={report} finance={finance} /><DonutBreakdown title={`Cơ cấu doanh thu • ${report.label}`} rows={revenueGroups} center={report.revenue} caption="Doanh thu kỳ" /><Section title="Doanh thu theo sản phẩm" className="business-report-panel" action={<span className="business-report-scope">{report.label} • {periodProductRows.length} mặt hàng</span>}><ProductRows rows={periodProductRows} products={products} onSelect={selectProduct} limit={30} /></Section></>}

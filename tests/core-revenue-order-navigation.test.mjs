@@ -6,7 +6,7 @@ import {parse} from '@babel/parser';
 import {createRequire} from 'node:module';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {formatVnd} from '../development/hd-manager/application/src/features/business-report/reportViewModel.js';
-import {selectRevenueDetail} from '../development/hd-manager/application/src/features/business-report/revenueDetailModel.js';
+import {getEmployeeRevenueYears, selectEmployeeRevenueYear, selectRevenueDetail} from '../development/hd-manager/application/src/features/business-report/revenueDetailModel.js';
 
 const require=createRequire(import.meta.url);
 const root=new URL('../development/hd-manager/application/src/',import.meta.url);
@@ -37,9 +37,9 @@ const component=find(source,n=>n.type==='FunctionDeclaration'&&n.id.name==='Reve
 const compiled=await transform(source.slice(component.start,component.end),{loader:'jsx',jsx:'automatic',format:'cjs'});
 function viewFixture(){
   const values=[];let cursor=0;
-  const useState=initial=>{const at=cursor++;if(!(at in values))values[at]=initial;return[values[at],value=>{values[at]=typeof value==='function'?value(values[at]):value;}];};
-  const View=Function('require','useMemo','useState','formatVnd','selectRevenueDetail','ChevronLeft','ChevronRight',compiled.code+';return RevenueDetail;')
-    (require,fn=>fn(),useState,formatVnd,selectRevenueDetail,()=>null,()=>null);
+  const useState=initial=>{const at=cursor++;if(!(at in values))values[at]=typeof initial==='function'?initial():initial;return[values[at],value=>{values[at]=typeof value==='function'?value(values[at]):value;}];};
+  const View=Function('require','useMemo','useState','useRef','useEffect','formatVnd','selectRevenueDetail','getEmployeeRevenueYears','selectEmployeeRevenueYear','ChevronLeft','ChevronRight',compiled.code+';return RevenueDetail;')
+    (require,fn=>fn(),useState,value=>({current:value}),()=>{},formatVnd,selectRevenueDetail,getEmployeeRevenueYears,selectEmployeeRevenueYear,()=>null,()=>null);
   return props=>{cursor=0;return View(props);};
 }
 function elements(node,predicate){
@@ -75,10 +75,48 @@ test('unavailable navigation and missing identity remain readable; denied access
   tree=viewFixture()({...props,business:{salesEmployeeOrders:[{...rows[0],orderId:''}]},onOpenOrder:()=>true});
   assert.equal(elements(tree,n=>n.props?.className==='business-report-order-link').length,0);
 });
-test('customer drilldown retains its invoice context while opening the same exact order',()=>{
+test('customer drilldown is compact and still opens the same exact order',()=>{
   const opened=[];const tree=viewFixture()({...props,business:{customerPerformanceRows:[rows[0]]},selection:{...props.selection,kind:'customer'},onOpenOrder:id=>opened.push(id)});
-  const html=renderToStaticMarkup(tree);assert.match(html,/2026-11-28/);assert.match(html,/Kinh doanh:/);
+  const html=renderToStaticMarkup(tree);assert.ok(!html.includes('internal-'));assert.ok(!html.includes('2026-11-28'));assert.ok(!html.includes('Kinh doanh:'));assert.match(html,/Khách trùng tên/);
   elements(tree,n=>n.props?.className==='business-report-order-link')[0].props.onClick();assert.deepEqual(opened,['internal-0']);
+});
+
+test('annual employee view has 12 months, opens exact monthly invoices and resets pagination on year changes',()=>{
+  const render=viewFixture(),opened=[];
+  const p={...props,view:'annual',asOfDate:'2026-11-28',onViewChange:()=>{},onOpenOrder:id=>opened.push(id),business:{salesEmployeeOrders:[...rows,{...rows[0],orderId:'last-year',date:'2025-02-28',revenue:999}]}};
+  let tree=render(p);
+  let months=elements(tree,n=>n.props?.className==='business-report-month');
+  assert.equal(months.length,12);assert.equal(months[11].props.disabled,true);assert.equal(months[10].props.disabled,false);
+  assert.equal(elements(tree,n=>n.type==='ol').length,0);
+  months[10].props.onClick();tree=render(p);
+  elements(tree,n=>n.props?.['aria-label']==='Trang sau')[0].props.onClick();tree=render(p);
+  elements(tree,n=>n.props?.className==='business-report-order-link')[0].props.onClick();assert.deepEqual(opened,['internal-20']);
+  elements(tree,n=>n.type==='select')[0].props.onChange({target:{value:'2025'}});tree=render(p);
+  assert.equal(elements(tree,n=>n.type==='ol').length,0);
+  months=elements(tree,n=>n.props?.className==='business-report-month');assert.ok(months.every(n=>!n.props.disabled));
+  months[1].props.onClick();tree=render(p);
+  const links=elements(tree,n=>n.props?.className==='business-report-order-link');assert.equal(links.length,1);links[0].props.onClick();assert.deepEqual(opened,['internal-20','last-year']);
+  assert.match(renderToStaticMarkup(tree),/Hóa đơn tháng 2\/2025/);
+});
+
+test('monthly views show empty months honestly and can return to the year or original filter',()=>{
+  const render=viewFixture(),modes=[];const p={...props,view:'annual',asOfDate:'2026-11-28',onViewChange:mode=>modes.push(mode)};
+  let tree=render(p);elements(tree,n=>n.props?.className==='business-report-month')[0].props.onClick();tree=render(p);
+  assert.match(renderToStaticMarkup(tree),/Không có đơn hàng trong kỳ này/);
+  elements(tree,n=>n.type==='button'&&n.props.children==='Xem tổng năm')[0].props.onClick();tree=render(p);assert.equal(elements(tree,n=>n.type==='ol').length,0);
+  elements(tree,n=>n.type==='button'&&n.props.children==='Theo bộ lọc')[0].props.onClick();assert.deepEqual(modes,['period']);
+  tree=render({...p,view:'period'});assert.equal(elements(tree,n=>n.props?.className==='business-report-order-link').length,0);assert.equal(elements(tree,n=>n.type==='li').length,20);
+});
+
+test('changing employee retains year and month, isolates totals and forwards the selected identity',()=>{
+  const render=viewFixture(),changed=[];
+  const p={...props,view:'annual',asOfDate:'2026-11-28',onViewChange:()=>{},onEmployeeChange:item=>changed.push(item),business:{salesEmployeeOrders:[...rows,{...rows[0],id:'other',name:'Người khác',salesEmployeeName:'Người khác',date:'2026-01-01',revenue:900000}]}};
+  let tree=render(p);elements(tree,n=>n.type==='select'&&n.props['aria-label']==='Năm xem doanh thu')[0].props.onChange({target:{value:'2025'}});
+  tree=render(p);elements(tree,n=>n.props?.className==='business-report-month')[1].props.onClick();tree=render(p);
+  elements(tree,n=>n.type==='select'&&n.props['aria-label']==='Nhân viên xem doanh thu')[0].props.onChange({target:{value:'other'}});
+  assert.deepEqual(changed,[{id:'other',name:'Người khác',kind:'employee'}]);
+  tree=render({...p,selection:changed[0]});assert.equal(elements(tree,n=>n.type==='select'&&n.props['aria-label']==='Năm xem doanh thu')[0].props.value,'2025');
+  const html=renderToStaticMarkup(tree);assert.match(html,/Hóa đơn tháng 2\/2025/);assert.match(html,/Không có đơn hàng/);assert.ok(!html.includes('900.000'));
 });
 function onlineFixture(){
   const opened=[],state={acks:0,error:''};

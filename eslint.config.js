@@ -9,7 +9,8 @@ export default [
     rules: {'no-unreachable':'error','no-dupe-keys':'error'}
   },
   {
-    files: ['tests/core-revenue-order-navigation.test.mjs'],
+    files: ['tests/core-revenue-order-navigation.test.mjs', 'tests/core-employee-revenue-year.test.mjs',
+      'development/hd-manager/application/src/features/business-report/revenueDetailModel.js'],
     languageOptions: {ecmaVersion:'latest',sourceType:'module'},
     rules: {'no-unused-vars':'error','no-unreachable':'error','no-dupe-keys':'error'}
   },
