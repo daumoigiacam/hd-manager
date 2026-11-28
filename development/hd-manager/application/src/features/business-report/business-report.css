@@ -181,6 +181,7 @@
 .business-report-sales-row { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 60px; padding: 8px 0; border-bottom: 1px solid #eef2f7; }
 .business-report-sales-row:last-child { border-bottom: 0; }
 .business-report-sales-row { width: 100%; border-top: 0; border-left: 0; border-right: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.business-report-revenue-detail { grid-column: 1 / -1; min-width: 0; }
 .business-report-revenue-detail h2 { font-size: var(--hd-type-title, 20px); overflow-wrap: anywhere; }
 .business-report-revenue-orders { list-style: none; padding: 0; margin: 0; }
 .business-report-revenue-orders li { padding-block: var(--hd-space-3, 12px); border-bottom: 1px solid var(--hd-color-border); overflow-wrap: anywhere; }
@@ -191,6 +192,28 @@
 .business-report-order-summary, .business-report-order-context { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
 .business-report-order-summary > span { min-width: 0; overflow-wrap: anywhere; }
 .business-report-order-summary > strong { flex-shrink: 0; white-space: nowrap; }
+.business-report-revenue-modes { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 4px; margin-block: 12px 16px; border-radius: 12px; background: #f1f5fb; }
+.business-report-revenue-modes button { min-height: 44px; padding: 8px; border: 0; border-radius: 9px; background: transparent; color: #536783; font: inherit; cursor: pointer; }
+.business-report-revenue-modes button[aria-pressed="true"] { background: #2563eb; color: #fff; font-weight: 650; }
+.business-report-year-picker label { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-weight: 600; }
+.business-report-year-picker label + label { margin-top: 10px; }
+.business-report-year-picker select { min-width: 110px; min-height: 44px; padding: 8px 12px; border: 1px solid #dce5f2; border-radius: 10px; background: #fff; color: inherit; font: inherit; }
+.business-report-year-picker select[aria-label="Nhân viên xem doanh thu"] { max-width: 70%; }
+.business-report-year-picker p { margin-block: 10px 16px; line-height: 1.5; }
+.business-report-month-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-block: 16px; }
+.business-report-month { display: grid; gap: 7px; min-width: 0; min-height: 116px; padding: 12px; border: 1px solid #e2e9f4; border-radius: 12px; background: #fff; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.business-report-month > span { color: #536783; }
+.business-report-month strong { font-size: 14px; overflow-wrap: anywhere; }
+.business-report-month small { color: #667793; font-size: 12px; }
+.business-report-month[aria-pressed="true"] { border-color: #2563eb; background: #eff6ff; box-shadow: inset 0 0 0 1px #2563eb; }
+.business-report-month:disabled { background: #f7f9fc; color: #94a3b8; cursor: default; }
+.business-report-month i { display: block; height: 4px; border-radius: 4px; background: #edf2f9; overflow: hidden; }
+.business-report-month i b { display: block; height: 100%; background: #3478ed; border-radius: inherit; }
+.business-report-month-heading { margin-block: 20px 4px; scroll-margin-top: 100px; }
+.business-report-month-heading h3 { margin-block: 0 8px; }
+.business-report-month-heading > button { min-height: 40px; padding: 6px 0; border: 0; background: transparent; color: #2563eb; font: inherit; cursor: pointer; }
+.business-report-month:focus-visible, .business-report-revenue-modes button:focus-visible { outline: 2px solid #2563eb; outline-offset: 3px; }
+@media (min-width: 640px) { .business-report-month-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 .business-report-detail-pager { display: flex; align-items: center; justify-content: center; gap: var(--hd-space-3, 12px); padding-block: var(--hd-space-3, 12px); }
 .business-report-detail-pager button { display: grid; place-items: center; width: 40px; height: 40px; border: 1px solid var(--hd-color-border); border-radius: var(--hd-radius-sm, 4px); background: var(--hd-color-surface); }
 .business-report-detail-pager button:disabled { opacity: 0.4; }
