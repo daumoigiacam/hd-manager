@@ -3610,7 +3610,7 @@ export function createCustomerPortalView(runtime) {
           resetKey={activeTab}
           onReset={() => setActiveTab('home')}
         >
-          {(activeTab==='home'||catalogState.status==='ready')?renderContent():<div data-hd-customer-bootstrap-status={catalogState.status} data-hd-module-loading aria-busy="true" className="rounded-2xl border border-gray-100 bg-white p-5 text-sm text-slate-600">
+          {(['home','settings'].includes(activeTab)||catalogState.status==='ready')?renderContent():<div data-hd-customer-bootstrap-status={catalogState.status} data-hd-module-loading aria-busy="true" className="rounded-2xl border border-gray-100 bg-white p-5 text-sm text-slate-600">
             {catalogState.status==='error'?<><p role="alert">{catalogState.error}</p><button type="button" onClick={onRetryCatalog} className="mt-3 rounded-xl bg-emerald-600 px-4 py-2 font-bold text-white">Thử lại</button></>:<p role="status">Đang lấy danh mục và thông tin khách hàng…</p>}
           </div>}
         </AppSectionErrorBoundary>
