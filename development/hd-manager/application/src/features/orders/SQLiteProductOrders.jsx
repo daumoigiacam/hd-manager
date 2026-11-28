@@ -16,7 +16,7 @@ const field='rounded-xl border bg-white p-3 text-sm text-gray-900';
 
 // Lazy route contract: default({runtime,onNavigate}). The owner provides one
 // shared business directory and an Orders-specific full-history reader/writer.
-export default function SQLiteProductOrders({runtime,onNavigate,orderSearchIntent}){
+export default function SQLiteProductOrders({runtime,onNavigate,orderSearchIntent,orderDetailIntent}){
  const [epoch,setEpoch]=useState(0);
  useEffect(()=>{const release=runtime?.subscribe?.(topic=>{if(!current(runtime)||ordersRelevantTopic(topic))setEpoch(n=>n+1);});
   const timer=setTimeout(()=>setEpoch(n=>n+1),Math.max(0,(runtime?.expiresAtMs||0)-Date.now())+1);
@@ -24,7 +24,7 @@ export default function SQLiteProductOrders({runtime,onNavigate,orderSearchInten
  if(!current(runtime)||!runtime.capabilities?.includes('orders.read'))return <section role="alert" className="p-4">Phiên đơn hàng không còn quyền truy cập.</section>;
  if(runtime.appSession?.sourceProfile==='native-isolation-v1')return <section role="alert" className="p-4">Nguồn native hiện chưa có giao thức đơn hàng sản phẩm.</section>;
  if(!runtime.business)return <section role="alert" className="p-4">Chưa nối danh mục dùng chung runtime.business. Chưa thể đọc đơn.</section>;
- return <OrdersWorkspace key={JSON.stringify(runtime.scope)} runtime={runtime} onNavigate={onNavigate} epoch={epoch} orderSearchIntent={orderSearchIntent}/>;
+ return <OrdersWorkspace key={JSON.stringify(runtime.scope)} runtime={runtime} onNavigate={onNavigate} epoch={epoch} orderSearchIntent={orderSearchIntent} orderDetailIntent={orderDetailIntent}/>;
 }
 
 // A pending query retains readable rows without dimming/repainting the page.
@@ -38,7 +38,7 @@ const OrderListItem=React.memo(function OrderListItem({order,disabled,onSelect})
  </button></li>;
 });
 
-function OrdersWorkspace({runtime,onNavigate,epoch,orderSearchIntent}){
+function OrdersWorkspace({runtime,onNavigate,epoch,orderSearchIntent,orderDetailIntent}){
  const searchStore=useMemo(()=>createOrderSearchState(),[]);
  const search=useSyncExternalStore(searchStore.subscribe,searchStore.getSnapshot);
  const [draftSearch,setDraftSearch]=useState(search);
@@ -57,6 +57,15 @@ function OrdersWorkspace({runtime,onNavigate,epoch,orderSearchIntent}){
   searchStore.set(orderSearchIntent.query);setDraftSearch(orderSearchIntent.query);
  },[orderSearchIntent,creating,selected,searchStore]);
  const [notice,setNotice]=useState('');
+ const consumedOrderDetail=useRef(null);
+ useEffect(()=>{
+  if(!orderDetailIntent||consumedOrderDetail.current===orderDetailIntent||!repo||!current(runtime))return;
+  if(orderDetailIntent.scope!==JSON.stringify(runtime.scope)){consumedOrderDetail.current=orderDetailIntent;return;}
+  if(creating||(selected&&selected!==orderDetailIntent.orderId)){
+   setNotice('Hãy đóng bản nháp hoặc hóa đơn đang mở để xem hóa đơn đã chọn trong báo cáo.');return;
+  }
+  consumedOrderDetail.current=orderDetailIntent;setNotice('');setSelected(orderDetailIntent.orderId);
+ },[orderDetailIntent,repo,runtime,creating,selected]);
  const selectOrder=useCallback(id=>setSelected(id),[]);
  const [filtersOpen,setFiltersOpen]=useState(false);
  const createClose=useRef(null),detailClose=useRef(null),adapterOwner=useRef(null),completedQuery=useRef(null),pageTrace=useRef(0);

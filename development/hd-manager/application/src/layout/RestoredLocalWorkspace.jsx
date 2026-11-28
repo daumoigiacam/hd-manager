@@ -40,6 +40,7 @@ export default function RestoredLocalWorkspace({runtime,verifiedLaunch,CustomerV
  useEffect(()=>{if(!runtime)return;if(initialRoute)prepareNativeBusinessRoute(runtime,initialRoute,{firstOpen:true});else if(initialCustomer){onCustomerIntent?.();void runtime.prepareCustomerNavigation().catch(()=>{});}},[runtime,initialRoute?.id,initialCustomer]);
  const [period,setPeriod]=useState('today');
  const [orderSearchIntent,setOrderSearchIntent]=useState(null);
+ const [orderDetailIntent,setOrderDetailIntent]=useState(null);
  const [homeSyncState,setHomeSyncState]=useState(''),homeIntent=useRef({owner:null,at:0});
  useEffect(()=>{
   if(tab!=='home'||!runtime?.home||!context.isCurrent()||!context.capabilities.includes('home.read'))return;
@@ -62,6 +63,10 @@ export default function RestoredLocalWorkspace({runtime,verifiedLaunch,CustomerV
   if(value==='reports'){if(context.isCurrent()&&context.capabilities.includes('home.read')){setReportRequested(true);setTab(value);}return;}
   if(value==='customers'){if(!context.appSession.allowedTabs.includes('customers')||!context.capabilities.includes('customers.read'))return;onCustomerIntent?.();void adapter.preload().catch(()=>{});void runtime?.prepareCustomerNavigation().catch(()=>{});setTab(value);return;}
   const route=routes.find(item=>item.id===value);if(!route)return;if(runtime)prepareNativeBusinessRoute(runtime,route,{firstOpen:!opened.includes(value)});setOpened(old=>old.includes(value)?old:[...old,value]);setTab(value);
+ };
+ const openReportOrder=orderId=>{
+  if(!orderId||!runtime||!context.isCurrent()||!routes.some(route=>route.id==='orders')||!context.capabilities.includes('orders.read'))return false;
+  setOrderDetailIntent({orderId,scope:JSON.stringify(runtime.scope)});navigate('orders');return true;
  };
  const back=useRef(null);back.current=()=>{const request=new CustomEvent('hd-manager-screen-back',{cancelable:true,detail:{handled:false}});window.dispatchEvent(request);if(request.defaultPrevented||request.detail.handled)return;if(menuOpen)setMenuOpen(false);else if(tab!=='home')navigate('home');else void CapacitorApp.minimizeApp().catch(()=>{});};
  useEffect(()=>{if(!Capacitor.isNativePlatform())return;return subscribeScopedNativeEvent(CapacitorApp,'backButton',()=>back.current?.());},[runtime]);
@@ -102,11 +107,11 @@ export default function RestoredLocalWorkspace({runtime,verifiedLaunch,CustomerV
    </React.Activity>
    {tab==='profile'&&<section className="p-4"><h1>Cá nhân</h1><p>{user.name}</p><p>{company.name}</p><p>Quyền Offline có hiệu lực đến {new Date(context.expiresAtMs).toLocaleString('vi-VN')}</p></section>}
    {tab==='settings'&&<section className="p-4"><h1>Cài đặt</h1><p role="status">Kết nối mạng để mở đầy đủ Cài đặt.</p>{onOpenFullWorkspace&&<button type="button" onClick={()=>navigate('settings')}>Mở Cài đặt</button>}<button type="button" className="mt-4 block w-full border-t py-4 text-left font-bold text-red-600" onClick={onLogout}>Đăng xuất</button></section>}
-   {tab==='reports'&&reportRequested&&context.capabilities.includes('home.read')&&<OfflineHome runtime={runtime} initialResult={restoredHome?.value} verifiedLaunch={verifiedLaunch} onNavigate={navigate}/>}
+   {tab==='reports'&&reportRequested&&context.capabilities.includes('home.read')&&<OfflineHome runtime={runtime} initialResult={restoredHome?.value} verifiedLaunch={verifiedLaunch} onNavigate={navigate} onOpenOrder={openReportOrder}/>}
 
    {!['home','customers','profile','settings','reports'].includes(tab)&&!routes.some(route=>route.id===tab)&&<p role="status">Chức năng này chưa được tích hợp vào phiên Offline. Dữ liệu đang có trên thiết bị được giữ nguyên.</p>}
    {!runtime&&tab!=='home'&&<p role="status">Đang mở dữ liệu trên thiết bị. Thao tác đã được giữ lại.</p>}
-   {runtime&&opened.map(id=>{const route=routes.find(value=>value.id===id);return route?<React.Activity key={id} mode={tab===id?'visible':'hidden'}><NativeBusinessRoute runtime={runtime} route={route} initialSource={id===initialRoute?.id?initialNavigation.source:undefined} orderSearchIntent={id==='orders'?orderSearchIntent:undefined} active={tab===id&&!menuOpen} onNavigate={navigate}/></React.Activity>:null;})}
+   {runtime&&opened.map(id=>{const route=routes.find(value=>value.id===id);return route?<React.Activity key={id} mode={tab===id?'visible':'hidden'}><NativeBusinessRoute runtime={runtime} route={route} initialSource={id===initialRoute?.id?initialNavigation.source:undefined} orderSearchIntent={id==='orders'?orderSearchIntent:undefined} orderDetailIntent={id==='orders'?orderDetailIntent:undefined} active={tab===id&&!menuOpen} onNavigate={navigate}/></React.Activity>:null;})}
    {runtime&&tab==='customers'&&read&&<>
     <div className="flex gap-3 mb-2"><button onClick={()=>setShowSearch(value=>!value)}>Tìm kiếm</button><button onClick={()=>setShowFilter(value=>!value)}>Bộ lọc</button></div>
     <OfflineCustomerAppRoute runtime={runtime} principalId={context.scope.principalId} View={CustomerView}
