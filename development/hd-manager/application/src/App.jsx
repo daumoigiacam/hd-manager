@@ -279,7 +279,7 @@ import { normalizeInvoiceTemplateId, INVOICE_TEMPLATES } from './features/invoic
 import { 
   Home, Clock, DollarSign, Users, Plus, Check, X, AlertCircle, AlertTriangle, ChevronRight, ChevronLeft, 
   UserCircle, Calendar, ArrowRightLeft, CheckCircle, Phone, TrendingUp, ChevronDown, ChevronUp, 
-  Edit3, LogOut, Lock, CreditCard, MapPin, ShoppingBag, ShoppingCart, Settings, Search, Star, 
+  Edit3, Lock, CreditCard, MapPin, ShoppingBag, ShoppingCart, Settings, Search, Star,
   Package, Trash2, Wallet, Banknote, Target, CalendarDays, Filter, Building, Crown,
   Receipt, Archive, ArchiveRestore, Database, Store, ClipboardList, BookText, MoreHorizontal,
   Bell, Scan, FileText, PlusCircle, MinusCircle, PieChart, Percent, LayoutGrid, Download, Copy,
@@ -24693,7 +24693,7 @@ case 'asset_management': return <AssetManagementView readIdentity={currentReadOw
           canDeleteEmployeePurchase={canRoleAction('payroll', 'delete_employee_purchase') || canRoleAction('payroll', 'delete_bonus_penalty')}
         />
       );
-      case 'more': return <MoreMenu tabPermissions={tabPermissions} isSales={isSales} isDriver={isDriver} isWarehouseScale={isWarehouseScale} isSuperAdmin={isSuperAdmin} setActiveTab={setActiveTab} onLogout={onLogout} onSwitchToCustomerLogin={onSwitchToCustomerLogin} employee={employee} />;
+      case 'more': return <MoreMenu tabPermissions={tabPermissions} isSales={isSales} isDriver={isDriver} isWarehouseScale={isWarehouseScale} isSuperAdmin={isSuperAdmin} setActiveTab={setActiveTab} onSwitchToCustomerLogin={onSwitchToCustomerLogin} employee={employee} />;
       default: return renderHomeDashboard();
     }
   };
@@ -25211,7 +25211,7 @@ case 'asset_management': return <AssetManagementView readIdentity={currentReadOw
       )}
 
       <HDNavigation className="hd-app-navigation absolute bottom-0 left-0 right-0 bg-white border-t border-gray-100 z-40 pb-safe shadow-[0_-4px_10px_rgba(0,0,0,0.03)]">
-        <InstantHomeNavigation className="mobile-footer-nav" active={activeTab==='more'?'modules':activeTab==='executive_dashboard'?'reports':activeTab} onNavigate={setActiveTab} onModules={()=>setActiveTab('more')} onSettings={tabPermissions.settings?()=>setActiveTab('settings'):undefined} onReport={tabPermissions.executive_dashboard?()=>{onHomeReportRequested?.();setActiveTab('executive_dashboard');}:undefined} quickActions={showFloatingQuickActionButton?quickActionItems:mobileContextualQuickActionItems} onQuickAction={handleQuickActionSelect}/>
+        <InstantHomeNavigation className="mobile-footer-nav" active={activeTab==='executive_dashboard'?'reports':activeTab} onNavigate={setActiveTab} onSettings={()=>setActiveTab('settings')} onReport={tabPermissions.executive_dashboard?()=>{onHomeReportRequested?.();setActiveTab('executive_dashboard');}:undefined} quickActions={showFloatingQuickActionButton?quickActionItems:mobileContextualQuickActionItems} onQuickAction={handleQuickActionSelect}/>
         <DesktopSidebarGroups
           footerUsageKey={footerUsageKey} activeTab={activeTab} setActiveTab={setActiveTab}
           isAccounting={isAccounting} isDriver={isDriver} isOwnerAccount={isOwnerAccount}
@@ -33803,7 +33803,7 @@ function BankPaymentCenterView({
   );
 }
 
-function MoreMenu({ tabPermissions = {}, isSales, isDriver, isWarehouseScale, isSuperAdmin, setActiveTab, onLogout, onSwitchToCustomerLogin, employee }) {
+function MoreMenu({ tabPermissions = {}, isSales, isDriver, isWarehouseScale, isSuperAdmin, setActiveTab, onSwitchToCustomerLogin, employee }) {
   const employeeAvatarUrl = getEmployeeAvatarUrl(employee);
   const menuItems = [
     { id: 'executive_dashboard', group: 'overview', label: 'Điều hành', icon: <PieChart className="text-blue-500" />, show: tabPermissions.executive_dashboard },
@@ -33880,9 +33880,6 @@ function MoreMenu({ tabPermissions = {}, isSales, isDriver, isWarehouseScale, is
         );
       })}
 
-      <button type="button" onClick={() => onLogout?.()} className="hd-more-menu__logout w-full bg-white text-red-500 font-bold py-4 shadow-sm flex justify-center items-center gap-2 hover:bg-red-50 transition border border-red-50">
-        <LogOut size={18} /> Đăng xuất
-      </button>
     </div>
   );
 }

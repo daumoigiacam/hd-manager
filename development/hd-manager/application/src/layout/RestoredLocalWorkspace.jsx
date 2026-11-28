@@ -56,7 +56,6 @@ export default function RestoredLocalWorkspace({runtime,verifiedLaunch,CustomerV
   if(value==='home'){if(onOpenFullWorkspace&&runtimeOnline()){onOpenFullWorkspace('home');return;}setTab('home');return;}
   if(value==='profile'){setTab(value);return;}
   if(value==='settings'){
-   if(!context.appSession.allowedTabs.includes('settings'))return;
    if(onOpenFullWorkspace&&runtimeOnline()){onOpenFullWorkspace('settings');return;}
    setTab(value);return;
   }
@@ -101,8 +100,8 @@ export default function RestoredLocalWorkspace({runtime,verifiedLaunch,CustomerV
     <WorkingHome ready storageReady={Boolean(runtime)} active={tab==='home'&&!menuOpen} scope={scope} modules={modules} identity={{companyName:company.name||company.companyName,name:user.name,role:user.position,logo:company.logoUrl||company.logo,avatar:user.avatarUrl}} summary={context.capabilities.includes('home.read')?homeSummary(restoredHome?.value,period):[]} period={period} onPeriodChange={setPeriod} freshness={restoredHome?.value?`Bản đã lưu · ${restoredHome.value.dayKey} · ${homeSyncState==='SYNCING'?'Đang cập nhật ở nền':homeSyncState==='SYNC_FAILED'?'Chưa đồng bộ được thay đổi mới':'Chưa gồm giao dịch chờ xác nhận'}`:''} offline={!runtimeOnline()} onProfile={()=>navigate('profile')} searchableModules={['customers','orders']} onSearch={modules.some(item=>['customers','orders'].includes(item.id))?(value,kind)=>{if(kind==='customers'){setSearch(value);setShowSearch(true);navigate('customers');}else if(kind==='orders'){setOrderSearchIntent({id:crypto.randomUUID(),query:value});navigate(kind);}}:undefined} onRequestReport={context.capabilities.includes('home.read')?()=>navigate('reports'):undefined} onNavigate={navigate}/>
     {restoredHome?.error&&<p role="alert">Không thể mở báo cáo đã lưu trên máy. Hãy mở lại phiên để thử lại.</p>}
    </React.Activity>
-   {tab==='profile'&&<section className="p-4"><h1>Cá nhân</h1><p>{user.name}</p><p>{company.name}</p><p>Quyền Offline có hiệu lực đến {new Date(context.expiresAtMs).toLocaleString('vi-VN')}</p><button type="button" onClick={onLogout}>Đăng xuất</button></section>}
-   {tab==='settings'&&<section className="p-4"><h1>Cài đặt</h1><p role="status">Kết nối mạng để mở Cài đặt.</p>{onOpenFullWorkspace&&<button type="button" onClick={()=>navigate('settings')}>Mở Cài đặt</button>}</section>}
+   {tab==='profile'&&<section className="p-4"><h1>Cá nhân</h1><p>{user.name}</p><p>{company.name}</p><p>Quyền Offline có hiệu lực đến {new Date(context.expiresAtMs).toLocaleString('vi-VN')}</p></section>}
+   {tab==='settings'&&<section className="p-4"><h1>Cài đặt</h1><p role="status">Kết nối mạng để mở đầy đủ Cài đặt.</p>{onOpenFullWorkspace&&<button type="button" onClick={()=>navigate('settings')}>Mở Cài đặt</button>}<button type="button" className="mt-4 block w-full border-t py-4 text-left font-bold text-red-600" onClick={onLogout}>Đăng xuất</button></section>}
    {tab==='reports'&&reportRequested&&context.capabilities.includes('home.read')&&<OfflineHome runtime={runtime} initialResult={restoredHome?.value} verifiedLaunch={verifiedLaunch} onNavigate={navigate}/>}
 
    {!['home','customers','profile','settings','reports'].includes(tab)&&!routes.some(route=>route.id===tab)&&<p role="status">Chức năng này chưa được tích hợp vào phiên Offline. Dữ liệu đang có trên thiết bị được giữ nguyên.</p>}
@@ -122,6 +121,6 @@ export default function RestoredLocalWorkspace({runtime,verifiedLaunch,CustomerV
    </>}
    </React.Activity>
   </main>
-  <InstantHomeNavigation active={menuOpen?'modules':tab} onNavigate={navigate} onModules={()=>navigate('modules')} onReport={context.capabilities.includes('home.read')?()=>navigate('reports'):undefined} onSettings={context.appSession.allowedTabs.includes('settings')?()=>navigate('settings'):undefined}/>
+  <InstantHomeNavigation active={menuOpen?'modules':tab} onNavigate={navigate} onReport={context.capabilities.includes('home.read')?()=>navigate('reports'):undefined} onSettings={()=>navigate('settings')}/>
  </AppShell>;
 }
