@@ -10,7 +10,8 @@ import * as locks from '../src/utils/payrollPeriodLock.js';
 import * as carry from '../src/utils/payrollDebtCarryover.js';
 import * as advances from '../src/utils/salaryAdvancePeriod.js';
 import * as workspaceModel from '../src/features/payroll/payrollWorkspaceModel.js';
-import {applyEmployeePayrollPolicyForMonth} from '../src/utils/payrollPolicyHistory.js';
+import {applyEmployeePayrollPolicyForMonth,resolveStoredEmployeePayrollPolicy} from '../src/utils/payrollPolicyHistory.js';
+import {getPayrollSequenceBlocker,getPayrollEarnedIncome} from '../src/utils/payrollCustomerDebt.js';
 import {projectEvaluationSummaryToPayroll} from '../src/utils/payrollEvaluationBonus.js';
 import {isEmployeeReviewEnabled} from '../src/utils/companyEmployeeReviews.js';
 import {selectRetainedReadProjection} from '../src/hooks/useRetainedReadProjection.js';
@@ -89,7 +90,7 @@ function fixture(handlers={}) {
     isAccountingPosition:position=>position==='Kế toán & nhân sự',isEmployeeSalesPosition:()=>false,
     isOwnerAccountUser:(_employee,user)=>user?.role==='owner',isOwnerPosition:()=>false,isSalesCollaboratorPosition:()=>false,
     normalizeSalaryAdvancePercent:Number,parseInputCurrency,parseLooseMoneyValue,roundMoneyValue:Math.round};
-  const env={...root,...locks,...advances,getPreviousPayrollMonthKey:carry.getPreviousPayrollMonthKey,applyEmployeePayrollPolicyForMonth,
+  const env={...root,...locks,...advances,getPreviousPayrollMonthKey:carry.getPreviousPayrollMonthKey,applyEmployeePayrollPolicyForMonth,resolveStoredEmployeePayrollPolicy,getPayrollSequenceBlocker,getPayrollEarnedIncome,
     getReadOnlyModuleProjectionEntry:()=>({}),getLocalProjectionClockScope:()=> '2026-11-20',EMPTY_MODULE_PROJECTION_SOURCE:[],
     useCooperativeProjection:()=>f.projection,useRetainedReadProjection,useAppScreenBack(){},CommissionCalculationDetails:noop,
     projectEvaluationSummaryToPayroll,isEmployeeReviewEnabled,payrollAutomationConfig:{autoLockEnabled:false},...icons,

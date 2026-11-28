@@ -5,6 +5,7 @@ import { parse } from '@babel/parser';
 import { createWarehouseDispatch, updateWarehouseDispatch, deleteWarehouseDispatch } from '../../src/features/warehouse/warehouseDispatchUseCases.js';
 import {createSourcePhaseDiagnostics} from '../../src/services/sourcePhaseDiagnostics.js';
 import {buildCommissionCalculation,assertCommissionCalculationReady} from '../../development/hd-manager/application/src/utils/commissionRevenue.js';
+import {applyPayrollCustomerDebtReconciliation,payrollCustomerDebtBasis} from '../../development/hd-manager/application/src/utils/payrollCustomerDebt.js';
 
 const source = readApplicationSource();
 export const applicationSource = source;
@@ -83,7 +84,7 @@ export function appFunction(name, bindings = {}, { memoCallback = false, scope =
     } else throw new Error(`Unexpected primitive cache binding: ${dependency}`);
   }
   const environment = { createWarehouseDispatch, updateWarehouseDispatch, deleteWarehouseDispatch,
-    buildCommissionCalculation, assertCommissionCalculationReady,
+    buildCommissionCalculation, assertCommissionCalculationReady,applyPayrollCustomerDebtReconciliation,payrollCustomerDebtBasis,
     sourcePhaseDiagnostics:createSourcePhaseDiagnostics(),yieldPublicationWork:()=>new Promise(resolve=>setTimeout(resolve,0)),
     ...cacheBindings, ...bindings };
   return new Function(...Object.keys(environment), `return (${(imported?.source || source).slice(node.start, node.end)});`)(...Object.values(environment));

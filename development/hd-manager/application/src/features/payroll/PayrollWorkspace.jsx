@@ -144,7 +144,8 @@ export default function PayrollWorkspace({
     const showEvaluation = isLocked || evaluationEnabled;
     const incomeRows = [
       ['Lương cơ bản', details.baseSalaryCalc], ['Phụ cấp', Number(details.supportSalary || 0) + Number(details.responsibilitySalary || 0) + Number(details.roleSalary || 0) + Number(details.experienceSalary || 0)],
-      ['Hoa hồng', details.commission], ['Thưởng', details.totalBonus], ...(showEvaluation ? [['Lương đánh giá', details.evaluationBonus]] : []), ['Tăng ca', details.overtimePay]
+      ['Hoa hồng', details.commission], ['Thưởng', details.totalBonus], ...(showEvaluation ? [['Lương đánh giá', details.evaluationBonus]] : []), ['Tăng ca', details.overtimePay],
+      ...(details.customerDebtCredit > 0 ? [['Hoàn công nợ đã khấu trừ',details.customerDebtCredit]] : [])
     ];
     const deductionRows = [
       ['Tạm ứng', details.totalAdvance], ['Phạt', details.totalPenalty], ['Mua hàng công ty', details.totalEmployeePurchase],

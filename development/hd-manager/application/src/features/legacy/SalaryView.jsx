@@ -2,7 +2,8 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { useAppScreenBack } from "../../hooks/useAppScreenBack.js";
 import { PAYROLL_AUTO_LOCK_PLAN_STATUS, PAYROLL_RULES_VERSION, canLockPayrollPeriodAtDate, getPayrollLockBlockers, createPayrollEmployeeSnapshot, createPayrollPeriodRecord, getLockedPayrollPeriod, getPayrollMonthEndDateKey, getVietnamPayrollDateKey, mapPayrollSnapshotsToRows, normalizePayrollMonthKey } from "../../utils/payrollPeriodLock.js";
 import { getPreviousPayrollMonthKey } from "../../utils/payrollDebtCarryover.js";
-import { applyEmployeePayrollPolicyForMonth } from "../../utils/payrollPolicyHistory.js";
+import { applyEmployeePayrollPolicyForMonth, resolveStoredEmployeePayrollPolicy } from "../../utils/payrollPolicyHistory.js";
+import {getPayrollSequenceBlocker,getPayrollEarnedIncome} from '../../utils/payrollCustomerDebt.js';
 import { getReadOnlyModuleProjectionEntry, getLocalProjectionClockScope, EMPTY_MODULE_PROJECTION_SOURCE } from "../../services/moduleProjectionCaches.js";
 import { useCooperativeProjection } from "../../hooks/useCooperativeProjection.js";
 import {useRetainedReadProjection} from '../../hooks/useRetainedReadProjection.js';
@@ -52,11 +53,13 @@ export function createSalaryView(runtime) {
   onDeleteAdvance,
   onUpdateCompanySettings,
   onLockPayrollPeriod,
+  onCompletePayrollPolicy,
   onAdjustLockedPayroll,
   onPreparePayrollAutoLockPlan,
   onLoadPayrollPeriodSnapshots,
   canViewSalaryAdvance = true,
   canViewAllPayroll = false,
+  canCompletePayrollPolicy = false,
   canCreateSalaryAdvanceRequest = true,
   canCreateSalaryAdvanceForOthers = false,
   canViewSalaryAdvanceRequests = false,
@@ -338,7 +341,7 @@ export function createSalaryView(runtime) {
   };
 
   const [payrollCalculationAttempt,setPayrollCalculationAttempt]=useState(0);
-  const preparePayrollView=useMemo(()=>()=>buildPayrollViewProjectionSteps({isPayrollLocked, currentMonth, employeeReviews, orders, deliveryReports, complaintsLoaded, customerComplaints, payrollCompanyId, attendance, attendanceLoaded, currentCompany, employees, visibleSalaryEmployees, payrollDebtCarryovers, payrollPolicyEmployees, financials, performance, customers, payments, holidays}),[isPayrollLocked, currentMonth, employeeReviews, orders, deliveryReports, complaintsLoaded, customerComplaints, payrollCompanyId, attendance, attendanceLoaded, currentCompany, employees, visibleSalaryEmployees, payrollDebtCarryovers, payrollPolicyEmployees, financials, performance, customers, payments, holidays,payrollCalculationAttempt]);
+  const preparePayrollView=useMemo(()=>()=>buildPayrollViewProjectionSteps({isPayrollLocked, currentMonth, employeeReviews, orders, deliveryReports, complaintsLoaded, customerComplaints, payrollCompanyId, attendance, attendanceLoaded, currentCompany, employees, visibleSalaryEmployees, payrollDebtCarryovers, payrollPolicyEmployees, financials, performance, customers, payments, holidays, payrollPeriods}),[isPayrollLocked, currentMonth, employeeReviews, orders, deliveryReports, complaintsLoaded, customerComplaints, payrollCompanyId, attendance, attendanceLoaded, currentCompany, employees, visibleSalaryEmployees, payrollDebtCarryovers, payrollPolicyEmployees, financials, performance, customers, payments, holidays,payrollPeriods,payrollCalculationAttempt]);
   const payrollProjectionEntry=!isPayrollLocked?getReadOnlyModuleProjectionEntry('payroll',
     [currentCompany,currentEmployee,employees,employeeReviews,attendance,financials,performance,customers,orders,payments,holidays,deliveryReports,customerComplaints||EMPTY_MODULE_PROJECTION_SOURCE,payrollDebtCarryovers,payrollPeriods],
     {companyId:payrollCompanyId,employeeId:currentEmployeeId,permissionKey:JSON.stringify([canViewCompanyPayroll,Boolean(attendanceLoaded),Boolean(complaintsLoaded)]),
@@ -499,9 +502,12 @@ export function createSalaryView(runtime) {
     return { period, snapshots };
   }, [aggregateData, currentEmployee, currentEmployeeId, currentMonth, currentUser, liveSalaryRows, payrollCompanyId]);
 
-  const payrollLockBlockers = useMemo(() => getPayrollLockBlockers(
+  const payrollLockBlockers = useMemo(() => [getPayrollSequenceBlocker(payrollPeriods,payrollCompanyId,currentMonth), ...getPayrollLockBlockers(
     buildPayrollLockPayload().snapshots, activePayrollAutoLockPlan
-  ), [buildPayrollLockPayload, activePayrollAutoLockPlan]);
+  )].filter(Boolean), [buildPayrollLockPayload, activePayrollAutoLockPlan,payrollPeriods,payrollCompanyId,currentMonth]);
+  const missingStoredPolicies = useMemo(() => liveSalaryRows
+    .filter(row => !resolveStoredEmployeePayrollPolicy(row.emp, currentMonth))
+    .map(row => employees.find(emp => emp.id === row.emp.id) || row.emp), [liveSalaryRows, employees, currentMonth]);
 
   const payrollAutoLockPlanSignature = useMemo(() => JSON.stringify({
     companyId: payrollCompanyId,
@@ -589,6 +595,7 @@ export function createSalaryView(runtime) {
 
   const handleConfirmPayrollLock = async () => {
     if (!canLockSelectedPayrollPeriod || isLockingPayroll || payrollLockInFlightRef.current) return;
+    if (payrollLockBlockers.length) {setPayrollLockStatus(payrollLockBlockers.join(' '));return;}
     const { period, snapshots } = buildPayrollLockPayload();
 
     if (!period || snapshots.length === 0) {
@@ -678,7 +685,7 @@ export function createSalaryView(runtime) {
       : []
   ), [advanceRequests, canReviewSalaryAdvances, currentMonth]);
   const pendingAdvanceAmount = pendingAdvances.reduce((sum, req) => sum + parseLooseMoneyValue(req.amount), 0);
-  const salaryAdvanceBaseAmount = Math.max(0, roundMoneyValue(currentSalaryDetails?.grossSalary || currentSalaryDetails?.netSalary || 0));
+  const salaryAdvanceBaseAmount = getPayrollEarnedIncome(currentSalaryDetails);
   const salaryAdvanceIsUnlimited = Boolean(salaryAdvanceLimitConfig.isUnlimited);
   const salaryAdvanceLimitAmount = salaryAdvanceIsUnlimited ? null : roundMoneyValue(salaryAdvanceBaseAmount * (salaryAdvancePercent / 100));
   const salaryAdvanceUsedAmount = roundMoneyValue((currentSalaryDetails?.totalAdvance || 0) + pendingAdvanceAmount);
@@ -715,7 +722,7 @@ export function createSalaryView(runtime) {
       && isSalaryAdvanceInMonth(req, currentMonth)
     ));
     const targetPendingAmount = targetPendingAdvances.reduce((sum, req) => sum + parseLooseMoneyValue(req.amount), 0);
-    const targetBaseAmount = Math.max(0, roundMoneyValue(targetDetails?.grossSalary || targetDetails?.netSalary || 0));
+    const targetBaseAmount = getPayrollEarnedIncome(targetDetails);
     const targetIsUnlimited = Boolean(targetLimitConfig.isUnlimited);
     const targetLimitAmount = targetIsUnlimited ? null : roundMoneyValue(targetBaseAmount * (targetPercent / 100));
     const targetUsedAmount = roundMoneyValue((targetDetails?.totalAdvance || 0) + targetPendingAmount);
@@ -908,7 +915,7 @@ export function createSalaryView(runtime) {
           const targetPendingAmount = (advanceRequests || [])
             .filter(req => req.empId === targetEmployee.id && req.status === 'pending' && isSalaryAdvanceInMonth(req, currentMonth))
             .reduce((sum, req) => sum + parseLooseMoneyValue(req.amount), 0);
-          const targetBaseAmount = Math.max(0, roundMoneyValue(targetDetails?.grossSalary || targetDetails?.netSalary || 0));
+          const targetBaseAmount = getPayrollEarnedIncome(targetDetails);
           const targetIsUnlimited = Boolean(targetLimitConfig.isUnlimited);
           const targetLimitAmount = targetIsUnlimited ? null : roundMoneyValue(targetBaseAmount * (targetPercent / 100));
           const targetUsedAmount = roundMoneyValue((targetDetails?.totalAdvance || 0) + targetPendingAmount);
@@ -1368,7 +1375,7 @@ export function createSalaryView(runtime) {
             ? (advanceRequests || []).filter(req => req.empId === emp.id && req.status === 'pending' && isSalaryAdvanceInMonth(req, currentMonth))
             : [];
           const employeePendingAdvanceAmount = employeePendingAdvances.reduce((sum, req) => sum + parseLooseMoneyValue(req.amount), 0);
-          const employeeAdvanceBaseAmount = Math.max(0, roundMoneyValue(details?.grossSalary || details?.netSalary || 0));
+          const employeeAdvanceBaseAmount = getPayrollEarnedIncome(details);
           const employeeAdvanceLimitConfig = getEmployeeSalaryAdvanceLimitConfig(currentCompany, emp, null);
           const employeeAdvanceIsUnlimited = Boolean(employeeAdvanceLimitConfig.isUnlimited);
           const employeeSalaryAdvancePercent = employeeAdvanceLimitConfig.percent ?? getEmployeeSalaryAdvancePercent(currentCompany, emp, null);
@@ -1552,6 +1559,7 @@ export function createSalaryView(runtime) {
                         </div>
                       </div>
                       <div className="flex justify-between"><span>Thưởng ngày lễ</span><strong>{formatCurrency(details.holidayBonus)} đ</strong></div>
+                      {details.customerDebtCredit > 0 && <div className="flex justify-between"><span>Hoàn công nợ đã khấu trừ</span><strong>{formatCurrency(details.customerDebtCredit)} đ</strong></div>}
                       {details.holidayRecords?.length > 0 && (
                         <div className="col-span-2 rounded-xl border border-purple-100 bg-purple-50 p-2 text-[11px] text-purple-800">
                           {details.holidayRecords.map(record => (
@@ -2008,7 +2016,11 @@ export function createSalaryView(runtime) {
           monthKey={currentMonth}
           closeDateLabel={payrollMonthEndLabel}
           rows={liveSalaryRows}
-          eligible={canLockSelectedPayrollPeriod}
+          eligible={canLockSelectedPayrollPeriod && payrollLockBlockers.length === 0}
+          blockers={payrollLockBlockers}
+          missingPolicies={missingStoredPolicies}
+          employees={employees}
+          onCompletePolicy={canCompletePayrollPolicy ? onCompletePayrollPolicy : undefined}
           busy={isLockingPayroll}
           status={payrollLockStatus}
           onCancel={() => setShowPayrollLockConfirm(false)}

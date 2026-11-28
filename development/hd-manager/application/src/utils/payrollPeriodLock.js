@@ -93,6 +93,10 @@ const buildCalculationSnapshot = (salaryDetails = {}) => ({
     advanceRecords: salaryDetails?.advanceRecords || [],
     employeePurchaseRecords: salaryDetails?.employeePurchaseRecords || [],
     openingDebt: salaryDetails?.openingDebt ?? 0,
+    customerDebtBalance: salaryDetails?.customerDebtBalance ?? null,
+    previousCustomerDebtBalance: salaryDetails?.previousCustomerDebtBalance ?? null,
+    customerDebtSourcePeriodId: salaryDetails?.customerDebtSourcePeriodId || '',
+    customerDebtSources: salaryDetails?.customerDebtSources || [],
     evaluationResult: salaryDetails?.evaluationResult || null
   },
   additions: {
@@ -104,7 +108,8 @@ const buildCalculationSnapshot = (salaryDetails = {}) => ({
     commission: salaryDetails?.commission ?? 0,
     overtimePay: salaryDetails?.overtimePay ?? 0,
     totalBonus: salaryDetails?.totalBonus ?? 0,
-    evaluationBonus: salaryDetails?.evaluationBonus ?? 0
+    evaluationBonus: salaryDetails?.evaluationBonus ?? 0,
+    customerDebtCredit: salaryDetails?.customerDebtCredit ?? 0
   },
   deductions: {
     totalPenalty: salaryDetails?.totalPenalty ?? 0,
@@ -179,8 +184,13 @@ export const getPayrollLockBlockers = (snapshots = [], plan = null) => {
     const inspection = inspectPayrollSnapshot(snapshot);
     if (inspection.isComplete) continue;
     const name = snapshot?.employee?.name || snapshot?.employeeId || 'Nhân sự chưa xác định';
-    const fields = [...inspection.missingFields, ...inspection.invalidFields];
-    reasons.push(`${name}: ${!snapshot?.policySnapshot ? 'Thiếu chính sách lương đã lưu có hiệu lực trong tháng. ' : ''}Cần kiểm tra: ${fields.join(', ') || inspection.issues.join(', ')}.`);
+    reasons.push(`${name}: ${!snapshot?.policySnapshot
+      ? 'Thiếu chính sách lương có hiệu lực trong tháng. Chọn Rà soát chính sách để kiểm tra và bổ sung.'
+      : snapshot?.salaryDetails?.customerDebtReconciliationReady === false
+        ? snapshot.salaryDetails.customerDebtReconciliationMessage || 'Cần đối soát công nợ khách hàng với kỳ trước.'
+      : snapshot?.salaryDetails?.commissionCalculation?.ready === false
+        ? 'Doanh thu tính hoa hồng chưa đối soát xong. Kiểm tra chi tiết hoa hồng và các giao dịch chưa đủ điều kiện.'
+        : 'Dữ liệu tính lương chưa đầy đủ hoặc không khớp. Tải lại bảng lương và kiểm tra chi tiết trước khi chốt.'}`);
   }
   const labels = {
     'production_rules_not_confirmed': 'Máy chủ chưa xác nhận phiên bản quy tắc khóa lương.',

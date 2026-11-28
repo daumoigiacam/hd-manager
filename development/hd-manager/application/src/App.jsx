@@ -1,4 +1,6 @@
 import {deliverShareFiles} from './utils/shareDelivery.js';
+import {commitMissingPayrollPolicy,assertPayrollCloseSnapshots,assertPayrollSnapshotPolicies} from './utils/payrollCloseTransaction.js';
+import {applyPayrollCustomerDebtReconciliation,payrollCustomerDebtBasis,getPayrollSequenceBlocker} from './utils/payrollCustomerDebt.js';
 import {buildCommissionCalculation,assertCommissionCalculationReady} from './utils/commissionRevenue.js';
 import {orderCreationIntent,assertOrderCreationReplay} from './utils/orderCreationCommand.js';
 import {restoreHomeSessionReport,saveHomeSessionReport} from './services/homeSessionReport.js';
@@ -17230,6 +17232,23 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
     }
   }, [firebaseUser, myCompanyId, rawPayrollPeriods]);
 
+  const handleCompletePayrollPolicy = async (review = {}) => {
+    if (isVpsStagingMode || !firebaseUser || !db || !myCompanyId) return {success:false,message:'Cần phiên làm việc trực tuyến hợp lệ để lưu chính sách lương.'};
+    if (!hasCompanyRolePermissionAction({company:currentCompany,employee:appCurrentEmployee,currentUser}, 'employees', 'edit_employee_salary_policy')) return {success:false,message:'Bạn chưa được cấp quyền sửa chính sách lương nhân sự.'};
+    const scope = myCompanyId;
+    try {
+      const saved = await commitMissingPayrollPolicy({db,appId,doc,runTransaction,...review,
+        companyId:scope,reviewedAt:new Date().toISOString(),
+        actorId:appCurrentEmployee?.id || currentUser?.employeeId || currentUser?.id,
+        actorName:appCurrentEmployee?.name || currentUser?.name || ''});
+      if (activeTenantScopeRef.current === scope) {
+        setRawEmployees(previous => previous.map(row => row.id === saved.id ? saved : row));
+        scheduleCollectionRefresh('employees', [300,1500]);
+      }
+      return {success:true,message:'Đã lưu chính sách được xác nhận cho kỳ này.'};
+    } catch (error) {return {success:false,message:getFriendlyFirebaseErrorMessage(error,'Chưa lưu được chính sách lương.')}}
+  };
+
   const handleLockPayrollPeriod = async ({ period, snapshots } = {}) => {
     if (isVpsStagingMode) {
       return { success: false, message: 'VPS payroll generate/approve/lock UI is not yet mapped to the HR payroll contract; no Firebase write was attempted.' };
@@ -17248,17 +17267,17 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
     if (getLockedPayrollPeriod(rawPayrollPeriods, myCompanyId, safeMonthKey)) {
       return { success: false, message: 'Kỳ lương này đã được khóa trước đó.' };
     }
+    const sequenceBlocker = getPayrollSequenceBlocker(rawPayrollPeriods,myCompanyId,safeMonthKey);
+    if (sequenceBlocker) return {success:false,message:sequenceBlocker};
     if (pendingFirebaseWritesRef.current.some(write => write.companyId === myCompanyId)) {
       return { success: false, message: 'Còn dữ liệu chưa đồng bộ. Vui lòng đợi đồng bộ xong rồi chốt lương để tránh chốt số liệu thiếu.' };
     }
 
-    const safeSnapshots = (Array.isArray(snapshots) ? snapshots : []).filter(snapshot => (
-      snapshot?.id
-      && snapshot?.employeeId
-      && snapshot?.companyId === myCompanyId
-      && snapshot?.periodId === periodId
-      && snapshot?.monthKey === safeMonthKey
-    ));
+    const safeSnapshots = Array.isArray(snapshots) ? snapshots : [];
+    try {
+      assertPayrollCloseSnapshots({snapshots:safeSnapshots,companyId:myCompanyId,monthKey:safeMonthKey,
+        employees:rawEmployees.filter(emp => emp.companyId === myCompanyId && !emp.isArchived && emp.role !== 'super_admin' && !isOwnerPosition(emp.position))});
+    } catch (error) {return {success:false,message:error.message};}
     if (safeSnapshots.length === 0) {
       return { success: false, message: 'Chưa có dữ liệu nhân sự để khóa kỳ lương.' };
     }
@@ -17312,6 +17331,8 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
       debtCarryoverIds: debtCarryovers.map(row => row.carryover.id),
       debtTransferCount: debtCarryovers.length,
       totalEndingDebt,
+      customerDebtReconciliationVersion:1,
+      customerDebtBalances:Object.fromEntries(safeSnapshots.map(snapshot => [snapshot.employeeId,Number(snapshot.salaryDetails.customerDebtBalance || 0)])),
       isArchived: false
     };
     const snapshotRefsById = new Map(safeSnapshots.map(snapshot => [
@@ -17330,6 +17351,19 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
         if (existingPeriod.exists() && isPayrollPeriodLocked(existingPeriod.data())) {
           throw new Error('Kỳ lương này đã được khóa trước đó.');
         }
+        const nextPeriod = await transaction.get(doc(db,'artifacts',appId,'public','data','payrollPeriods',buildPayrollPeriodId(myCompanyId,getNextPayrollMonthKey(safeMonthKey))));
+        if (nextPeriod.exists() && isPayrollPeriodLocked(nextPeriod.data())) throw Error('Kỳ sau đã chốt. Không thể chốt lùi và thay đổi dư nợ đầu kỳ đã khóa.');
+        const priorPeriod = await transaction.get(doc(db,'artifacts',appId,'public','data','payrollPeriods',buildPayrollPeriodId(myCompanyId,getPreviousPayrollMonthKey(safeMonthKey))));
+        const priorPeriods = priorPeriod.exists() ? [{...priorPeriod.data(),id:priorPeriod.id}] : [];
+        if (safeSnapshots.some(snapshot => {
+          const basis = payrollCustomerDebtBasis(priorPeriods,myCompanyId,safeMonthKey,snapshot.employeeId);
+          return !basis.ready || Number(snapshot.salaryDetails.previousCustomerDebtBalance || 0) !== basis.balance
+            || (snapshot.salaryDetails.customerDebtSourcePeriodId || '') !== basis.sourcePeriodId;
+        })) throw Error('Số đối chiếu công nợ kỳ trước vừa thay đổi. Tải lại bảng lương trước khi chốt.');
+        const currentEmployees = await Promise.all(safeSnapshots.map(snapshot => transaction.get(doc(db,'artifacts',appId,'public','data','employees',snapshot.employeeId))));
+        assertPayrollSnapshotPolicies(safeSnapshots,currentEmployees.filter(item => item.exists()).map(item => ({...item.data(),id:item.id})),myCompanyId,safeMonthKey);
+        const openingBalances = await Promise.all(safeSnapshots.map(snapshot => transaction.get(doc(db,'artifacts',appId,'public','data','payrollDebtCarryovers',buildPayrollDebtCarryoverId(myCompanyId,safeMonthKey,snapshot.employeeId)))));
+        if (safeSnapshots.some((snapshot,index) => Number(snapshot.salaryDetails.openingDebt || 0) !== Number(openingBalances[index].exists() && !openingBalances[index].data().isArchived ? openingBalances[index].data().amount : 0))) throw Error('Dư nợ đầu kỳ vừa thay đổi. Tải lại bảng lương trước khi chốt.');
         const existingArtifacts = await Promise.all([
           ...Array.from(snapshotRefsById.values()).map(ref => transaction.get(ref)),
           ...Array.from(carryoverRefsById.values()).map(ref => transaction.get(ref))
@@ -22072,7 +22106,7 @@ function ApplicationView({offlineWorkspace,initialWorkspaceTab,initialWorkspaceI
         onAddAdvanceRequest={handleAddAdvanceRequest} onEditAttendance={handleEditAttendance}
         onAddFinancial={addFinancialRecord} onEditFinancial={handleEditFinancialRecord} onDeleteFinancial={handleDeleteFinancialRecord} onUpdatePerformance={updatePerformance}
         onApproveAdvance={handleApproveAdvance} onRejectAdvance={handleRejectAdvance} onDeleteAdvance={handleDeleteAdvance}
-        onLockPayrollPeriod={handleLockPayrollPeriod} onAdjustLockedPayroll={handleAdjustLockedPayroll} onPreparePayrollAutoLockPlan={handlePreparePayrollAutoLockPlan} onLoadPayrollPeriodSnapshots={handleLoadPayrollPeriodSnapshots}
+        onCompletePayrollPolicy={handleCompletePayrollPolicy} onLockPayrollPeriod={handleLockPayrollPeriod} onAdjustLockedPayroll={handleAdjustLockedPayroll} onPreparePayrollAutoLockPlan={handlePreparePayrollAutoLockPlan} onLoadPayrollPeriodSnapshots={handleLoadPayrollPeriodSnapshots}
         onAddEmployee={handleAddEmployee} onEditEmployee={handleEditEmployee} onDeleteEmployee={handleDeleteEmployee} onAddEmployeeReview={handleAddEmployeeReview}
         onOverrideCheckIn={handleCheckIn} onOverrideCheckOut={handleCheckOut}
         onAddProduct={handleAddProduct} onEditProduct={handleEditProduct} onDeleteProduct={handleDeleteProduct}
@@ -22608,7 +22642,7 @@ function MainAppView({
   onChangeDate,
   autoWifiCheckInStatus = '', onAutoWifiStatus, onAutoWifiAttendanceRecorded,
   onCheckIn, onCheckOut, onLeave, onLogout, onGetIdentityToken, onResetEmployeePassword, onApproveOwnerResetRequest, onSwitchToCustomerLogin, onAddCustomer, onEditCustomer, onDeleteCustomer, onAddCustomerLoan, onEditCustomerLoan, onDeleteCustomerLoan, onAddOrder, onEditOrder, onUpdateOrderInvoiceTemplate, onDeleteOrder, onApproveOrderZaloSend, onUpdateOrderZaloMessage, onSyncPayosPaymentStatus, onEnsureOrderPayosPayment, onAddOrderRequest, onEditOrderRequest, onDeleteOrderRequest, onGetCustomerProductPreference, onSaveCustomerProductPreference, onSyncCustomerFixedProductDefaults, onAddWarehouseImport, onEditWarehouseImport, onDeleteWarehouseImport, onAddWarehouseStockCount, onPostInventoryOpeningBalance, onEditWarehouseStockCount, onDeleteWarehouseStockCount, onAddWarehouseDispatch, onEditWarehouseDispatch, onDeleteWarehouseDispatch, onAddAsset, onEditAsset, onDeleteAsset, onAddAssetCostLog, onEditAssetCostLog, onDeleteAssetCostLog, onAddDeliveryReport, onUpdateDeliveryReport, onSaveDeliveryCommand, onResolveDeliveryReportIssue, onAddPayment, onEditPayment, onDeletePayment, onAddExpense, onEditExpense, onDeleteExpense, onAddAdvanceRequest, onEditAttendance, onAddFinancial, onEditFinancial, onDeleteFinancial, onUpdatePerformance, onApproveAdvance, onRejectAdvance, onDeleteAdvance, onAddEmployee, onEditEmployee, onDeleteEmployee, onAddEmployeeReview, onOverrideCheckIn, onOverrideCheckOut, onAddProduct, onEditProduct, onDeleteProduct, onAddHoliday, onDeleteHoliday,
-  onUpdateCompanySettings, onLockPayrollPeriod, onAdjustLockedPayroll, onPreparePayrollAutoLockPlan, onLoadPayrollPeriodSnapshots, onResetCompanyDemoData, onCreateCompanyBackup, onRestoreCompanyBackup,
+  onUpdateCompanySettings, onCompletePayrollPolicy, onLockPayrollPeriod, onAdjustLockedPayroll, onPreparePayrollAutoLockPlan, onLoadPayrollPeriodSnapshots, onResetCompanyDemoData, onCreateCompanyBackup, onRestoreCompanyBackup,
   onAddPricingInput, onEditPricingInput, onDeletePricingInput, onSavePricingRules, onSavePricingScenario,
   onAddMessage, onMarkVpsNotificationsRead, onCreateZaloCampaign, onCancelZaloCampaign, onRetryZaloCampaignQueueItem, onProcessZaloInboxMessage, onSendAiZaloReply, onIgnoreZaloInboxMessage, onMarkNeedHumanZaloInboxMessage, onToggleCustomerAiReply, onSaveAiReplyRule, onArchiveAiReplyRule,
   onUpdateZaloOrderRequest, onConvertZaloOrderRequest,
@@ -24672,6 +24706,8 @@ case 'asset_management': return <AssetManagementView readIdentity={currentReadOw
           onRejectAdvance={onRejectAdvance}
           onDeleteAdvance={onDeleteAdvance}
           onUpdateCompanySettings={onUpdateCompanySettings}
+          onCompletePayrollPolicy={onCompletePayrollPolicy}
+          canCompletePayrollPolicy={canRoleAction('employees', 'edit_employee_salary_policy')}
           onLockPayrollPeriod={onLockPayrollPeriod}
           onAdjustLockedPayroll={onAdjustLockedPayroll}
           onPreparePayrollAutoLockPlan={onPreparePayrollAutoLockPlan}
@@ -47705,7 +47741,7 @@ const buildPayrollViewProjectionSteps = function* ({
   isPayrollLocked, currentMonth, employeeReviews, orders, deliveryReports,
   complaintsLoaded, customerComplaints, payrollCompanyId, attendance, attendanceLoaded,
   currentCompany, employees, visibleSalaryEmployees, payrollDebtCarryovers,
-  payrollPolicyEmployees, financials, performance, customers, payments, holidays
+  payrollPolicyEmployees, financials, performance, customers, payments, holidays, payrollPeriods = []
 }) {
   if (isPayrollLocked) return EMPTY_PAYROLL_VIEW;
   // Prepare the complete month off the render stack, with the legacy predicates.
@@ -47761,16 +47797,23 @@ const buildPayrollViewProjectionSteps = function* ({
   }
   const salesIds=new Set((payrollPolicyEmployees || []).filter(isEmployeeSalesPosition).map(emp=>emp.id));
   const customerDebtByRecord=new Map();
+  const customerDebtSourcesByEmployee=new Map();
   for (const customer of customers || []) {
-    if (salesIds.has(customer.empId)) customerDebtByRecord.set(customer,getCustomerDebt(customer,orders,payments));
+    if (salesIds.has(customer.empId)) {
+      const balance=getCustomerDebt(customer,orders,payments);
+      customerDebtByRecord.set(customer,balance);
+      if (!customerDebtSourcesByEmployee.has(customer.empId)) customerDebtSourcesByEmployee.set(customer.empId,[]);
+      customerDebtSourcesByEmployee.get(customer.empId).push({customerId:customer.id || '',customerName:customer.name || '',balance});
+    }
     // Yield between customer ledgers; do not round/clamp individual balances.
     yield;
   }
   const detailsByEmployee=new Map();
   for (const emp of payrollPolicyEmployees || []) {
     const base=buildSalaryDetails(emp.id,payrollPolicyEmployees,attendance,financials,performance,customers,orders,payments,holidays,currentMonth,{customerDebtByRecord});
+    if (base) base.customerDebtSources=customerDebtSourcesByEmployee.get(emp.id) || [];
     detailsByEmployee.set(emp.id,applyPayrollOpeningDebtToSalaryDetails(
-      applyEvaluationBonusToSalaryDetails(base,evaluations.get(emp.id)),openingDebt.get(emp.id) || 0
+      applyEvaluationBonusToSalaryDetails(applyPayrollCustomerDebtReconciliation(base,payrollCustomerDebtBasis(payrollPeriods,payrollCompanyId,currentMonth,emp.id)),evaluations.get(emp.id)),openingDebt.get(emp.id) || 0
     ));
     yield;
   }
