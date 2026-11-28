@@ -13,10 +13,10 @@ if (!/^(?:127\.0\.0\.1|localhost):8185$/.test(process.env.FIRESTORE_EMULATOR_HOS
 const projectId=`demo-payroll-close-acceptance-${process.pid}`,companyId='qa-payroll-company',appId='qa-payroll-close';
 const pathFor=(name,id)=>`artifacts/${appId}/public/data/${name}/${id}`;
 
-test('actual parent commands complete missing policies, lock atomically, transfer once, freeze results and reject stale/backdated writes',async()=>{
+test('actual parent closes a 14-employee period atomically, transfers once, freezes results and rejects stale/backdated writes',async()=>{
   const env=await initializeTestEnvironment({projectId,firestore:{host:'127.0.0.1',port:8185,rules:readFileSync(new URL('../firestore.rules',import.meta.url),'utf8')}});
   const owner={id:'qa-owner',companyId,name:'Chủ doanh nghiệp QA',position:'Chủ doanh nghiệp',role:'owner'};
-  const staff=[1,2].map(number=>({id:`qa-staff-${number}`,companyId,name:`Nhân viên QA ${number}`,position:'Sản xuất',startDate:'2025-01-01',basicSalary:6000000,salaryMonthDays:26}));
+  const staff=Array.from({length:14},(_,index)=>index+1).map(number=>({id:`qa-staff-${number}`,companyId,name:`Nhân viên QA ${number}`,position:'Sản xuất',startDate:'2025-01-01',basicSalary:6000000,salaryMonthDays:26}));
   const state={employees:[owner,...staff],payrollPeriods:[],payrollDebtCarryovers:[],payrollSnapshots:[],activityLogs:[]};
   const db=env.authenticatedContext('qa-owner-uid',{companyId,appUserId:owner.id,identityId:'qa-owner-identity',accountType:'employee',role:'owner'}).firestore();
   try {
@@ -36,7 +36,7 @@ test('actual parent commands complete missing policies, lock atomically, transfe
       const snapshots=state.employees.filter(emp=>emp.id!==owner.id).map((emp,index)=>createPayrollEmployeeSnapshot({companyId,monthKey,employee:emp,
         salaryDetails:applyPayrollOpeningDebtToSalaryDetails(applyPayrollCustomerDebtReconciliation({monthKey,workDays:26,baseSalaryCalc:6000000,grossSalary:6000000,totalAdvance:monthKey==='2026-09' && index===0?10000000:0,
           deductionTotal:monthKey==='2026-09' && index===0?10000000:0,netSalary:monthKey==='2026-09' && index===0?-4000000:6000000},payrollCustomerDebtBasis(state.payrollPeriods,companyId,monthKey,emp.id)),index===0?opening:0),lockedAt:new Date().toISOString(),lockedByEmployeeId:owner.id}));
-      return {snapshots,period:createPayrollPeriodRecord({companyId,monthKey,snapshots,lockedAt:new Date().toISOString(),lockedByEmployeeId:owner.id,totals:{totalSalary:snapshots.reduce((s,row)=>s+row.salaryDetails.netSalary,0),totalDays:52}})};
+      return {snapshots,period:createPayrollPeriodRecord({companyId,monthKey,snapshots,lockedAt:new Date().toISOString(),lockedByEmployeeId:owner.id,totals:{totalSalary:snapshots.reduce((s,row)=>s+row.salaryDetails.netSalary,0),totalDays:staff.length*26}})};
     };
     for(const emp of staff)await complete('2026-09',emp);
     const september=payload('2026-09');
@@ -45,7 +45,7 @@ test('actual parent commands complete missing policies, lock atomically, transfe
     const stored=await getDoc(doc(db,pathFor('payrollPeriods',buildPayrollPeriodId(companyId,'2026-09'))));
     assert.equal(stored.data().status,'LOCKED');assert.ok(stored.data().closedAtServer.toMillis()>0);assert.equal(stored.data().totalEndingDebt,4000000);
     assert.equal((await getDocs(query(collection(db,`artifacts/${appId}/public/data/payrollDebtCarryovers`),where('companyId','==',companyId)))).size,1);
-    assert.equal((await getDocs(query(collection(db,`artifacts/${appId}/public/data/payrollSnapshots`),where('companyId','==',companyId)))).size,2);
+    assert.equal((await getDocs(query(collection(db,`artifacts/${appId}/public/data/payrollSnapshots`),where('companyId','==',companyId)))).size,14);
     assert.equal((await parent().handleLockPayrollPeriod(september)).success,false,'retry does not duplicate');
     const before=await getDoc(doc(db,pathFor('payrollSnapshots',september.snapshots[0].id)));
     await assertFails(updateDoc(doc(db,pathFor('payrollSnapshots',before.id)),{salaryDetails:{netSalary:1}}));
@@ -54,8 +54,7 @@ test('actual parent commands complete missing policies, lock atomically, transfe
     const october=payload('2026-10',4000000),next=await parent().handleLockPayrollPeriod(october);
     assert.equal(next.success,true,next.message);assert.equal(next.snapshots[0].salaryDetails.netSalary,2000000);assert.equal(next.snapshots[0].salaryDetails.endingDebt,0);
     assert.equal((await getDoc(doc(db,pathFor('payrollSnapshots',before.id)))).data().salaryDetails.endingDebt,4000000,'earlier month unchanged');
-    for(const emp of [...state.employees].filter(emp=>emp.id!==owner.id))await complete('2026-08',emp);
-    const backdated=await parent().handleLockPayrollPeriod(payload('2026-08'));
+    const backdated=await parent().handleLockPayrollPeriod({period:{monthKey:'2026-08'},snapshots:[]});
     assert.equal(backdated.success,false);assert.match(backdated.message,/kỳ sau đã chốt/i);
     assert.equal((await getDoc(doc(db,pathFor('payrollPeriods',buildPayrollPeriodId(companyId,'2026-08'))))).exists(),false);
   } finally {await env.cleanup();}
