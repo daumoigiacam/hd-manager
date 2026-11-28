@@ -22,7 +22,7 @@ export default function CoreWorkspaceEntry(){
  const [onlineWebLaunch]=useState(()=>Capacitor.getPlatform()==='web'&&runtimeOnline());
  const [initialWorkspaceTab,setInitialWorkspaceTab]=useState(),[initialWorkspaceIntent,setInitialWorkspaceIntent]=useState(null);
  useEffect(()=>{if(offlineWorkspace.settled&&(!offlineWorkspace.enabled||(!offlineWorkspace.runtime&&offlineWorkspace.online)||onlineWebLaunch))setFullRequested(true);},[offlineWorkspace.settled,offlineWorkspace.enabled,offlineWorkspace.runtime,offlineWorkspace.online,onlineWebLaunch]);
- const openFullWorkspace=(tab='more')=>{const owner=offlineWorkspace.runtime;if(!runtimeOnline()||!owner?.isCurrent())return;const target=tab==='home'?'home':'more';setInitialWorkspaceTab(target);setInitialWorkspaceIntent({tab:target,principalId:owner.scope.principalId,tenantId:owner.scope.tenantId});setFullRequested(true);};
+ const openFullWorkspace=(tab='more')=>{const owner=offlineWorkspace.runtime;if(!runtimeOnline()||!owner?.isCurrent())return;const target=['home','settings'].includes(tab)?tab:'more';setInitialWorkspaceTab(target);setInitialWorkspaceIntent({tab:target,principalId:owner.scope.principalId,tenantId:owner.scope.tenantId});setFullRequested(true);};
  const logout=useCallback(async()=>{
   setLoggingOut(true);setError('');
   try{

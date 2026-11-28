@@ -18,6 +18,8 @@ test('online Web opens the complete product; an Offline launch retains local pre
 test('Auth restoration preserves an explicit menu intent only for its original principal',()=>{
   const intent={requested:'more',requestedPrincipalId:'a',principalId:'a',accountType:'employee',fallback:'home'};
   assert.equal(restoredWorkspaceEntryTab(intent),'more');
+  assert.equal(restoredWorkspaceEntryTab({...intent,requested:'settings'}),'settings');
+  assert.equal(restoredWorkspaceEntryTab({...intent,requested:'settings',principalId:'b'}),'home');
   assert.equal(restoredWorkspaceEntryTab({...intent,principalId:'b'}),'home');
   assert.equal(restoredWorkspaceEntryTab({...intent,requestedPrincipalId:null}),'home');
   assert.equal(restoredWorkspaceEntryTab({...intent,accountType:'customer',fallback:'customer_home'}),'customer_home');
@@ -53,6 +55,8 @@ test('the native full catalog needs an explicit current actor, tenant, online an
  const runtime={scope:{principalId:'a',tenantId:'ta'},isCurrent:()=>true};
  const value={intent:{tab:'more',principalId:'a',tenantId:'ta'},runtime,firebaseUid:'a',tenantId:'ta',companyId:'ta',biometricUnlocked:true,online:true};
  assert.equal(canPresentFullWorkspace(value),true);
+ assert.equal(canPresentFullWorkspace({...value,intent:{...value.intent,tab:'settings'}}),true);
+ assert.equal(canPresentFullWorkspace({...value,intent:{...value.intent,tab:'settings'},firebaseUid:'b'}),false);
  for(const change of [{intent:null},{online:false},{biometricUnlocked:false},{firebaseUid:'b'},{tenantId:'tb'},{companyId:'tb'},
   {intent:{...value.intent,principalId:'b'}},{intent:{...value.intent,tenantId:'tb'}},{intent:{...value.intent,tab:'payroll'}},
   {runtime:{...runtime,isCurrent:()=>false}}])assert.equal(canPresentFullWorkspace({...value,...change}),false);

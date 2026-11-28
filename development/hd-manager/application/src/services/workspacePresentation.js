@@ -13,14 +13,14 @@ export function localWorkspaceInitialSource(tab) {
 }
 export function restoredWorkspaceEntryTab({requested,requestedPrincipalId,principalId,accountType,fallback}) {
   return accountType !== 'customer' && requestedPrincipalId && requestedPrincipalId === principalId
-    && ['home','more'].includes(requested) ? requested : fallback;
+    && ['home','more','settings'].includes(requested) ? requested : fallback;
 }
 // A request changes presentation only. The full product still uses its normal
 // authenticated read-owner gate and per-module RBAC. A menu intent is never a
 // signed Offline permission or a way to open another actor's cached data.
 export function canPresentFullWorkspace({intent,runtime,firebaseUid,tenantId,companyId,biometricUnlocked,online}) {
   return Boolean(online&&biometricUnlocked&&runtime?.isCurrent?.()
-    &&intent&&['home','more'].includes(intent.tab)
+    &&intent&&['home','more','settings'].includes(intent.tab)
     &&intent.principalId===runtime.scope.principalId&&firebaseUid===runtime.scope.principalId
     &&intent.tenantId===runtime.scope.tenantId&&tenantId===runtime.scope.tenantId&&companyId===tenantId);
 }

@@ -160,7 +160,7 @@ export default [
   },
   {
     // The canonical legacy App uses the same syntax-only policy as src/App.jsx.
-    files: ['development/hd-manager/application/src/App.jsx'],
+    files: ['development/hd-manager/application/src/App.jsx', 'development/hd-manager/application/src/layout/InstantHome.jsx'],
     languageOptions: {ecmaVersion:'latest',sourceType:'module',parserOptions:{ecmaFeatures:{jsx:true}}}
   },
   {

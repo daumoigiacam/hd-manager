@@ -55,6 +55,11 @@ export default function RestoredLocalWorkspace({runtime,verifiedLaunch,CustomerV
   if(!menuOpen)scrollPositions.current.set(tab,contentRef.current?.scrollTop||0);setMenuOpen(false);
   if(value==='home'){if(onOpenFullWorkspace&&runtimeOnline()){onOpenFullWorkspace('home');return;}setTab('home');return;}
   if(value==='profile'){setTab(value);return;}
+  if(value==='settings'){
+   if(!context.appSession.allowedTabs.includes('settings'))return;
+   if(onOpenFullWorkspace&&runtimeOnline()){onOpenFullWorkspace('settings');return;}
+   setTab(value);return;
+  }
   if(value==='reports'){if(context.isCurrent()&&context.capabilities.includes('home.read')){setReportRequested(true);setTab(value);}return;}
   if(value==='customers'){if(!context.appSession.allowedTabs.includes('customers')||!context.capabilities.includes('customers.read'))return;onCustomerIntent?.();void adapter.preload().catch(()=>{});void runtime?.prepareCustomerNavigation().catch(()=>{});setTab(value);return;}
   const route=routes.find(item=>item.id===value);if(!route)return;if(runtime)prepareNativeBusinessRoute(runtime,route,{firstOpen:!opened.includes(value)});setOpened(old=>old.includes(value)?old:[...old,value]);setTab(value);
@@ -97,9 +102,10 @@ export default function RestoredLocalWorkspace({runtime,verifiedLaunch,CustomerV
     {restoredHome?.error&&<p role="alert">Không thể mở báo cáo đã lưu trên máy. Hãy mở lại phiên để thử lại.</p>}
    </React.Activity>
    {tab==='profile'&&<section className="p-4"><h1>Cá nhân</h1><p>{user.name}</p><p>{company.name}</p><p>Quyền Offline có hiệu lực đến {new Date(context.expiresAtMs).toLocaleString('vi-VN')}</p><button type="button" onClick={onLogout}>Đăng xuất</button></section>}
+   {tab==='settings'&&<section className="p-4"><h1>Cài đặt</h1><p role="status">Kết nối mạng để mở Cài đặt.</p>{onOpenFullWorkspace&&<button type="button" onClick={()=>navigate('settings')}>Mở Cài đặt</button>}</section>}
    {tab==='reports'&&reportRequested&&context.capabilities.includes('home.read')&&<OfflineHome runtime={runtime} initialResult={restoredHome?.value} verifiedLaunch={verifiedLaunch} onNavigate={navigate}/>}
 
-   {!['home','customers','profile','reports'].includes(tab)&&!routes.some(route=>route.id===tab)&&<p role="status">Chức năng này chưa được tích hợp vào phiên Offline. Dữ liệu đang có trên thiết bị được giữ nguyên.</p>}
+   {!['home','customers','profile','settings','reports'].includes(tab)&&!routes.some(route=>route.id===tab)&&<p role="status">Chức năng này chưa được tích hợp vào phiên Offline. Dữ liệu đang có trên thiết bị được giữ nguyên.</p>}
    {!runtime&&tab!=='home'&&<p role="status">Đang mở dữ liệu trên thiết bị. Thao tác đã được giữ lại.</p>}
    {runtime&&opened.map(id=>{const route=routes.find(value=>value.id===id);return route?<React.Activity key={id} mode={tab===id?'visible':'hidden'}><NativeBusinessRoute runtime={runtime} route={route} initialSource={id===initialRoute?.id?initialNavigation.source:undefined} orderSearchIntent={id==='orders'?orderSearchIntent:undefined} active={tab===id&&!menuOpen} onNavigate={navigate}/></React.Activity>:null;})}
    {runtime&&tab==='customers'&&read&&<>
@@ -116,6 +122,6 @@ export default function RestoredLocalWorkspace({runtime,verifiedLaunch,CustomerV
    </>}
    </React.Activity>
   </main>
-  <InstantHomeNavigation active={menuOpen?'modules':tab} onNavigate={navigate} onModules={()=>navigate('modules')} onReport={context.capabilities.includes('home.read')?()=>navigate('reports'):undefined} onProfile={()=>navigate('profile')}/>
+  <InstantHomeNavigation active={menuOpen?'modules':tab} onNavigate={navigate} onModules={()=>navigate('modules')} onReport={context.capabilities.includes('home.read')?()=>navigate('reports'):undefined} onSettings={context.appSession.allowedTabs.includes('settings')?()=>navigate('settings'):undefined}/>
  </AppShell>;
 }
